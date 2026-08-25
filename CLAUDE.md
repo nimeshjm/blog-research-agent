@@ -83,4 +83,16 @@ posts each turn's reasoning back to the issue named in the branch.
 
 When Claude makes the same mistake twice, record it here.
 
-- (none yet)
+- **Never pass a PR body on stdin.** `rtk` swallows stdin on the `gh pr` path and still
+  prints `ok created #N`, so the PR ships with an empty body and nothing looks wrong.
+  #16 and #17 both merged blank this way. It is stdin specifically: a file *path* works
+  under plain `rtk`, and `gh issue` accepts stdin fine.
+
+  ```bash
+  rtk gh pr create --body-file <path>          # fine
+  rtk gh pr create --body-file -               # silently empty
+  rtk proxy gh api repos/nimeshjm/blog-research-agent/pulls/<N> --jq .body   # verify
+  ```
+
+  This matters beyond losing prose: `CONVENTIONS.md` puts `Closes #N` in the body. Both
+  issues only closed because the commit messages also carried it.
