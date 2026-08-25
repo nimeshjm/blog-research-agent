@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/issue_comment.py\"",
+            "timeout": 45,
+            "async": true,
+            "statusMessage": "Logging turn to the issue"
+          }
+        ]
+      }
+    ]
+  }
+}
