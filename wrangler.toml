@@ -36,8 +36,7 @@ binding = "AI"
 [[d1_databases]]
 binding = "DB"
 database_name = "blog_research"
-# TODO: fill in after `wrangler d1 create blog_research`.
-database_id = "REPLACE_ME"
+database_id = "e6ca4edb-ab56-45e1-a862-257741d5231f"
 
 [[workflows]]
 name = "research-workflow"
