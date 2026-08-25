@@ -53,6 +53,24 @@ open pull request → record run.
 - All calls route through AI Gateway (`AI_GATEWAY`) for logging, caching, and retries.
   Gateway is also the seam for switching to the Anthropic provider later.
 
+## Observability rules
+
+- Only `src/lib/trace.ts` may import `tracing` from `cloudflare:workers`. Everything else
+  uses `traced()`, `tracedStep()` or `tracerFor()`. Same rule as `src/lib/llm.ts` and
+  `env.AI.run`. This includes `src/index.ts`.
+- Every `step.do` goes through `tracedStep` / the `tracerFor` binding. A bare `step.do` in
+  `src/workflow.ts` is a step that vanishes from the trace.
+- A step span carries `agent.workflow.instance_id`, which is what groups the eleven
+  per-step spans into one run. `tracerFor` binds it so no call site can forget.
+- `enterSpan` inside the step body, never wrapping `step.do` — replay would emit a span per
+  attempt and time nothing.
+- No span opened in `run()` outside a step body; `run()` re-executes on replay.
+- The step name is the replay key. `tracedStep` passes it through byte-identical.
+- Attributes are `agent.*` (ours) or `gen_ai.*` (model calls, matching AI Gateway).
+- No prompt, article, completion, URL or error message in an attribute. Constructor name
+  only, via `error.type`.
+- Roughly eight attributes per span. Attributes are CPU against the 10 ms step budget.
+
 ## Conventions
 
 - TypeScript strict. Named exports everywhere except `src/index.ts`, whose default

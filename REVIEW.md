@@ -25,6 +25,7 @@ The failure mode this repo is most exposed to. Reject on:
 - `GITHUB_TOKEN` must remain fine-grained and scoped to the blog repo, with
   `contents: write` and `pull_requests: write` only.
 - No secret value in a `console.log` or an error message.
+- No prompt, article text, completion, URL, or error `message` in a span attribute.
 
 ## Pass 3 — Workflow step correctness (Important)
 
@@ -45,6 +46,8 @@ The failure mode this repo is most exposed to. Reject on:
 - Duplicated fetch/parse/retry logic that belongs in `src/lib/`.
 - Inference called anywhere other than through the `Llm` interface.
 - Model IDs, budgets, or URLs hardcoded instead of read from `wrangler.toml` vars.
+- `tracing` imported anywhere other than `src/lib/trace.ts`; a bare `step.do` that should
+  go through the seam.
 
 ## Severity
 

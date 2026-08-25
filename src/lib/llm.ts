@@ -1,4 +1,14 @@
 import type { Env } from './types';
+import {
+  ATTR_GEN_AI_INPUT_TOKENS,
+  ATTR_GEN_AI_MAX_TOKENS,
+  ATTR_GEN_AI_MODEL,
+  ATTR_GEN_AI_OPERATION,
+  ATTR_GEN_AI_OUTPUT_TOKENS,
+  ATTR_GEN_AI_PROVIDER,
+  ATTR_NEURONS,
+  traced,
+} from './trace';
 
 /**
  * The single seam between this agent and an inference provider.
@@ -7,7 +17,15 @@ import type { Env } from './types';
  * AI Gateway so retries, caching, and token accounting are observable in one
  * place, and so swapping Workers AI for the Anthropic provider later is a
  * gateway/config change rather than a rewrite of the pipeline.
+ *
+ * The call is wrapped in a `chat` span via `traced()` from `src/lib/trace.ts` -
+ * this file never imports `tracing` itself, per the observability convention
+ * in CLAUDE.md. `gen_ai.*` naming matches AI Gateway's own exporter, and
+ * `agent.neurons` reuses `neuronsFor()` below rather than recomputing the cost.
  */
+
+/** Default completion length. Shared by the request and the `gen_ai.request.max_tokens` attribute. */
+const DEFAULT_MAX_TOKENS = 2048;
 
 export interface Message {
   role: 'system' | 'user' | 'assistant';
@@ -67,20 +85,40 @@ function normalise(raw: unknown): CompleteResult {
 export function createLlm(env: Env): Llm {
   return {
     async complete(req: CompleteRequest): Promise<CompleteResult> {
-      const raw = await env.AI.run(
-        env.LLM_MODEL as keyof AiModels,
-        {
-          messages: req.messages,
-          max_tokens: req.maxTokens ?? 2048,
-        } as never,
-        { gateway: { id: env.AI_GATEWAY } },
-      );
+      const maxTokens = req.maxTokens ?? DEFAULT_MAX_TOKENS;
 
-      const result = normalise(raw);
-      if (result.text === '') {
-        throw new Error(`Empty completion from ${env.LLM_MODEL}`);
-      }
-      return result;
+      return traced(
+        'chat',
+        {
+          [ATTR_GEN_AI_OPERATION]: 'chat',
+          [ATTR_GEN_AI_PROVIDER]: 'cloudflare.workers_ai',
+          [ATTR_GEN_AI_MODEL]: env.LLM_MODEL,
+          [ATTR_GEN_AI_MAX_TOKENS]: maxTokens,
+        },
+        async (span) => {
+          const raw = await env.AI.run(
+            env.LLM_MODEL as keyof AiModels,
+            {
+              messages: req.messages,
+              max_tokens: maxTokens,
+            } as never,
+            { gateway: { id: env.AI_GATEWAY } },
+          );
+
+          const result = normalise(raw);
+          if (result.text === '') {
+            throw new Error(`Empty completion from ${env.LLM_MODEL}`);
+          }
+
+          // Result-derived: only known once the call returns, so they are set
+          // on the span handed to this body rather than passed as attrs above.
+          span.setAttribute(ATTR_GEN_AI_INPUT_TOKENS, result.inputTokens);
+          span.setAttribute(ATTR_GEN_AI_OUTPUT_TOKENS, result.outputTokens);
+          span.setAttribute(ATTR_NEURONS, neuronsFor(result));
+
+          return result;
+        },
+      );
     },
   };
 }

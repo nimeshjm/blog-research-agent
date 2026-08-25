@@ -55,3 +55,11 @@ class_name = "ResearchWorkflow"
 
 [observability]
 enabled = true
+
+# Separate key on purpose: while automatic tracing is in early beta,
+# observability.enabled only turns on logs. Free plan gets 200,000 span events/day
+# with 3-day retention, viewed in the dashboard - OTLP export to a third party needs
+# Workers Paid. Sampling stays at 1: at 186 runs a year, sampling loses whole runs.
+[observability.traces]
+enabled = true
+head_sampling_rate = 1

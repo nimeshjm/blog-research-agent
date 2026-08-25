@@ -1,5 +1,15 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import type { ArticleSummary, Candidate, Draft, Env, ResearchParams, Source, Topic } from './lib/types';
+import {
+  ATTR_NEURONS_BUDGET,
+  ATTR_NEURONS_SPENT,
+  ATTR_RUN_STATUS,
+  ATTR_SOURCES_GATHERED,
+  ATTR_SOURCES_SHORTLISTED,
+  ATTR_SOURCES_USED,
+  ATTR_TOPIC_ID,
+  tracerFor,
+} from './lib/trace';
 
 /**
  * The research pipeline.
@@ -16,20 +26,39 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
   async run(event: WorkflowEvent<ResearchParams>, step: WorkflowStep): Promise<void> {
     const budget = Number(this.env.NEURON_BUDGET_PER_RUN);
 
+    // Bound once so every step below is instrumented the same way and no call
+    // site can forget the run-level attributes (instance id, workflow name) -
+    // see src/lib/trace.ts. The span opens *inside* step.do's callback, so
+    // replay of an already-completed step (cached result, body not re-run)
+    // never emits a duplicate span.
+    const traceStep = tracerFor(step, event);
+
     // Neuron spend is checked *between* steps, not mid-call: cost is only known
     // once a call returns. This total survives replay because it is rebuilt from
     // persisted step results, so it must never be mutated outside a step result.
     let neuronsSpent = 0;
 
     // 1. Queue first; the agent proposes a topic only when the queue is empty.
-    const topic = await step.do('select-topic', async () => {
-      return selectTopic(this.env, event.payload.topicId);
+    // `agent.topic.id` is only known once the call returns, so it is set on
+    // the span handed to the body rather than passed in as an attr.
+    const topic = await traceStep('select-topic', {}, async (span) => {
+      const result = await selectTopic(this.env, event.payload.topicId);
+      if (result !== null) span.setAttribute(ATTR_TOPIC_ID, result.id);
+      return result;
     });
 
     if (topic === null) {
-      await step.do('record-no-topic', async () => {
-        return recordOutcome(this.env, { status: 'no_topic', neuronsSpent });
-      });
+      await traceStep(
+        'record-no-topic',
+        {
+          [ATTR_NEURONS_SPENT]: neuronsSpent,
+          [ATTR_NEURONS_BUDGET]: budget,
+          [ATTR_RUN_STATUS]: 'no_topic',
+        },
+        async () => {
+          return recordOutcome(this.env, { status: 'no_topic', neuronsSpent });
+        },
+      );
       return;
     }
 
@@ -37,29 +66,44 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
     //    single feed fetch per step leaves generous headroom for redirects.
     //    Parsing only - dedupe is batched in `shortlist`, because a per-item
     //    seen_urls query would blow both the 10 ms CPU and the 50-query budget.
-    const sources = await step.do('load-sources', async () => loadSources(this.env));
+    const sources = await traceStep('load-sources', {}, async () => loadSources(this.env));
 
     const candidates: Candidate[] = [];
     for (const source of sources) {
-      const found = await step.do(`gather:${source.name}`, async () => {
-        return gatherCandidates(source);
+      // `agent.step` on this span is the `gather` prefix, not the full step
+      // name - `tracedStep` strips after the first `:` so a per-feed span
+      // never needs a source name judged sensitive enough to redact by hand.
+      const found = await traceStep(`gather:${source.name}`, {}, async (span) => {
+        const result = await gatherCandidates(source);
+        span.setAttribute(ATTR_SOURCES_GATHERED, result.length);
+        return result;
       });
       candidates.push(...found);
     }
 
     // Batched dedupe against seen_urls happens here, in one query.
-    const shortlist = await step.do('shortlist', async () => {
-      return shortlistCandidates(this.env, candidates, topic);
+    const shortlist = await traceStep('shortlist', {}, async (span) => {
+      const result = await shortlistCandidates(this.env, candidates, topic);
+      span.setAttribute(ATTR_SOURCES_SHORTLISTED, result.length);
+      return result;
     });
 
     if (shortlist.length < MIN_SOURCES) {
-      await step.do('record-no-sources', async () => {
-        return recordOutcome(this.env, {
-          status: 'insufficient_sources',
-          topicId: topic.id,
-          neuronsSpent,
-        });
-      });
+      await traceStep(
+        'record-no-sources',
+        {
+          [ATTR_NEURONS_SPENT]: neuronsSpent,
+          [ATTR_NEURONS_BUDGET]: budget,
+          [ATTR_RUN_STATUS]: 'insufficient_sources',
+        },
+        async () => {
+          return recordOutcome(this.env, {
+            status: 'insufficient_sources',
+            topicId: topic.id,
+            neuronsSpent,
+          });
+        },
+      );
       return;
     }
 
@@ -70,7 +114,11 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
     for (const candidate of shortlist) {
       if (neuronsSpent + SUMMARY_NEURON_ESTIMATE > budget - SYNTHESIS_NEURON_RESERVE) break;
 
-      const result = await step.do(`summarize:${candidate.url}`, async () => {
+      // `agent.step` on this span is the `summarize` prefix. `candidate.url`
+      // stays out of every span attribute - REVIEW.md pass 2 forbids a URL
+      // there - even though it still passes through to step.do unchanged,
+      // because that is the replay key.
+      const result = await traceStep(`summarize:${candidate.url}`, {}, async () => {
         return summarizeArticle(this.env, candidate, topic);
       });
       neuronsSpent += result.neurons;
@@ -78,36 +126,53 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
     }
 
     if (!isGrounded(summaries)) {
-      await step.do('record-no-summaries', async () => {
-        return recordOutcome(this.env, {
-          status: 'insufficient_sources',
-          topicId: topic.id,
-          neuronsSpent,
-        });
-      });
+      await traceStep(
+        'record-no-summaries',
+        {
+          [ATTR_NEURONS_SPENT]: neuronsSpent,
+          [ATTR_NEURONS_BUDGET]: budget,
+          [ATTR_RUN_STATUS]: 'insufficient_sources',
+        },
+        async () => {
+          return recordOutcome(this.env, {
+            status: 'insufficient_sources',
+            topicId: topic.id,
+            neuronsSpent,
+          });
+        },
+      );
       return;
     }
 
     // 4. Reduce: one synthesis call producing the brief and the draft.
-    const synthesis = await step.do('synthesize', async () => {
+    const synthesis = await traceStep('synthesize', {}, async () => {
       return synthesizeDraft(this.env, topic, summaries);
     });
     neuronsSpent += synthesis.neurons;
 
     // 5. Branch-only write. The agent never pushes to BLOG_BASE_BRANCH.
-    const prUrl = await step.do('open-pull-request', async () => {
+    const prUrl = await traceStep('open-pull-request', {}, async () => {
       return openPullRequest(this.env, synthesis.draft);
     });
 
-    await step.do('record-success', async () => {
-      return recordOutcome(this.env, {
-        status: 'succeeded',
-        topicId: topic.id,
-        sourcesUsed: summaries.length,
-        neuronsSpent,
-        prUrl,
-      });
-    });
+    await traceStep(
+      'record-success',
+      {
+        [ATTR_SOURCES_USED]: summaries.length,
+        [ATTR_NEURONS_SPENT]: neuronsSpent,
+        [ATTR_NEURONS_BUDGET]: budget,
+        [ATTR_RUN_STATUS]: 'succeeded',
+      },
+      async () => {
+        return recordOutcome(this.env, {
+          status: 'succeeded',
+          topicId: topic.id,
+          sourcesUsed: summaries.length,
+          neuronsSpent,
+          prUrl,
+        });
+      },
+    );
   }
 }
 
