@@ -22,6 +22,7 @@ inference. These are the limits that actually bite, and what each one forces.
 | Workers AI | **10,000 neurons/day** | Workers AI pricing |
 | D1 | 10 DBs, 500 MB each, 50 queries/invocation | D1 limits docs |
 | AI Gateway | available on all plans | AI Gateway docs |
+| Trace/log events | 200,000/day (3-day retention) | Workers observability pricing |
 
 ## Rules that follow
 
@@ -64,3 +65,5 @@ neurons? If any answer is "it depends on the input size", cap the input.
 - Workers AI usage: Cloudflare dashboard → AI → Workers AI.
 - Per-call token counts and latency: AI Gateway logs (binding `AI_GATEWAY`).
 - Per-run spend: the `neurons_spent` column of the `runs` table.
+- Per-step and per-call spans: Cloudflare dashboard → Workers & Pages → the Worker →
+  Traces. Export to a third party (Honeycomb, Grafana, Axiom) needs Workers Paid.
