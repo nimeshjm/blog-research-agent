@@ -67,6 +67,18 @@ Each feature lives in `features/NNN-slug/` with `intent.md` → `spec.md` → `p
 not start implementing a feature whose `plan.md` is still the unfilled template.
 `REVIEW.md` defines the review passes every PR here gets.
 
+## Work tracking
+
+[GitHub issues on this repo](https://github.com/nimeshjm/blog-research-agent/issues)
+are the work-item tracker. **Issues are
+authoritative for work items; the markdown artifacts in `features/` stay authoritative
+for stage gates.** Where the two disagree, the artifact wins and the issue is wrong.
+
+`CONVENTIONS.md` is the rest of it and is not optional reading: issue labels, the rule
+that a build is one tracking issue rather than one per step, **branch names, which always
+start with their issue number**, `Closes #N` on the pull request, and the Stop hook that
+posts each turn's reasoning back to the issue named in the branch.
+
 ## Repeated mistakes
 
 When Claude makes the same mistake twice, record it here.

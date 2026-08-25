@@ -24,9 +24,13 @@ features/NNN-slug/
   approved what and when. That chain is the audit trail.
 - When implementation reveals the spec was wrong, update `spec.md` in the same pull
   request. Do not let code and spec drift apart silently.
+- Work items are tracked in [GitHub issues](https://github.com/nimeshjm/blog-research-agent/issues), labelled `feature:NNN`. These
+  artifacts stay authoritative for stage gates; issues are authoritative for what is left
+  to do. A build's task breakdown belongs in `plan.md`, not in issues. See
+  [`CONVENTIONS.md`](../CONVENTIONS.md).
 
 ## Index
 
 | # | Feature | Stage |
 |---|---|---|
-| 001 | [scheduled-research-drafts](001-scheduled-research-drafts/) | At the stage 3 gate: `intent.md` and `spec.md` written, `plan.md` not |
+| 001 | [scheduled-research-drafts](001-scheduled-research-drafts/) | At the stage 3 gate: `intent.md` and `spec.md` written, `plan.md` not. [Open issues](https://github.com/nimeshjm/blog-research-agent/issues?q=is%3Aissue+is%3Aopen+label%3Afeature%3A001) |

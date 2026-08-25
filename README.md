@@ -19,6 +19,7 @@ Each stage commits a versioned artifact that the next stage reads:
 | 3. Build | `plan.md` | `features/NNN-slug/plan.md` |
 | 3. Build | institutional knowledge | `CLAUDE.md`, `.claude/skills/` |
 | 5. Deploy | review passes | `REVIEW.md` |
+| all | process conventions | `CONVENTIONS.md` |
 
 See [`features/README.md`](features/README.md) for the per-feature convention.
 
@@ -31,6 +32,11 @@ Feature 001 is at the **stage 3 gate**: `intent.md` and `spec.md` are written,
 `plan.md` is not. The Worker skeleton deploys and the pipeline is wired end to end, but
 every step body throws `NotImplemented`.
 
+What is left to do is tracked in [GitHub issues](https://github.com/nimeshjm/blog-research-agent/issues) rather than restated here:
+[`feature:001`](https://github.com/nimeshjm/blog-research-agent/issues?q=is%3Aissue+is%3Aopen+label%3Afeature%3A001) is the work for
+this feature, [`deferred`](https://github.com/nimeshjm/blog-research-agent/issues?q=is%3Aissue+is%3Aopen+label%3Adeferred) is what was
+agreed but is waiting on a trigger.
+
 ## Getting started
 
 ```bash
@@ -42,10 +48,13 @@ npx wrangler deploy --dry-run     # offline
 Running it (`npm run dev`) needs `npx wrangler login` first — the `AI` binding has no
 local simulation, so wrangler always opens a remote session.
 
-It opens pull requests against `nimeshjm/nimeshjm.com` (private, Astro). Two things are
-still needed before a run can complete:
+It opens pull requests against `nimeshjm/nimeshjm.com` (private, Astro). Three things are
+still needed before a run can complete, each tracked as an issue:
 
-1. A fine-grained GitHub PAT scoped to that repo (`contents: write`,
-   `pull_requests: write`), set with `npx wrangler secret put GITHUB_TOKEN`.
-2. A D1 database: `npx wrangler d1 create blog_research`, then paste the id into
-   `wrangler.toml`.
+1. A fine-grained GitHub PAT scoped to that repo, set with
+   `npx wrangler secret put GITHUB_TOKEN` — [#4](https://github.com/nimeshjm/blog-research-agent/issues/4).
+2. The `blog-research-agent` AI Gateway, which every inference call routes through —
+   [#5](https://github.com/nimeshjm/blog-research-agent/issues/5).
+3. A D1 database: `npx wrangler d1 create blog_research`, then paste the id into
+   `wrangler.toml` — leaving `binding = "DB"`, which is the name `src/lib/types.ts` reads.
+   Getting that binding name wrong survives both offline checks — [#7](https://github.com/nimeshjm/blog-research-agent/issues/7).
