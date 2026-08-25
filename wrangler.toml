@@ -21,7 +21,17 @@ BLOG_BASE_BRANCH = "main"
 BLOG_FEED_URL = "https://nimeshjm.com/rss.xml"
 # Single source of truth for the inference model. See src/lib/llm.ts.
 LLM_MODEL = "@cf/openai/gpt-oss-120b"
-# AI Gateway name, for logging/caching/retries. Create in the Cloudflare dashboard.
+# AI Gateway id, for logging/caching/retries, and the seam for swapping in the
+# Anthropic provider later. Created in the dashboard - there is no wrangler
+# command for it. Two failure modes, both hit here, both fatal to every
+# inference call rather than only to its logging:
+#   2001  no gateway of this name exists in the account.
+#   2021  the gateway's "Workers AI Billing" is set to Unified billing, which
+#         spends prepaid AI Gateway credits instead of the free neuron
+#         allocation. It has to be Standard billing. Not model-specific: two
+#         unrelated models failed identically until the setting changed.
+# A call with no gateway argument succeeds and bills neurons under either
+# setting, so a green run without the gateway proves nothing about it.
 AI_GATEWAY = "blog-research-agent"
 # Hard ceiling per run. Free allocation is 10,000 neurons/day.
 NEURON_BUDGET_PER_RUN = "6000"
