@@ -1,0 +1,48 @@
+name = "blog-research-agent"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Every two days at 06:00 UTC. Free plan allows 5 cron triggers per account.
+# */2 is day-of-month, so this fires on odd days (1,3,5...31) every month: 186
+# runs a year, of which 179 gaps are exactly 2 days and 7 are 1 day (after each
+# 31-day month, 31st then 1st). The phase does not drift - day 1 always fires.
+# Harmless: the neuron allowance resets daily and a run costs ~4,300 of 10,000,
+# so even the 1-day gaps sit in separate allowances.
+[triggers]
+crons = ["0 6 */2 * *"]
+
+[vars]
+# The blog repo the agent opens pull requests against. Private; Astro + MDX.
+BLOG_REPO = "nimeshjm/nimeshjm.com"
+# Branch PRs target. The agent must never push to this branch directly.
+BLOG_BASE_BRANCH = "main"
+# Read for the post archive: voice matching and "have I covered this?" dedupe.
+BLOG_FEED_URL = "https://nimeshjm.com/rss.xml"
+# Single source of truth for the inference model. See src/lib/llm.ts.
+LLM_MODEL = "@cf/openai/gpt-oss-120b"
+# AI Gateway name, for logging/caching/retries. Create in the Cloudflare dashboard.
+AI_GATEWAY = "blog-research-agent"
+# Hard ceiling per run. Free allocation is 10,000 neurons/day.
+NEURON_BUDGET_PER_RUN = "6000"
+
+# Secrets (never put these here - use `wrangler secret put <NAME>`):
+#   GITHUB_TOKEN  fine-grained PAT, contents:write + pull_requests:write,
+#                 scoped to BLOG_REPO only.
+
+[ai]
+binding = "AI"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "blog_research"
+# TODO: fill in after `wrangler d1 create blog_research`.
+database_id = "REPLACE_ME"
+
+[[workflows]]
+name = "research-workflow"
+binding = "RESEARCH_WORKFLOW"
+class_name = "ResearchWorkflow"
+
+[observability]
+enabled = true

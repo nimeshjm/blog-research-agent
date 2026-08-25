@@ -1,0 +1,18 @@
+{
+  "name": "blog-research-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "typecheck": "tsc --noEmit",
+    "deploy": "wrangler deploy",
+    "migrate:local": "wrangler d1 migrations apply blog_research --local",
+    "migrate:remote": "wrangler d1 migrations apply blog_research --remote"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260820.1",
+    "typescript": "^5.7.3",
+    "wrangler": "^4.125.0"
+  }
+}
