@@ -69,3 +69,16 @@ jobs:
           # the script's own preflight; this bounds the other case.
           OTEL_EXPORTER_OTLP_TIMEOUT: '5'
           GH_TOKEN: ${{ github.token }}
+      # The other half of that guard. A skipped step leaves an all-green run
+      # that emitted nothing, which is the same "green means nothing
+      # happened" shape the loud-failure design exists to avoid - just moved
+      # from the script into the workflow. So say it out loud with an
+      # annotation, and run the compute path anyway: it costs nothing, needs
+      # no credentials, and smoke-tests every git and gh calculation against
+      # real history on the same schedule.
+      - if: vars.OTEL_EXPORTER_OTLP_ENDPOINT == ''
+        run: |
+          echo "::warning::OTEL_EXPORTER_OTLP_ENDPOINT is unset - no spans emitted. See the prerequisites on issue #29."
+          python3 scripts/plan_metrics.py
+        env:
+          GH_TOKEN: ${{ github.token }}
