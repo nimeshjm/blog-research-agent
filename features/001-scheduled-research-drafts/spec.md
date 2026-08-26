@@ -1,7 +1,8 @@
 # Spec: Scheduled research drafts
 
-> Stage 2. Written from the approved `intent.md`. **Awaiting approval** — nothing in
-> here is implemented, and `plan.md` is deliberately still the template.
+> Stage 2. Written from the approved `intent.md`. **Approved** — see
+> [#1](https://github.com/nimeshjm/blog-research-agent/issues/1). Implementation is
+> planned in [`plan.md`](plan.md); the step bodies it describes are not written yet.
 
 ## Summary
 
