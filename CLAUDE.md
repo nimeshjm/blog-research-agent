@@ -11,8 +11,8 @@ npm install
 npm run typecheck          # tsc --noEmit
 npm run dev                # wrangler dev
 npm run deploy             # wrangler deploy
-npm run migrate:local      # only after the schema in spec.md is approved; no
-                           # migrations/ directory exists yet, so this fails today
+npm run migrate:local      # applies migrations/ to the local D1 (.wrangler/state)
+npm run migrate:remote     # same, against the real blog_research database
 npx wrangler deploy --dry-run   # validate bindings without deploying
 npm run lint:ast           # ast-grep: the seam rules in rules/*.yml - see REVIEW.md
 npm run test:ast           # proves each ast-grep rule fires (a dead rule reports Missing)
