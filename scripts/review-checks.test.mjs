@@ -157,8 +157,17 @@ const rows = [
     name: 'force-track .dev.vars in the git index',
     expectFail: ['dev-vars-untracked'],
     mutate(dir) {
-      // .dev.vars already exists on disk (copied untracked, same as on the real
-      // repo) - force it into the index the way a slip past .gitignore would.
+      // Write the file rather than relying on the copied tree already having
+      // one. `.dev.vars` is gitignored, so it exists on a developer's disk and
+      // nowhere else: a CI checkout has none, and `git add -f .dev.vars` there
+      // fails with "pathspec did not match any files" - a SETUP FAIL, not the
+      // finding this row is asserting. The row passed locally purely because
+      // the file happened to be on disk. Same hermeticity rule as the GITHUB_*
+      // strip in `runChecker`: a row must not depend on the environment it runs
+      // in. Contents are a placeholder - `dev-vars-untracked` looks at the git
+      // index and history, never at what the file says.
+      writeFile(dir, '.dev.vars', 'PLACEHOLDER=not-a-real-secret\n');
+      // Force it into the index the way a slip past .gitignore would.
       git(dir, ['add', '-f', '.dev.vars']);
     },
   },
