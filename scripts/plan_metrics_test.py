@@ -23,6 +23,19 @@ row's assertions from running, and must not abort the suite. Rows are
 otherwise independent: a failure in row N never touches row N+1's fixture,
 because each gets its own fresh copy of REPO_ROOT.
 
+Why every git call here is hermetic
+    Two separate routes let a row write through to the *real* repository, and
+    both were live in this file until issue #31's fix was ported across from
+    review-checks.test.mjs. First, in a linked worktree `.git` is a one-line
+    `gitdir:` pointer rather than a directory, so copying the tree verbatim
+    leaves every row's sandbox aimed at the shared gitdir and every `git commit`
+    landing on the live branch of the worktree the suite was launched from - see
+    copy_tree(). Second, git exports GIT_DIR (and GIT_WORK_TREE, GIT_INDEX_FILE,
+    ...) to its hooks, and those override discovery outright, so under the
+    pre-push hook every git call would target the real repository no matter its
+    cwd - see env_without_git_vars(). Row 10 proves the first; the
+    fingerprint backstop in main() catches any future regression of either.
+
 Why `git commit -am` never appears here
     `-am` only stages files git already tracks; it silently skips untracked
     new files, which is exactly what every row's fixture is made of (a brand
@@ -67,6 +80,13 @@ COPY_TREE_SKIP_TOP_LEVEL = frozenset({"node_modules", ".wrangler", ".venv"})
 # working tree, not history belonging to this repo's .git).
 COPY_TREE_SKIP_RELATIVE = frozenset({os.path.join(".claude", "worktrees")})
 
+# The files git keeps per worktree rather than in the common dir. Everything
+# else a row needs - objects, refs, packed-refs, config - is shared and comes
+# across with the common dir. `commondir` and `gitdir` are deliberately absent:
+# copying either one re-links the sandbox to the real repository and silently
+# reintroduces the bug copy_tree()'s linked-worktree branch exists to prevent.
+PER_WORKTREE_GIT_FILES = ("HEAD", "index", "ORIG_HEAD", "config.worktree")
+
 # Every commit() call needs a real author/committer identity. A machine that
 # has never run `git config --global user.email` (plausible for a fresh CI
 # runner) would otherwise fail every commit in this suite, so the identity is
@@ -96,13 +116,67 @@ RENAME_FIXTURE_REWRITE_FRACTIONS = {"pure": 0, "partial": 26, "full": 40}
 # ---------------------------------------------------------------------------
 
 
+def env_without_git_vars() -> "dict[str, str]":
+    """`os.environ` with the whole GIT_* family removed.
+
+    git exports GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE and friends to its hooks,
+    and those override repository discovery outright: inherited into a child,
+    they point every `git` call at the real repository regardless of its cwd.
+    That reproduces only from a hook - running this suite by hand is clean -
+    which is exactly what makes it worth stripping rather than trusting.
+
+    Taken as a whole family for the same reason run_metrics() strips GITHUB_*
+    as a family: enumerating the ones that matter today is a list that rots.
+    """
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
+def git_path(root: str, flag: str) -> "str | None":
+    """`git rev-parse <flag>` in `root` as an absolute path, or None if git
+    cannot answer (no git, or not a repository)."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", flag],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        env=env_without_git_vars(),
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def is_linked_worktree(root: str) -> bool:
+    """True when `<root>/.git` is a gitdir *pointer file* rather than a
+    directory, which is what git writes in a linked worktree."""
+    return os.path.isfile(os.path.join(root, ".git"))
+
+
 def copy_tree(src: str, dest: str) -> None:
     """Copy the whole repo tree from `src` to `dest`, including `.git` (every
     row needs real, walkable history), skipping COPY_TREE_SKIP_TOP_LEVEL and
     COPY_TREE_SKIP_RELATIVE entirely rather than merely not-recursing-into-them
     after the fact - shutil.copytree's `ignore` callback prunes the walk
     before it descends, so a 26 MB `.venv` is never even opened.
+
+    Each row's sandbox has to be a *self-contained* repository: rows commit,
+    `git mv` and rewrite history, and plan_metrics.py reads all of it back out.
+    Copying the tree verbatim gives that in an ordinary checkout, where `.git`
+    is a directory.
+
+    In a linked worktree it does not. There `.git` is a one-line
+    `gitdir: /repo/.git/worktrees/<name>` pointer, so a verbatim copy leaves
+    every sandbox pointing at the real shared gitdir and every row's `git` call
+    operating on the real repository - each fixture's commits landing on the
+    live branch of the worktree this suite was launched from, and rows
+    colliding with each other's history. That is issue #31 arriving in this
+    file rather than in review-checks.test.mjs, whose copyTree() this mirrors.
+
+    So when the source is a linked worktree, skip the pointer and materialise a
+    standalone `.git` from the common dir, taking HEAD and the index from the
+    worktree's own gitdir so the row still sees the state it was launched on.
+    Row 10 proves that branch; assert_real_repo_untouched() in the runner is
+    the backstop if it ever regresses.
     """
+    linked = is_linked_worktree(src)
 
     def _ignore(current_dir: str, names: "list[str]") -> "set[str]":
         ignored: "set[str]" = set()
@@ -110,9 +184,46 @@ def copy_tree(src: str, dest: str) -> None:
             rel = os.path.relpath(os.path.join(current_dir, name), src)
             if rel in COPY_TREE_SKIP_TOP_LEVEL or rel in COPY_TREE_SKIP_RELATIVE:
                 ignored.add(name)
+            elif linked and rel == ".git":
+                ignored.add(name)
         return ignored
 
     shutil.copytree(src, dest, ignore=_ignore)
+    if not linked:
+        return
+
+    common_dir = git_path(src, "--git-common-dir")
+    own_dir = git_path(src, "--git-dir")
+    if not common_dir or not own_dir:
+        raise RuntimeError(
+            f"{src} has a gitdir pointer but git could not resolve it "
+            f"(common={common_dir}, own={own_dir})"
+        )
+
+    dest_git = os.path.join(dest, ".git")
+
+    def _ignore_worktrees(current_dir: str, names: "list[str]") -> "set[str]":
+        # `worktrees/` holds the per-worktree gitdirs of every linked worktree,
+        # each pointing back out at its own checkout. None of it belongs in a
+        # standalone copy.
+        return {
+            name
+            for name in names
+            if os.path.relpath(os.path.join(current_dir, name), common_dir) == "worktrees"
+        }
+
+    shutil.copytree(common_dir, dest_git, ignore=_ignore_worktrees)
+
+    for name in PER_WORKTREE_GIT_FILES:
+        source = os.path.join(own_dir, name)
+        target = os.path.join(dest_git, name)
+        # Removing when the worktree has none is the half that matters: the
+        # common dir carries the *main* checkout's HEAD and index, and
+        # inheriting those would be a quieter version of the same bug.
+        if os.path.exists(source):
+            shutil.copyfile(source, target)
+        elif os.path.exists(target):
+            os.remove(target)
 
 
 def write_file(root: str, rel: str, text: str) -> None:
@@ -125,15 +236,19 @@ def write_file(root: str, rel: str, text: str) -> None:
 
 
 def git(root: str, args: "list[str]", extra_env: "dict[str, str] | None" = None) -> str:
-    """Run `git <args>` in `root`, returning stdout. Raises with the real
+    """Run `git <args>` in `root` (never inheriting GIT_*; see
+    env_without_git_vars()), returning stdout. Raises with the real
     stderr on any non-zero exit: unlike plan_metrics.py's own run_git() (which
     treats a git failure as "nothing to report" downstream), a git command
     failing while a row is *building* its fixture is a broken test, not a
     finding, and must not be swallowed.
     """
-    env = None
+    # Always start from a GIT_*-free environment, then let `extra_env` put back
+    # the GIT_* vars a caller actually means (commit()'s pinned dates and
+    # identity). Inheriting the family wholesale would let a hook's GIT_DIR
+    # redirect this call at the real repository - see env_without_git_vars().
+    env = env_without_git_vars()
     if extra_env:
-        env = dict(os.environ)
         env.update(extra_env)
     result = subprocess.run(
         ["git", *args], cwd=root, capture_output=True, text=True, env=env
@@ -218,8 +333,8 @@ def run_metrics(
     the entire suite would fail on a version guard rather than on anything
     this test is actually meant to check.
 
-    Strips every GITHUB_* var from the child's environment before applying
-    `extra_env`, for the same hermeticity reason
+    Strips every GITHUB_* and GIT_* var from the child's environment before
+    applying `extra_env`, for the same hermeticity reason
     scripts/review-checks.test.mjs's runChecker() does: this suite must behave
     identically on a laptop and inside the outer CI job that might itself be
     running under GITHUB_ACTIONS=true.
@@ -230,7 +345,10 @@ def run_metrics(
     if the process exited non-zero despite printing JSON.
     """
     cmd = [sys.executable, PLAN_METRICS, "--root", root, "--json", *extra_args]
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GITHUB_")}
+    # GIT_* as well as GITHUB_*: plan_metrics.py shells out to git, so a hook's
+    # inherited GIT_DIR would point the extractor at the real repository rather
+    # than at `--root`. See env_without_git_vars().
+    env = {k: v for k, v in env_without_git_vars().items() if not k.startswith("GITHUB_")}
     if extra_env:
         env.update(extra_env)
     result = subprocess.run(cmd, capture_output=True, text=True, env=env)
@@ -795,6 +913,98 @@ def row_9(root: str) -> "tuple[bool, list[str]]":
     return ok, notes
 
 
+def row_10(root: str) -> "tuple[bool, list[str]]":
+    """Proves copy_tree()'s linked-worktree branch, which is dead code anywhere
+    `.git` is a directory - CI included, so it would rot unnoticed and only be
+    missed the next time someone runs this suite from a worktree.
+
+    That is not hypothetical. Before the fix this row guards, running
+    `npm run test:plan-metrics` from a linked worktree gave every sandbox a
+    `.git` still pointing at the shared gitdir, so each fixture's `git commit`
+    landed on the live branch of the worktree the suite was launched from: 36
+    synthetic commits on a real branch, and rows failing on each other's
+    history rather than on anything plan_metrics.py did. Same shape as issue
+    #31, one file over.
+
+    Hermetic with respect to the real repository, and more so than
+    review-checks.test.mjs's equivalent row: the linked worktree is added to
+    *this row's own throwaway copy*, never to REPO_ROOT, so nothing here can
+    touch the checkout even if every assertion below fails.
+    """
+    notes: "list[str]" = []
+    worktree = root + "-wt"
+    sandbox = root + "-wt-sandbox"
+
+    git(root, ["worktree", "add", "--detach", "--quiet", worktree, "HEAD"])
+    if not is_linked_worktree(worktree):
+        notes.append(
+            f"FAIL: expected {worktree}/.git to be a gitdir pointer file - "
+            "the row proves nothing without one"
+        )
+        return False, notes
+    notes.append("OK: the source worktree's .git is a gitdir pointer file")
+
+    copy_tree(worktree, sandbox)
+    ok = True
+
+    sandbox_git = os.path.join(sandbox, ".git")
+    if not os.path.isdir(sandbox_git):
+        notes.append(
+            "FAIL: sandbox .git is not a directory - it is still the pointer, so "
+            "every row would run against the source repository"
+        )
+        return False, notes
+    notes.append("OK: sandbox owns its gitdir (.git is a directory, not a pointer)")
+
+    resolved = git_path(sandbox, "--git-dir")
+    if resolved is None or not os.path.realpath(resolved).startswith(
+        os.path.realpath(sandbox)
+    ):
+        notes.append(
+            f"FAIL: sandbox gitdir resolved to {resolved}, outside {sandbox}"
+        )
+        ok = False
+    else:
+        notes.append("OK: git resolves the sandbox gitdir inside the sandbox")
+
+    if os.path.exists(os.path.join(sandbox_git, "worktrees")):
+        notes.append(
+            "FAIL: sandbox .git carries a worktrees/ dir, whose entries point back "
+            "out at real checkouts"
+        )
+        ok = False
+    else:
+        notes.append("OK: sandbox .git carries no worktrees/ back-pointers")
+
+    # The source worktree is detached, so a HEAD inherited from the common dir
+    # would name a branch instead - the quieter half of the same bug.
+    head = subprocess.run(
+        ["git", "symbolic-ref", "--quiet", "HEAD"],
+        cwd=sandbox,
+        capture_output=True,
+        text=True,
+        env=env_without_git_vars(),
+    )
+    if head.returncode == 0:
+        notes.append(
+            f"FAIL: sandbox HEAD is {head.stdout.strip()}, but the source worktree "
+            "is detached - HEAD was inherited from the common dir"
+        )
+        ok = False
+    else:
+        notes.append("OK: HEAD came from the worktree, not the common dir")
+
+    # A sandbox that cannot take a commit is not a fixture, however well its
+    # gitdir resolves - every other row's first act is to write a file and
+    # commit it. The write is not optional: `git commit` on an unchanged tree
+    # exits non-zero with "nothing to commit" on *stdout* and an empty stderr,
+    # which reads exactly like a hook refusing the commit.
+    write_file(sandbox, "features/002-sandbox/intent.md", "# sandbox\n")
+    commit(sandbox, "sandbox is writable", "2026-04-01T00:00:00Z")
+    notes.append("OK: sandbox accepts a commit of its own")
+    return ok, notes
+
+
 ROWS: "list[tuple[str, Callable[[str], tuple[bool, list[str]]]]]" = [
     ("baseline (no mutation) - proves the harness itself is not vacuously green", row_0),
     (
@@ -828,6 +1038,11 @@ ROWS: "list[tuple[str, Callable[[str], tuple[bool, list[str]]]]]" = [
     ("features/002-synth/intent.md committed, no spec.md at all", row_7),
     ("gh stub: feature:002 issue + a gate:intent issue closed COMPLETED", row_8),
     ("gh stub: feature:002 issue + a gate:intent issue closed NOT_PLANNED", row_9),
+    (
+        "copy_tree gives a linked worktree a sandbox that owns its gitdir "
+        "(issue #31, this file's copy of it)",
+        row_10,
+    ),
 ]
 
 
@@ -836,12 +1051,58 @@ ROWS: "list[tuple[str, Callable[[str], tuple[bool, list[str]]]]]" = [
 # ---------------------------------------------------------------------------
 
 
+def real_repo_fingerprint() -> "str | None":
+    """HEAD, the current ref and the porcelain status of the *real* repository,
+    as one comparable string. None when git cannot answer, which is not a
+    failure - it just means there is nothing to protect."""
+    env = env_without_git_vars()
+
+    def run(args: "list[str]") -> "subprocess.CompletedProcess[str]":
+        return subprocess.run(
+            ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True, env=env
+        )
+
+    head = run(["rev-parse", "HEAD"])
+    # symbolic-ref exits non-zero on a detached HEAD, which is a state, not an
+    # error, so its return code is deliberately not checked.
+    ref = run(["symbolic-ref", "--quiet", "HEAD"])
+    status = run(["status", "--porcelain"])
+    if head.returncode != 0 or status.returncode != 0:
+        return None
+    return json.dumps(
+        {
+            "head": head.stdout.strip(),
+            "ref": ref.stdout.strip(),
+            "status": status.stdout,
+        }
+    )
+
+
+def assert_real_repo_untouched(before: "str | None", row_label: str) -> None:
+    """Fail the whole run the moment a row writes through to the real
+    repository, rather than letting the pollution surface as unrelated failures
+    on every row after it. That indirection is what made issue #31 slow to
+    read, and what made its recurrence in this file slow to read again."""
+    if before is None:
+        return
+    after = real_repo_fingerprint()
+    if after == before:
+        return
+    print(f"\n[HERMETICITY FAIL] {row_label} mutated the real repository at {REPO_ROOT}")
+    print(f"    before: {before}")
+    print(f"    after:  {after}")
+    print("    Stopping: every later row would report failures caused by this,")
+    print("    not by its own mutation. See issue #31 and copy_tree() above.")
+    sys.exit(1)
+
+
 def main() -> int:
     """Run every row against its own fresh copy of REPO_ROOT, print a
     `Row N: <name>` header, each note indented, and `-> PASS`/`-> FAIL` per
     row, then a final tally line. Returns the process exit code: 0 iff every
     row passed."""
     failures = 0
+    baseline = real_repo_fingerprint()
     tmp_root = tempfile.mkdtemp(prefix="plan-metrics-test-")
     try:
         for index, (name, row_fn) in enumerate(ROWS):
@@ -863,6 +1124,7 @@ def main() -> int:
             print(f"    -> {'PASS' if ok else 'FAIL'}")
             if not ok:
                 failures += 1
+            assert_real_repo_untouched(baseline, f"Row {index}")
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
 

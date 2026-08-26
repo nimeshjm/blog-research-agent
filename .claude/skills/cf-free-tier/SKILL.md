@@ -20,7 +20,7 @@ inference. These are the limits that actually bite, and what each one forces.
 | Subrequests | **50 per request/step** | Workers limits docs |
 | Requests | 100,000/day | Workers limits docs |
 | Workers AI | **10,000 neurons/day** | Workers AI pricing |
-| D1 | 10 DBs, 500 MB each, 50 queries/invocation | D1 limits docs |
+| D1 | 10 DBs, 500 MB each, **50 queries/invocation**, **100 bound params/query** | D1 limits docs |
 | AI Gateway | available on all plans | AI Gateway docs |
 | Trace/log events | 200,000/day (3-day retention) | Workers observability pricing |
 
