@@ -1,0 +1,84 @@
+name: SDLC metrics
+
+# No push trigger: nothing here is timely, and daily-schedule-plus-
+# workflow_dispatch is the entire recovery story. Every run is a full
+# re-statement of current state, so a missed day is picked up by the
+# next one and re-runs are harmless.
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+# Reads the tree (for git history) and reads (not writes) issues, so
+# plan_metrics.py can pull feature:NNN / gate:intent state via `gh issue list`.
+permissions:
+  contents: read
+  issues: read
+
+# Two concurrent snapshots are harmless - each is a full re-statement of
+# current state - but a half-emitted one is confusing, so don't cancel a
+# run that's already mid-emit.
+concurrency:
+  group: sdlc-metrics
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      # Full history, not actions/checkout's default shallow clone: every
+      # git-history calculation in plan_metrics.py (first-commit lookups,
+      # --follow across renames, post-spec edit counts) silently yields
+      # garbage from a shallow clone. Same trap ci.yml documents for
+      # dev-vars-untracked.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      # The two package names scripts/otel_span.py imports. Deliberately not
+      # an npm dependency - the repo's zero-npm-dependency posture for the
+      # Python side is intentional, so install them here instead.
+      #
+      # protobuf currently ships cp310-abi3 wheels, so the exporter installs
+      # cleanly on 3.14 today. If a transitive dependency ever lacks a 3.14
+      # wheel, drop python-version above to '3.13'.
+      - run: pip install opentelemetry-sdk opentelemetry-exporter-otlp-proto-http
+      # This is the only place the Honeycomb ingest key lives. ci.yml is
+      # secret-free by design (see its own comment and CLAUDE.md) - that's
+      # exactly why this is a separate workflow rather than another step
+      # bolted onto ci.yml.
+      #
+      # Skipped, not failed, when the endpoint variable is unset. Never
+      # configured and broken-while-configured are different states, and
+      # plan_metrics.py deliberately exits non-zero on the second - so
+      # without this guard the schedule would go red every morning from the
+      # moment this merges until the ingest key is wired up, training
+      # everyone to ignore the one signal that matters. Once
+      # OTEL_EXPORTER_OTLP_ENDPOINT is set, a red run means something.
+      - if: vars.OTEL_EXPORTER_OTLP_ENDPOINT != ''
+        run: python3.14 scripts/plan_metrics.py --emit
+        env:
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
+          OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+          # The exporter retries internally with backoff on retryable errors
+          # (connection failures, 5xx), so a genuinely-unreachable collector
+          # would otherwise burn most of the job's wall clock before
+          # reporting anything. A bad key 401s immediately and is caught by
+          # the script's own preflight; this bounds the other case.
+          OTEL_EXPORTER_OTLP_TIMEOUT: '5'
+          GH_TOKEN: ${{ github.token }}
+      # The other half of that guard. A skipped step leaves an all-green run
+      # that emitted nothing, which is the same "green means nothing
+      # happened" shape the loud-failure design exists to avoid - just moved
+      # from the script into the workflow. So say it out loud with an
+      # annotation, and run the compute path anyway: it costs nothing, needs
+      # no credentials, and smoke-tests every git and gh calculation against
+      # real history on the same schedule.
+      - if: vars.OTEL_EXPORTER_OTLP_ENDPOINT == ''
+        run: |
+          echo "::warning::OTEL_EXPORTER_OTLP_ENDPOINT is unset - no spans emitted. See the prerequisites on issue #29."
+          python3.14 scripts/plan_metrics.py
+        env:
+          GH_TOKEN: ${{ github.token }}

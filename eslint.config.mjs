@@ -17,7 +17,13 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['node_modules', '.wrangler', 'dist'],
+    // `.claude/worktrees` holds git worktrees of this same repo, each with its
+    // own tsconfig.json. Without this, `projectService` finds two candidate
+    // TSConfigRootDirs and refuses to guess, so `lint:ts` fails for everyone
+    // with a worktree checked out - and the pre-push hook then dies before
+    // reaching the gates after it. Ignoring the path is the fix; setting
+    // `tsconfigRootDir` is not (see the note below on why it stays unset).
+    ignores: ['node_modules', '.wrangler', 'dist', '.claude/worktrees'],
   },
   {
     // Matches tsconfig.json's `include`. Nothing outside src/ is part of

@@ -17,6 +17,14 @@ wins and the issue is wrong.
 - `blocked` means waiting on an earlier stage gate or prerequisite, and the body names
   which. `deferred` means agreed but not now, and the body names the trigger to revisit.
   `free-tier` mirrors `REVIEW.md` pass 1.
+- `[gate]` has so far been a **title** convention, not a label: `[gate] Approve spec.md
+  for feature 001`, `[gate] Write plan.md for feature 001`. `gate:intent` is the first
+  actual label of its kind, on issues titled `[gate] Approve intent.md for feature NNN`.
+  Closed `COMPLETED` means the intent was accepted into Stage 2; closed `NOT_PLANNED`
+  means it was rejected; open means pending. **This issue is the accept/reject record the
+  intent survival-rate metric reads, so closing it by hand with the wrong reason corrupts
+  the metric** — the one exception to "do not close issues by hand" below, because here
+  the close reason is itself the record.
 - Do not restate an issue's status in prose in the markdown. Link to the issue list.
 
 ## Branch names

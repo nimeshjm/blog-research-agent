@@ -29,6 +29,41 @@ features/NNN-slug/
   to do. A build's task breakdown belongs in `plan.md`, not in issues. See
   [`CONVENTIONS.md`](../CONVENTIONS.md).
 
+## Measuring stage 1
+
+`scripts/plan_metrics.py` reads git and GitHub history and reports Stage 1 (Plan)
+against the playbook's two indicators: leading — lead time from a `feature:NNN` issue to
+a committed `intent.md` — and lagging — intent survival (accepted into Stage 2, rejected,
+or still open) plus how many times `intent.md` is edited after `spec.md` first lands.
+
+`t0` is the earliest `feature:NNN` issue's `createdAt`, so what this actually measures is
+work-item creation → committed intent, a durable, server-side **proxy** for the
+playbook's "first conversation", not that indicator itself. `--t0-from-sessions`
+sharpens it on the author's machine by reading `~/.claude/projects/<slug>/*.jsonl`, and
+degrades to the issue timestamp in CI. `sdlc.t0.source` records which one was used, so a
+board never mixes the two silently.
+
+**Feature 001 has no lead time.** Its artifacts all landed in one bootstrap commit and its
+issues were filed about a minute later, so 001 reports `unmeasurable` — never `0`. A
+0-hour lead time on a board would read as a triumph. Real lead-time numbers start at
+feature 002.
+
+Its **churn** is a different matter and is reported. Sharing a first commit withholds the
+lead time, not the edit count: `spec.md`'s timestamp is real either way, and an `intent.md`
+commit after it is real rework. 001 already has one, which is the number the board's
+post-spec-churn trigger watches.
+
+Run `npm run plan:metrics` to see it locally; the daily `sdlc-metrics.yml` workflow is
+what publishes it.
+
+Renumbering a feature directory is safe, with one caveat worth knowing: the extractor
+follows renames at a deliberately loose similarity threshold, because at git's default
+50 % a renumbering that *also* rewrote the file would look like the creation commit and
+understate lead time. If it still cannot pair the two, it reports
+`sdlc.intent.t1_source = "follow-unresolved"` and declines to emit a lead time rather
+than emitting a wrong one. So renumber freely; just avoid rewriting `intent.md` wholesale
+in the same commit.
+
 ## Index
 
 | # | Feature | Stage |

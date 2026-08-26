@@ -19,12 +19,23 @@ npm run test:ast           # proves each ast-grep rule fires (a dead rule report
 npm run lint:ts            # eslint: type-aware rules for pass 3's unhandled-rejection bullet - see REVIEW.md
 npm run review:checks      # the checks no off-the-shelf tool can express - see REVIEW.md
 npm run test:checks        # mutation table proving each of those fires
+npm run plan:metrics       # SDLC stage 1 indicators from git+GitHub - see features/README.md
+npm run test:plan-metrics  # mutation table proving each plan_metrics guard fires
 npm run hooks:install      # git config core.hooksPath .githooks (all of the above on push)
 ```
 
 `pnpm` is not installed on this machine; use `npm`. A fresh git worktree has no
 `node_modules`, and the eslint rows of `test:checks` need one — install, or symlink the
 main checkout's.
+
+`plan:metrics` and `test:plan-metrics` invoke **`python3.14` by name**, not bare `python3`.
+That is deliberate: bare `python3` is 3.9.6 on this machine, and making it 3.14 would mean
+reordering `PATH`, which silently stops the `claude-otel-hooks` hooks exporting until
+`opentelemetry` is reinstalled under the new interpreter. Pinning the name costs a two-file
+edit (`package.json` and `.github/workflows/sdlc-metrics.yml`) whenever the floor moves, and
+`plan_metrics.py` carries its own `sys.version_info` guard so a mismatch fails loudly rather
+than subtly. Only `--emit` needs `pip install opentelemetry-sdk
+opentelemetry-exporter-otlp-proto-http`; the default path and the tests are stdlib-only.
 
 `npm run dev` requires Cloudflare auth (`npx wrangler login`, interactive): the `AI`
 binding has no local simulation and runs in `remote` mode, so wrangler opens a remote
@@ -84,6 +95,14 @@ open pull request → record run.
 - No prompt, article, completion, URL or error message in an attribute. Constructor name
   only, via `error.type`.
 - Roughly eight attributes per span. Attributes are CPU against the 10 ms step budget.
+- **The `agent.*` / `gen_ai.*` attribute rule above governs the Worker service only.**
+  CI-emitted SDLC telemetry (`scripts/plan_metrics.py`) uses the `sdlc.*` namespace and
+  its own `service.name` (`blog-research-agent-sdlc`), a separate dataset.
+  `span-attributes-allowlisted` reads its allowlist out of `src/lib/trace.ts` and only
+  walks `src/**`, so it does not fire on `sdlc.*` — this is the carve-out, not a gap.
+- `scripts/otel_span.py` is vendored verbatim from `nimeshjm/claude-otel-hooks`
+  (`.claude/hooks/otel_span.py`) at commit `b5f8ffb105cdd8e03d578fec40f08c958cee55c6` and
+  must not be edited. Drift is the cost of vendoring; the pinned SHA is how you notice.
 
 ## Conventions
 

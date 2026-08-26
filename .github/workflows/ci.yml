@@ -39,6 +39,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
       - run: npm run test:checks
+      # The SDLC metrics extractor's own mutation table. Its default and test
+      # paths are stdlib-only - only `--emit` needs the opentelemetry packages,
+      # and only sdlc-metrics.yml runs that - so this stays secret-free and
+      # needs no pip install. Runs here as well as in .githooks/pre-push for
+      # the same reason every other gate does: the hook is skippable.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - run: npm run test:plan-metrics
       # Validates wrangler.toml and every binding without contacting Cloudflare.
       # Verified to need no credentials, so this workflow holds no repository secrets -
       # only the automatic, read-only-on-fork-PRs github.token above. On a fork PR that
