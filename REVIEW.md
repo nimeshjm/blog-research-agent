@@ -112,13 +112,13 @@ The failure mode this repo is most exposed to. Reject on:
   `scheduled-stays-thin` carry `severity: error` and fail CI, matching their Important
   passes (3, 2, and 1). `review:checks` likewise never fails on a Nit.
 
-There is a real unresolved tension here, worth its own issue rather than papering over:
-CLAUDE.md states both seams as hard architectural rules — "Only `src/lib/llm.ts` may
-call `env.AI.run`" and "Only `src/lib/trace.ts` may import `tracing` … This includes
-`src/index.ts`" — yet both issue #25 and this file file `ai-run-only-in-llm` and
-`tracing-import-seam` under pass 5 / Nit. Nothing here is internally inconsistent, so
-both stay `warning` for now, but whether the pass filing or the severity is the one
-that's wrong is an open question.
+One real tension is open rather than papered over: CLAUDE.md states both seams as hard
+architectural rules — "Only `src/lib/llm.ts` may call `env.AI.run`" and "Only
+`src/lib/trace.ts` may import `tracing` … This includes `src/index.ts`" — yet both issue
+#25 and this file file `ai-run-only-in-llm` and `tracing-import-seam` under pass 5 / Nit.
+Nothing here is internally inconsistent, so both stay `warning` until
+[#28](https://github.com/nimeshjm/blog-research-agent/issues/28) decides whether the pass
+filing or the severity is the one that's wrong.
 
 ## CONVENTIONS-derived checks (not REVIEW.md bullets)
 
