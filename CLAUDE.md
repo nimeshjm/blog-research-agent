@@ -14,6 +14,8 @@ npm run deploy             # wrangler deploy
 npm run migrate:local      # only after the schema in spec.md is approved; no
                            # migrations/ directory exists yet, so this fails today
 npx wrangler deploy --dry-run   # validate bindings without deploying
+npm run review:checks      # the decidable half of REVIEW.md, mechanically - see REVIEW.md
+npm run hooks:install       # git config core.hooksPath .githooks (typecheck + review:checks on push)
 ```
 
 `pnpm` is not installed on this machine; use `npm`.

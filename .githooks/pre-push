@@ -1,0 +1,13 @@
+#!/bin/sh
+# Installed via `npm run hooks:install` (git config core.hooksPath .githooks).
+# See issue #25 / REVIEW.md's "Mechanical checks" preamble.
+#
+# Deliberately does not read stdin: git feeds a pre-push hook a line per ref
+# being pushed on stdin, and a hook that doesn't consume it can hang the
+# push waiting for EOF. Neither check here needs to know which refs are
+# being pushed, so stdin is left alone entirely.
+set -e
+
+echo "pre-push: npm run typecheck && npm run review:checks"
+npm run typecheck
+npm run review:checks

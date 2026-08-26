@@ -23,6 +23,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run review:checks
       # Validates wrangler.toml and every binding without contacting Cloudflare.
       # Verified to need no credentials, which is why this workflow holds no secrets
       # and pull requests from forks run it in full.
