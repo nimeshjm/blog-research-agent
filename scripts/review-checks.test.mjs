@@ -13,6 +13,11 @@
 //
 // Row 0 is the empty mutation: prove the harness itself reports all-green
 // before trusting any row that claims a specific check fails.
+//
+// This table covers exactly the 10 checks review-checks.mjs still implements.
+// The other 8 (moved to ast-grep, or dropped for `no-credential-literals` -
+// see the comment in review-checks.mjs) have no rows here any more; their
+// mutation coverage now lives in rule-tests/*.yml.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -50,8 +55,19 @@ function mustReplace(dir, rel, oldStr, newStr, { count = 1 } = {}) {
   writeFile(dir, rel, text.split(oldStr).join(newStr));
 }
 
-function runChecker(root, extraArgs = []) {
-  const r = spawnSync('node', [CHECKER, '--root', root, '--json', ...extraArgs], { encoding: 'utf8' });
+function git(dir, args) {
+  const r = spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+  if (r.status !== 0) {
+    throw new Error(`git ${args.join(' ')} failed in ${dir}: ${r.stderr}`);
+  }
+  return r.stdout;
+}
+
+function runChecker(root, extraArgs = [], extraEnv = {}) {
+  const r = spawnSync('node', [CHECKER, '--root', root, '--json', ...extraArgs], {
+    encoding: 'utf8',
+    env: { ...process.env, ...extraEnv },
+  });
   if (r.status === null) {
     throw new Error(`checker did not exit cleanly: ${r.error ?? r.stderr}`);
   }
@@ -75,38 +91,89 @@ const rows = [
     mutate() {},
   },
   {
-    name: "add env.AI.run(...) to src/workflow.ts",
-    expectFail: ['ai-run-only-in-llm'],
+    name: 'strip the break from the summarize loop',
+    expectFail: ['inference-loop-has-break'],
     mutate(dir) {
       mustReplace(
         dir,
         'src/workflow.ts',
-        "async function loadSources(_env: Env): Promise<Source[]> {",
-        "async function loadSources(_env: Env): Promise<Source[]> {\n  void _env.AI.run('x' as never, {} as never);",
+        '      if (neuronsSpent + SUMMARY_NEURON_ESTIMATE > budget - SYNTHESIS_NEURON_RESERVE) break;\n\n',
+        '',
       );
     },
   },
   {
-    name: "import { tracing } from 'cloudflare:workers' in src/index.ts",
-    expectFail: ['tracing-import-seam'],
+    name: 'force-track .dev.vars in the git index',
+    expectFail: ['dev-vars-untracked'],
+    mutate(dir) {
+      // .dev.vars already exists on disk (copied untracked, same as on the real
+      // repo) - force it into the index the way a slip past .gitignore would.
+      git(dir, ['add', '-f', '.dev.vars']);
+    },
+  },
+  {
+    name: 'GITHUB_TOKEN = "ghp_..." under [vars]',
+    expectFail: ['wrangler-vars-are-not-secrets'],
     mutate(dir) {
       mustReplace(
         dir,
-        'src/index.ts',
-        "import { ATTR_INSTANCE_ID, traced } from './lib/trace';",
-        "import { ATTR_INSTANCE_ID, traced } from './lib/trace';\nimport { tracing } from 'cloudflare:workers';\nvoid tracing;",
+        'wrangler.toml',
+        'NEURON_BUDGET_PER_RUN = "6000"',
+        'NEURON_BUDGET_PER_RUN = "6000"\nGITHUB_TOKEN = "' + 'gh' + 'p_' + 'A'.repeat(36) + '"',
       );
     },
   },
   {
-    name: "span.setAttribute(ATTR_TOPIC_ID, err.message)",
+    name: 'span.setAttribute(ATTR_TOPIC_ID, err.message)',
     expectFail: ['span-attributes-allowlisted'],
     mutate(dir) {
       mustReplace(
         dir,
         'src/workflow.ts',
-        "      if (result !== null) span.setAttribute(ATTR_TOPIC_ID, result.id);",
+        '      if (result !== null) span.setAttribute(ATTR_TOPIC_ID, result.id);',
         "      if (result !== null) span.setAttribute(ATTR_TOPIC_ID, result.id);\n      try { throw new Error('x'); } catch (err) { span.setAttribute(ATTR_TOPIC_ID, (err as Error).message); }",
+      );
+    },
+  },
+  {
+    name: 'spread-only attrs literal ({ ...base }) - nothing flagged',
+    expectFail: [],
+    mutate(dir) {
+      mustReplace(
+        dir,
+        'src/workflow.ts',
+        "    const topic = await traceStep('select-topic', {}, async (span) => {",
+        "    await traced('spread-only-mutation-probe', { ...({ x: 1 }) }, async () => {});\n    const topic = await traceStep('select-topic', {}, async (span) => {",
+      );
+      // `traced` isn't imported in workflow.ts today - add it so the file still parses as intended.
+      mustReplace(
+        dir,
+        'src/workflow.ts',
+        "import {\n  ATTR_NEURONS_BUDGET,",
+        "import {\n  ATTR_NEURONS_BUDGET,\n  traced,",
+      );
+    },
+  },
+  {
+    // Row 5 alone can't tell "the spread was skipped" apart from "the call
+    // was never matched in the first place" - both look like zero findings.
+    // Add a forbidden property as the spread's sibling in the same object
+    // literal: if the classifier recognized the call at all, this must still
+    // be flagged even though the spread next to it is not.
+    name: 'spread + a forbidden sibling property in the same attrs literal - only the sibling is flagged',
+    expectFail: ['span-attributes-allowlisted'],
+    mutate(dir) {
+      mustReplace(
+        dir,
+        'src/workflow.ts',
+        "    const topic = await traceStep('select-topic', {}, async (span) => {",
+        "    await traced('spread-plus-forbidden-probe', { ...({ x: 1 }), [ATTR_TOPIC_ID]: ({ message: 'x' }).message }, async () => {});\n    const topic = await traceStep('select-topic', {}, async (span) => {",
+      );
+      mustReplace(
+        dir,
+        'src/workflow.ts',
+        "import {\n  ATTR_NEURONS_BUDGET,",
+        "import {\n  ATTR_NEURONS_BUDGET,\n  traced,",
       );
     },
   },
@@ -135,51 +202,51 @@ const rows = [
     },
   },
   {
-    name: "hardcode '@cf/openai/gpt-oss-120b' in llm.ts",
-    expectFail: ['no-hardcoded-model-id'],
-    mutate(dir) {
-      mustReplace(
-        dir,
-        'src/lib/llm.ts',
-        "const DEFAULT_MAX_TOKENS = 2048;",
-        "const DEFAULT_MAX_TOKENS = 2048;\nconst FALLBACK_MODEL_ID = '@cf/openai/gpt-oss-120b';\nvoid FALLBACK_MODEL_ID;",
-      );
-    },
-  },
-  {
-    name: 'GITHUB_TOKEN = "ghp_..." under [vars]',
-    expectFail: ['wrangler-vars-are-not-secrets', 'no-credential-literals'],
-    mutate(dir) {
-      mustReplace(
-        dir,
-        'wrangler.toml',
-        'NEURON_BUDGET_PER_RUN = "6000"',
-        'NEURON_BUDGET_PER_RUN = "6000"\nGITHUB_TOKEN = "' + 'gh' + 'p_' + 'A'.repeat(36) + '"',
-      );
-    },
-  },
-  {
-    name: "a bare step.do('x', ...) in workflow.ts",
-    expectFail: ['no-bare-step-do'],
+    name: 'BLOG_BASE_BRANCH read outside a `base:` property',
+    expectFail: ['base-branch-not-a-write-target'],
     mutate(dir) {
       mustReplace(
         dir,
         'src/workflow.ts',
-        '  async run(event: WorkflowEvent<ResearchParams>, step: WorkflowStep): Promise<void> {',
-        '  async run(event: WorkflowEvent<ResearchParams>, step: WorkflowStep): Promise<void> {\n    await step.do(\'x\', async () => {});',
+        '    const budget = Number(this.env.NEURON_BUDGET_PER_RUN);',
+        '    const budget = Number(this.env.NEURON_BUDGET_PER_RUN);\n    void this.env.BLOG_BASE_BRANCH;',
       );
     },
   },
   {
-    name: 'strip the break from the summarize loop',
-    expectFail: ['inference-loop-has-break'],
+    name: 'NEURON_BUDGET_PER_RUN no longer read from `*.env`',
+    expectFail: ['budget-read-from-env'],
     mutate(dir) {
       mustReplace(
         dir,
         'src/workflow.ts',
-        '      if (neuronsSpent + SUMMARY_NEURON_ESTIMATE > budget - SYNTHESIS_NEURON_RESERVE) break;\n\n',
-        '',
+        'Number(this.env.NEURON_BUDGET_PER_RUN)',
+        'Number(6000)',
       );
+    },
+  },
+  {
+    name: "branch renamed off an issue-numbered name",
+    expectFail: ['branch-carries-issue'],
+    mutate(dir) {
+      git(dir, ['checkout', '-b', 'not-an-issue-branch']);
+    },
+  },
+  {
+    name: 'PR body empty (gh stubbed so no live network/API call is made)',
+    expectFail: ['pr-body-not-empty'],
+    extraArgs: ['--pr', '999999'],
+    mutate(dir) {
+      const binDir = path.join(dir, '.fake-bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      // A stub `gh` on PATH: always answers `pulls/<N> --jq .body` with an
+      // empty body, so the row is deterministic and needs no network access
+      // or real PR to exist.
+      fs.writeFileSync(path.join(binDir, 'gh'), '#!/bin/sh\nprintf ""\nexit 0\n');
+      fs.chmodSync(path.join(binDir, 'gh'), 0o755);
+    },
+    extraEnv(dir) {
+      return { PATH: `${path.join(dir, '.fake-bin')}${path.delimiter}${process.env.PATH}` };
     },
   },
   {
@@ -196,52 +263,19 @@ const rows = [
     name: 'rename the tracerFor seam function (matcher stops resolving step-name calls)',
     expectFail: ['step-names-unique', 'step-names-static'],
     expectPassStillGreen: ['span-attributes-allowlisted'], // 12 non-tracerFor-bound sites remain, still >= 8
+    // The rename doesn't create a duplicate or a bad template - it makes the
+    // matcher stop resolving step-name calls at all (0 calls found), which
+    // would otherwise mean an *empty* finding set and a false PASS. The FAIL
+    // here must be the sentinel firing, not some other coincidental finding -
+    // assert the actual message, not just the status.
+    expectFindingMatch: {
+      'step-names-unique': /sentinel: only \d+ step-name calls resolved/,
+      'step-names-static': /sentinel: only \d+ step-name calls resolved/,
+    },
     mutate(dir) {
       mustReplace(dir, 'src/lib/trace.ts', 'export function tracerFor(', 'export function tracerForRenamed(');
       mustReplace(dir, 'src/workflow.ts', 'tracerFor,\n} from', 'tracerForRenamed,\n} from');
       mustReplace(dir, 'src/workflow.ts', 'tracerFor(step, event)', 'tracerForRenamed(step, event)');
-    },
-  },
-  {
-    name: 'spread-only attrs literal ({ ...base }) - nothing flagged',
-    expectFail: [],
-    mutate(dir) {
-      mustReplace(
-        dir,
-        'src/workflow.ts',
-        "    const topic = await traceStep('select-topic', {}, async (span) => {",
-        "    await traced('spread-only-mutation-probe', { ...({ x: 1 }) }, async () => {});\n    const topic = await traceStep('select-topic', {}, async (span) => {",
-      );
-      // `traced` isn't imported in workflow.ts today - add it so the file still parses as intended.
-      mustReplace(
-        dir,
-        'src/workflow.ts',
-        "import {\n  ATTR_NEURONS_BUDGET,",
-        "import {\n  ATTR_NEURONS_BUDGET,\n  traced,",
-      );
-    },
-  },
-  {
-    // Row 11 alone can't tell "the spread was skipped" apart from "the call
-    // was never matched in the first place" - both look like zero findings.
-    // Add a forbidden property as the spread's sibling in the same object
-    // literal: if the classifier recognized the call at all, this must still
-    // be flagged even though the spread next to it is not.
-    name: 'spread + a forbidden sibling property in the same attrs literal - only the sibling is flagged',
-    expectFail: ['span-attributes-allowlisted'],
-    mutate(dir) {
-      mustReplace(
-        dir,
-        'src/workflow.ts',
-        "    const topic = await traceStep('select-topic', {}, async (span) => {",
-        "    await traced('spread-plus-forbidden-probe', { ...({ x: 1 }), [ATTR_TOPIC_ID]: ({ message: 'x' }).message }, async () => {});\n    const topic = await traceStep('select-topic', {}, async (span) => {",
-      );
-      mustReplace(
-        dir,
-        'src/workflow.ts',
-        "import {\n  ATTR_NEURONS_BUDGET,",
-        "import {\n  ATTR_NEURONS_BUDGET,\n  traced,",
-      );
     },
   },
 ];
@@ -271,7 +305,9 @@ function run() {
       continue;
     }
 
-    const result = runChecker(dir);
+    const extraArgs = row.extraArgs ?? [];
+    const extraEnv = row.extraEnv ? row.extraEnv(dir) : {};
+    const result = runChecker(dir, extraArgs, extraEnv);
     const statuses = statusMap(result);
 
     let rowOk = true;
@@ -282,6 +318,17 @@ function run() {
       if (!r || r.status !== 'fail') {
         rowOk = false;
         notes.push(`expected '${id}' to FAIL, got '${r?.status}'`);
+        continue;
+      }
+      const mustMatch = row.expectFindingMatch?.[id];
+      if (mustMatch) {
+        const hit = r.findings.some((f) => mustMatch.test(f.message));
+        if (!hit) {
+          rowOk = false;
+          notes.push(`expected '${id}' finding to match ${mustMatch} - got ${JSON.stringify(r.findings.map((f) => f.message))}`);
+          continue;
+        }
+        notes.push(`OK: '${id}' failed with a finding matching ${mustMatch}`);
       } else {
         notes.push(`OK: '${id}' failed as expected (${r.findings.length} finding(s))`);
       }

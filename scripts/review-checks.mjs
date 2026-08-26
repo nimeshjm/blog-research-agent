@@ -3,6 +3,25 @@
 //
 // Usage: node scripts/review-checks.mjs [--root DIR] [--pr N] [--json]
 //
+// This script used to implement all 18 mechanical checks with a hand-rolled
+// `ts.createSourceFile` walker. As of the ast-grep migration (see
+// `sgconfig.yml` / `rules/*.yml`), everything an off-the-shelf structural
+// matcher can express moved there instead:
+//
+//   ai-run-only-in-llm, tracing-import-seam, no-bare-step-do,
+//   no-hardcoded-model-id, no-hardcoded-urls, no-secret-in-console,
+//   scheduled-stays-thin
+//
+// `no-credential-literals` was deleted outright, not moved: GitHub secret
+// scanning push protection is already enabled on this public repo and
+// blocks pushes carrying credential-shaped literals server-side, which is
+// strictly stronger than a local regex re-implementing the same idea.
+//
+// What's left here is the irreducible remainder: checks that need
+// cross-file aggregation, callee resolution through a runtime-bound seam,
+// a dynamic read out of another source file, git plumbing, or GitHub API
+// calls - none of which a structural/syntactic matcher alone can do.
+//
 // Zero new dependencies: `typescript` is an existing devDep, used only for
 // `ts.createSourceFile` (syntactic parsing - no type-checker, no program).
 //
@@ -10,9 +29,7 @@
 // findings of { file, line, message }. Findings are grouped by REVIEW.md
 // pass for humans; --json emits a machine-readable summary for
 // scripts/review-checks.test.mjs. Exit code is 1 iff any `Important`
-// severity check has a non-empty, non-skipped finding set. `Nit` findings
-// are reported but never change the exit code - this is why review:checks
-// can be wired into CI without pass 5 ever blocking a merge.
+// severity check has a non-empty, non-skipped finding set.
 import ts from 'typescript';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -128,24 +145,6 @@ function isPropCall(node, objName, propName) {
   return false;
 }
 
-/** Collects every string-literal-like piece of text in a source file, AST only (no comments). */
-function allStringPieces(sourceFile) {
-  const pieces = [];
-  function visit(node) {
-    if (ts.isStringLiteralLike(node)) {
-      pieces.push({ text: node.text, node });
-    } else if (ts.isTemplateExpression(node)) {
-      pieces.push({ text: node.head.text, node: node.head });
-      for (const span of node.templateSpans) {
-        pieces.push({ text: span.literal.text, node: span.literal });
-      }
-    }
-    ts.forEachChild(node, visit);
-  }
-  visit(sourceFile);
-  return pieces;
-}
-
 /**
  * Identifiers bound as `const X = tracerFor(...)`, anywhere under `src/`.
  * Deliberately global rather than per-file: "any identifier initialized
@@ -244,56 +243,6 @@ const checks = [];
 // --- Pass 1: free-tier (the decidable slice) --------------------------------
 
 checks.push({
-  id: 'scheduled-stays-thin',
-  pass: 1,
-  severity: 'Important',
-  run(ctx) {
-    const rel = 'src/index.ts';
-    const sf = ctx.getSourceFile(rel);
-    if (!sf) return [{ file: rel, line: 0, message: `${rel} not found - nothing to check` }];
-
-    let scheduledBody = null;
-    (function find(node) {
-      if (scheduledBody) return;
-      if (
-        (ts.isMethodDeclaration(node) || ts.isPropertyAssignment(node)) &&
-        node.name &&
-        ts.isIdentifier(node.name) &&
-        node.name.text === 'scheduled'
-      ) {
-        const body = ts.isMethodDeclaration(node) ? node.body : node.initializer;
-        if (body) scheduledBody = body;
-        return;
-      }
-      ts.forEachChild(node, find);
-    })(sf);
-
-    if (!scheduledBody) {
-      // Same trap as a vacuous step-name scan: if `scheduled` can no longer
-      // be found, that is itself something to report, not a silent pass.
-      return [{ file: rel, line: 0, message: 'no `scheduled` method found - check did not run' }];
-    }
-
-    const findings = [];
-    (function visit(node) {
-      if (isPropCall(node, 'step', 'do')) {
-        findings.push({ file: rel, line: line(sf, node), message: '`step.do` inside `scheduled` - orchestration belongs in the Workflow' });
-      } else if (isPropCall(node, 'AI', 'run')) {
-        findings.push({ file: rel, line: line(sf, node), message: '`AI.run` inside `scheduled` - inference belongs in a Workflow step' });
-      } else if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'fetch') {
-        findings.push({ file: rel, line: line(sf, node), message: '`fetch(` inside `scheduled` - subrequests belong in a Workflow step' });
-      } else if (isPropCall(node, 'DB', 'prepare')) {
-        findings.push({ file: rel, line: line(sf, node), message: '`DB.prepare` inside `scheduled` - D1 access belongs in a Workflow step' });
-      } else if (isLoop(node)) {
-        findings.push({ file: rel, line: line(sf, node), message: 'loop inside `scheduled` - iteration belongs in the Workflow' });
-      }
-      ts.forEachChild(node, visit);
-    })(scheduledBody);
-    return findings;
-  },
-});
-
-checks.push({
   id: 'inference-loop-has-break',
   pass: 1,
   severity: 'Important',
@@ -355,6 +304,13 @@ checks.push({
 });
 
 // --- Pass 2: secrets ---------------------------------------------------------
+//
+// `no-credential-literals` (a local regex over every tracked file, looking
+// for credential-shaped strings) was deleted here rather than moved to
+// ast-grep: GitHub secret scanning push protection is already enabled on
+// this public repo and rejects a push carrying a credential server-side,
+// which is strictly stronger than either implementation. `no-secret-in-console`
+// moved to an ast-grep rule instead - it's a plain structural match.
 
 checks.push({
   id: 'dev-vars-untracked',
@@ -399,42 +355,6 @@ checks.push({
   },
 });
 
-const CREDENTIAL_PATTERNS = [
-  { re: /ghp_[A-Za-z0-9]{36,}/, message: 'looks like a GitHub PAT (ghp_)' },
-  { re: /github_pat_[A-Za-z0-9_]{22,}/, message: 'looks like a GitHub fine-grained PAT' },
-  { re: /gh[osur]_[A-Za-z0-9]{36,}/, message: 'looks like a GitHub token' },
-  { re: /sk-[A-Za-z0-9]{20,}/, message: 'looks like an API secret key (sk-...)' },
-  { re: /AKIA[0-9A-Z]{16}/, message: 'looks like an AWS access key id' },
-  { re: /-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----/, message: 'PEM private key header' },
-  {
-    re: /(token|secret|password|api[_-]?key)\s*[:=]\s*['"][\w-]{20,}['"]/i,
-    message: 'a token/secret/password/api-key literal assignment',
-  },
-];
-
-checks.push({
-  id: 'no-credential-literals',
-  pass: 2,
-  severity: 'Important',
-  run(ctx) {
-    const findings = [];
-    for (const rel of ctx.files) {
-      if (rel === 'package-lock.json') continue;
-      const text = ctx.readTextFile(rel);
-      if (text === null) continue; // binary or unreadable
-      const lines = text.split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        for (const { re, message } of CREDENTIAL_PATTERNS) {
-          if (re.test(lines[i])) {
-            findings.push({ file: rel, line: i + 1, message: `credential-shaped literal: ${message}` });
-          }
-        }
-      }
-    }
-    return findings;
-  },
-});
-
 checks.push({
   id: 'wrangler-vars-are-not-secrets',
   pass: 2,
@@ -462,55 +382,6 @@ checks.push({
       if (/(TOKEN|SECRET|KEY|PASSWORD|PAT|CREDENTIAL)$/.test(key)) {
         findings.push({ file: rel, line: i + 1, message: `[vars].${key} looks like a secret name - secrets go via \`wrangler secret put\`` });
       }
-    }
-    return findings;
-  },
-});
-
-checks.push({
-  id: 'no-secret-in-console',
-  pass: 2,
-  severity: 'Important',
-  run(ctx) {
-    const findings = [];
-    for (const rel of ctx.srcFiles) {
-      const sf = ctx.getSourceFile(rel);
-      function refsSecret(node) {
-        let found = false;
-        function visit(n) {
-          if (found) return;
-          if (ts.isIdentifier(n) && /token|secret|password|apiKey/i.test(n.text)) {
-            found = true;
-            return;
-          }
-          if (
-            (ts.isPropertyAccessExpression(n) && /token|secret|password|apiKey/i.test(n.name.text)) ||
-            (ts.isStringLiteralLike(n) && /token|secret|password|apiKey/i.test(n.text))
-          ) {
-            found = true;
-            return;
-          }
-          ts.forEachChild(n, visit);
-        }
-        visit(node);
-        return found;
-      }
-      (function visit(node) {
-        if (
-          ts.isCallExpression(node) &&
-          ts.isPropertyAccessExpression(node.expression) &&
-          ts.isIdentifier(node.expression.expression) &&
-          node.expression.expression.text === 'console'
-        ) {
-          for (const arg of node.arguments) {
-            if (refsSecret(arg)) {
-              findings.push({ file: rel, line: line(sf, node), message: 'console call argument references token/secret/password/apiKey' });
-              break;
-            }
-          }
-        }
-        ts.forEachChild(node, visit);
-      })(sf);
     }
     return findings;
   },
@@ -735,26 +606,6 @@ checks.push({
   },
 });
 
-checks.push({
-  id: 'no-bare-step-do',
-  pass: 3,
-  severity: 'Important',
-  run(ctx) {
-    const findings = [];
-    for (const rel of ctx.srcFiles) {
-      if (rel === 'src/lib/trace.ts') continue;
-      const sf = ctx.getSourceFile(rel);
-      (function visit(node) {
-        if (isPropCall(node, 'step', 'do')) {
-          findings.push({ file: rel, line: line(sf, node), message: 'bare `step.do(` outside the trace.ts seam' });
-        }
-        ts.forEachChild(node, visit);
-      })(sf);
-    }
-    return findings;
-  },
-});
-
 // --- Pass 4: spec conformance (the decidable slice) --------------------------
 
 checks.push({
@@ -820,95 +671,7 @@ checks.push({
   },
 });
 
-// --- Pass 5: reuse (fully decidable, all AST) --------------------------------
-
-checks.push({
-  id: 'ai-run-only-in-llm',
-  pass: 5,
-  severity: 'Nit',
-  run(ctx) {
-    const findings = [];
-    for (const rel of ctx.srcFiles) {
-      if (rel === 'src/lib/llm.ts') continue;
-      const sf = ctx.getSourceFile(rel);
-      (function visit(node) {
-        if (isPropCall(node, 'AI', 'run')) {
-          findings.push({ file: rel, line: line(sf, node), message: '.AI.run( outside src/lib/llm.ts' });
-        }
-        ts.forEachChild(node, visit);
-      })(sf);
-    }
-    return findings;
-  },
-});
-
-checks.push({
-  id: 'tracing-import-seam',
-  pass: 5,
-  severity: 'Nit',
-  run(ctx) {
-    const findings = [];
-    for (const rel of ctx.srcFiles) {
-      if (rel === 'src/lib/trace.ts') continue;
-      const sf = ctx.getSourceFile(rel);
-      (function visit(node) {
-        if (
-          ts.isImportDeclaration(node) &&
-          ts.isStringLiteral(node.moduleSpecifier) &&
-          node.moduleSpecifier.text === 'cloudflare:workers' &&
-          node.importClause &&
-          node.importClause.namedBindings &&
-          ts.isNamedImports(node.importClause.namedBindings)
-        ) {
-          for (const spec of node.importClause.namedBindings.elements) {
-            const importedName = (spec.propertyName ?? spec.name).text;
-            if (importedName === 'tracing' && !spec.isTypeOnly) {
-              findings.push({ file: rel, line: line(sf, node), message: "named import of `tracing` from cloudflare:workers outside trace.ts" });
-            }
-          }
-        }
-        ts.forEachChild(node, visit);
-      })(sf);
-    }
-    return findings;
-  },
-});
-
-checks.push({
-  id: 'no-hardcoded-model-id',
-  pass: 5,
-  severity: 'Nit',
-  run(ctx) {
-    const findings = [];
-    for (const rel of ctx.srcFiles) {
-      const sf = ctx.getSourceFile(rel);
-      for (const { text, node } of allStringPieces(sf)) {
-        if (text.includes('@cf/')) {
-          findings.push({ file: rel, line: line(sf, node), message: `hardcoded model id literal ('${text}') - read from env.LLM_MODEL` });
-        }
-      }
-    }
-    return findings;
-  },
-});
-
-checks.push({
-  id: 'no-hardcoded-urls',
-  pass: 5,
-  severity: 'Nit',
-  run(ctx) {
-    const findings = [];
-    for (const rel of ctx.srcFiles) {
-      const sf = ctx.getSourceFile(rel);
-      for (const { text, node } of allStringPieces(sf)) {
-        if (/https?:\/\//.test(text)) {
-          findings.push({ file: rel, line: line(sf, node), message: `hardcoded URL literal ('${text}') - read from a wrangler.toml var` });
-        }
-      }
-    }
-    return findings;
-  },
-});
+// --- Pass 5: reuse (the decidable slice) -------------------------------------
 
 checks.push({
   id: 'budget-read-from-env',
@@ -1034,7 +797,7 @@ function buildContext(root, pr) {
     })(traceSf);
   }
 
-  return { root, files, srcFiles, readTextFile, getSourceFile, tracerBoundNames, attrConstantNames, pr };
+  return { root, srcFiles, readTextFile, getSourceFile, tracerBoundNames, attrConstantNames, pr };
 }
 
 const PASS_TITLES = {

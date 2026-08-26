@@ -1,0 +1,14 @@
+id: no-hardcoded-model-id
+snapshots:
+  const model = "@cf/openai/gpt-oss-120b";:
+    labels:
+    - source: '"@cf/openai/gpt-oss-120b"'
+      style: primary
+      start: 14
+      end: 39
+  env.AI.run("@cf/meta/llama", { messages });:
+    labels:
+    - source: '"@cf/meta/llama"'
+      style: primary
+      start: 11
+      end: 27

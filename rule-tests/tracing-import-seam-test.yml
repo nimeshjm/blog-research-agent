@@ -1,0 +1,8 @@
+id: tracing-import-seam
+valid:
+  - import { type tracing } from 'cloudflare:workers';
+  - import { WorkflowStep } from 'cloudflare:workers';
+  - import { tracing } from 'node:other';
+invalid:
+  - import { tracing } from 'cloudflare:workers';
+  - import { WorkflowStep, tracing } from 'cloudflare:workers';

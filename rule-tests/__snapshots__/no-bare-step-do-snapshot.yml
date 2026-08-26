@@ -1,0 +1,14 @@
+id: no-bare-step-do
+snapshots:
+  await step.do(name, fn);:
+    labels:
+    - source: step.do(name, fn)
+      style: primary
+      start: 6
+      end: 23
+  step.do('fetch-feed', async () => { await fetchFeed(); });:
+    labels:
+    - source: step.do('fetch-feed', async () => { await fetchFeed(); })
+      style: primary
+      start: 0
+      end: 57

@@ -1,0 +1,8 @@
+id: ai-run-only-in-llm
+valid:
+  - env.OTHER.run(prompt)
+  - notAI.run(prompt)
+  - AI.run(prompt)
+invalid:
+  - env.AI.run(prompt)
+  - const result = await env.AI.run(model, { messages });

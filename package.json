@@ -11,9 +11,12 @@
     "migrate:remote": "wrangler d1 migrations apply blog_research --remote",
     "review:checks": "node scripts/review-checks.mjs",
     "test:checks": "node scripts/review-checks.test.mjs",
+    "lint:ast": "ast-grep scan",
+    "test:ast": "ast-grep test",
     "hooks:install": "git config core.hooksPath .githooks"
   },
   "devDependencies": {
+    "@ast-grep/cli": "^0.45.2",
     "@cloudflare/workers-types": "^5.20260820.1",
     "typescript": "^5.7.3",
     "wrangler": "^4.125.0"

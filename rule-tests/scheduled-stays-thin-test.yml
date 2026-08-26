@@ -1,0 +1,47 @@
+id: scheduled-stays-thin
+valid:
+  - |
+    export default {
+      async scheduled(controller, env, _ctx) {
+        await traced('x', {}, async (span) => {
+          await env.RESEARCH_WORKFLOW.create({});
+        });
+      },
+    };
+invalid:
+  - |
+    export default {
+      async scheduled(controller, env, _ctx) {
+        step.do('x', async () => {});
+      },
+    };
+  - |
+    export default {
+      async scheduled(controller, env, _ctx) {
+        await env.AI.run(model, {});
+      },
+    };
+  - |
+    export default {
+      async scheduled(controller, env, _ctx) {
+        await fetch('https://example.com');
+      },
+    };
+  - |
+    export default {
+      async scheduled(controller, env, _ctx) {
+        env.DB.prepare('select 1');
+      },
+    };
+  - |
+    export default {
+      async scheduled(controller, env, _ctx) {
+        for (let i = 0; i < 3; i++) { doThing(i); }
+      },
+    };
+  - |
+    export default {
+      async scheduled(controller, env, _ctx) {
+        while (true) { doThing(); }
+      },
+    };

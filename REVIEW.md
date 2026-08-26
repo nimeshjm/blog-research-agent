@@ -8,13 +8,29 @@ Run with: `/code-review` (add `--comment` to post findings inline on a PR).
 ## Mechanical checks
 
 A large share of the bullets below are not judgement calls — they are mechanically
-decidable from the tree. `npm run review:checks` (wired into the pre-push hook via
-`npm run hooks:install`, and into CI) enforces that decidable subset. Every bullet below
-carries a `(mechanical: <id>)` marker naming the check(s) that cover it, or `(manual)`
-when it still needs a human (or the LLM pass) to judge. A marker naming an id does not
-mean the bullet is *fully* covered — see `scripts/review-checks.mjs` for exactly what
-each id checks; `npm run test:checks` is the mutation table proving each id actually
-fires on the violation it claims to catch, not just on a clean tree. The LLM pass still
+decidable from the tree. Two tools enforce that decidable subset, and each bullet is
+marked with the check id that covers it, or `(manual)` when a human (or the LLM pass)
+still has to judge it.
+
+| marker | tool | run with | proved by |
+|---|---|---|---|
+| `(ast-grep: <id>)` | [ast-grep](https://ast-grep.github.io) rules in `rules/*.yml` | `npm run lint:ast` | `npm run test:ast` |
+| `(mechanical: <id>)` | `scripts/review-checks.mjs` | `npm run review:checks` | `npm run test:checks` |
+
+Both run in the pre-push hook (`npm run hooks:install`) and in CI.
+
+**Why two.** ast-grep expresses "this construct, only in this file" declaratively, and
+`ast-grep test` classifies a rule that stops matching as **Missing** — so a rule that
+silently matches nothing fails loudly instead of passing green. Everything that survives
+in `review-checks.mjs` is there because no off-the-shelf tool can express it: cross-file
+aggregation (`step-names-unique`), positive-presence assertions
+(`budget-read-from-env`), callee resolution through a `tracerFor(...)` binding
+(`step-names-static`), an allowlist read dynamically out of `src/lib/trace.ts` so it
+cannot drift (`span-attributes-allowlisted`), git index and history state, and TOML
+key-name policy. Those keep the sentinel minimums (>= 11 step names, >= 8 attribute
+sites) that make a matcher which stops matching fail rather than pass vacuously.
+
+A marker naming an id does not mean the bullet is *fully* covered. The LLM pass still
 runs in full; the mechanical checks only narrow what it has to spend judgement on.
 
 ## Pass 1 — Free-tier limit violations (Important)
@@ -29,17 +45,21 @@ The failure mode this repo is most exposed to. Reject on:
   cap on iterations. The daily allowance is 10,000 neurons total.
   (mechanical: `inference-loop-has-break`)
 - Logic moved from the Workflow back into `scheduled()`, which is capped at 15 min
-  wall-clock and 10 ms CPU for the entire run. (mechanical: `scheduled-stays-thin`)
+  wall-clock and 10 ms CPU for the entire run. (ast-grep: `scheduled-stays-thin`)
 
 ## Pass 2 — Secret handling (Important)
 
 - No token, key, or PAT in `wrangler.toml`, source, tests, or fixtures.
-  (mechanical: `no-credential-literals`, `wrangler-vars-are-not-secrets`)
+  (mechanical: `wrangler-vars-are-not-secrets`, for a `[vars]` key *named* like a secret.
+  The literal-value half is enforced by **GitHub secret scanning push protection**, which
+  is enabled on this repo and blocks the push server-side — strictly stronger than a local
+  regex a developer can `--no-verify` past. The hand-rolled `no-credential-literals` check
+  was deleted in favour of it.)
 - `.dev.vars` must stay gitignored. (mechanical: `dev-vars-untracked`)
 - `GITHUB_TOKEN` must remain fine-grained and scoped to the blog repo, with
   `contents: write` and `pull_requests: write` only. (manual — a GitHub account setting,
   not decidable from the repo)
-- No secret value in a `console.log` or an error message. (mechanical:
+- No secret value in a `console.log` or an error message. (ast-grep:
   `no-secret-in-console` — covers `console.*` arguments; an error message that leaks a
   secret elsewhere stays manual)
 - No prompt, article text, completion, URL, or error `message` in a span attribute.
@@ -65,18 +85,24 @@ The failure mode this repo is most exposed to. Reject on:
 ## Pass 5 — Simplification and reuse (Nit)
 
 - Duplicated fetch/parse/retry logic that belongs in `src/lib/`. (manual)
-- Inference called anywhere other than through the `Llm` interface. (mechanical:
+- Inference called anywhere other than through the `Llm` interface. (ast-grep:
   `ai-run-only-in-llm`)
 - Model IDs, budgets, or URLs hardcoded instead of read from `wrangler.toml` vars.
-  (mechanical: `no-hardcoded-model-id`, `no-hardcoded-urls`, `budget-read-from-env`)
+  (ast-grep: `no-hardcoded-model-id`, `no-hardcoded-urls`;
+  mechanical: `budget-read-from-env`)
 - `tracing` imported anywhere other than `src/lib/trace.ts`; a bare `step.do` that should
-  go through the seam. (mechanical: `tracing-import-seam`, `no-bare-step-do`)
+  go through the seam. (ast-grep: `tracing-import-seam`, `no-bare-step-do`)
 
 ## Severity
 
 - **Important** — blocks merge. Anything in passes 1 through 4.
 - **Nit** — non-blocking; author's discretion. `review:checks` reports pass-5 findings
-  but its exit code never fails on them, so CI cannot block a merge on a Nit.
+  but its exit code never fails on them, so CI cannot block a merge on a Nit. Note the
+  ast-grep rules carry `severity: error` and so *do* fail CI, including the pass-5 ones
+  (`ai-run-only-in-llm`, `no-hardcoded-model-id`, `no-hardcoded-urls`,
+  `tracing-import-seam`, `no-bare-step-do`). Those five are seam violations with no
+  legitimate exception, so failing on them is deliberate — but it is a stricter posture
+  than the Nit label above implies. Set a rule's `severity: warning` to soften it.
 
 ## CONVENTIONS-derived checks (not REVIEW.md bullets)
 

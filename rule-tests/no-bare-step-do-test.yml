@@ -1,0 +1,7 @@
+id: no-bare-step-do
+valid:
+  - tracedStep(step, 'fetch-feed', async () => {});
+  - other.do(fetchFeed);
+invalid:
+  - step.do('fetch-feed', async () => { await fetchFeed(); });
+  - await step.do(name, fn);
