@@ -49,7 +49,16 @@ jobs:
       # secret-free by design (see its own comment and CLAUDE.md) - that's
       # exactly why this is a separate workflow rather than another step
       # bolted onto ci.yml.
-      - run: python3 scripts/plan_metrics.py --emit
+      #
+      # Skipped, not failed, when the endpoint variable is unset. Never
+      # configured and broken-while-configured are different states, and
+      # plan_metrics.py deliberately exits non-zero on the second - so
+      # without this guard the schedule would go red every morning from the
+      # moment this merges until the ingest key is wired up, training
+      # everyone to ignore the one signal that matters. Once
+      # OTEL_EXPORTER_OTLP_ENDPOINT is set, a red run means something.
+      - if: vars.OTEL_EXPORTER_OTLP_ENDPOINT != ''
+        run: python3 scripts/plan_metrics.py --emit
         env:
           OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
           OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
