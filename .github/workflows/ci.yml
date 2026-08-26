@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+# Least privilege: this job reads the tree and nothing else.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      # Validates wrangler.toml and every binding without contacting Cloudflare.
+      # Verified to need no credentials, which is why this workflow holds no secrets
+      # and pull requests from forks run it in full.
+      - run: npx wrangler deploy --dry-run
