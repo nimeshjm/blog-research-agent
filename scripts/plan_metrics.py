@@ -46,7 +46,7 @@ Why feature 001 reports unmeasurable rather than 0
     commit -> a negative "lead time"), and its post-spec churn is trivially
     undefined too (intent.md and spec.md share one commit, so "edited after spec
     started" has no meaning). A `0` in either field would read as a real number on
-    the board - a 0-hour lead time reads as a triumph, not as "no data". Both guards
+    the board - a 0-hour lead time reads as a triumph, not as "no data". The guards
     below exist so a fabricated zero can never reach Honeycomb. Real numbers start
     at feature 002.
 
@@ -61,22 +61,54 @@ Why `--emit` fails loud where the vendored hooks fail soft
     moment any of them fails. Do not loosen `otel_span.py` itself to match - the
     hooks' fail-soft behaviour is load-bearing for interactive sessions.
 
-Why the git walk is `--follow --name-status` with no `--diff-filter`
+Why the git walk uses `--follow -M25% --diff-filter=A`, not a plain `--follow`
     `features/README.md` mandates renumbering, so a feature directory can be
-    renamed after it's created. `--follow` chases the rename back to the original
-    add, but it does that by hooking into the same diff machinery `--diff-filter`
-    prunes - filtering to `A` at the git-log level can drop the rename entry the
-    follow chain depends on, which makes the *rename* commit look like the
-    creation and silently understates lead time. So the walk asks for everything
-    and this script parses the status letters itself, taking the oldest record
-    whose status is exactly `A` as the creation commit.
+    renamed after it's created - and the rename commit can also rewrite the file's
+    contents (e.g. resolving open questions in intent.md at the same time it's
+    renumbered). `--follow`'s rename detector uses git's ordinary similarity
+    threshold (50% by default), and once a rename's content changes enough to fall
+    below that threshold, the detector declines to pair old-path -> new-path, the
+    follow chain loses the trail, and the *rename* commit is mistaken for the
+    *creation* commit - understating lead time by the whole gap between them.
+    Measured directly (true creation 2026-01-01, `git mv` + rewrite on 2026-03-01):
+
+        rename commit contents          | default -M | -M25%           | orphan D?
+        ---------------------------------|-----------|-----------------|----------
+        pure `git mv`, no content change | correct   | correct         | no
+        `git mv` + 65% lines rewritten   | WRONG     | correct         | no (paired)
+        `git mv` + 100% rewritten        | wrong     | wrong, unresolvable | yes
+
+    `-M25%` lowers the pairing threshold enough to correctly resolve the 65% case.
+    It does not (cannot) resolve 100%-rewritten renames - git has no signal left to
+    pair on - but that failure mode is now *detectable*: when `--follow` can't pair
+    a rename, the resulting "creation" commit's diff still carries an orphaned `D`
+    on some *other* `features/*/intent.md` in the very same commit (the deletion
+    half of the unpaired rename). `resolve_creation()` below checks for exactly
+    that and reports `t1_source = "follow-unresolved"` instead of `"follow"`; the
+    caller then refuses to trust the date and reports the feature unmeasurable
+    rather than emit a number that might be wrong by weeks. `-M25%` did not
+    false-pair against `features/_template/intent.md` in manual testing, so the
+    low threshold is safe on this tree. With `-M25%` in place, `--diff-filter=A`
+    is safe to use directly (it wasn't at the default threshold, because the
+    unpaired-rename "add" entry the filter selects is exactly the wrong commit) -
+    so the git-log invocation for `t1` is the simpler `--diff-filter=A` form, and a
+    separate `--name-status` walk (no filter) supplies the full commit list
+    `post_spec_edits` needs.
+
+    Known false positive, accepted deliberately: a commit that renames one feature
+    directory *and* creates a different feature's intent.md in the same commit
+    also carries an orphaned `D` (the old feature's path, unrelated to the new
+    feature) and would mark the new feature `follow-unresolved` even though its
+    own `t1` was never in doubt. This fails in the conservative direction -
+    `measurable: false` and no number emitted, rather than a wrong number - which
+    is the correct side to be wrong on, so it ships as-is.
 
 Why `post_spec_edits` mixes an author date and a committer date
     Per the spec: commits touching `intent.md` whose *committer* date is strictly
     after `spec_t0`, where `spec_t0` is spec.md's first-add commit's *author* date.
     That's deliberate, not a typo to "fix" to one clock: author date is when the
     spec's content was actually written (the right anchor for "after the spec
-    started"), while committer date is when a commit actually landed history -
+    started"), while committer date is when a commit actually landed in history -
     including rebases and amends - which is the right clock for "was this intent
     edit real churn that happened after that point in the recorded history".
 
@@ -86,7 +118,23 @@ Why GitHub issues are fetched once per feature and filtered client-side
     *both* labels - almost always none - and silently starve `t0` of every
     `feature:NNN` issue that isn't also the gate issue. So each feature gets one
     `gh issue list --label feature:NNN` call, and `gate:intent` is found by
-    filtering the results in Python.
+    filtering the results in Python. `gh` is invoked by bare name (never an
+    absolute path) so normal `PATH` resolution applies - that's also what lets a
+    test harness put a stub `gh` earlier on `PATH` to exercise this path
+    hermetically (see `plan_metrics_test.py`; the pattern mirrors
+    `scripts/review-checks.test.mjs`'s stub-`gh`-on-`PATH` row rather than adding a
+    bespoke env-var bypass here).
+
+Why `sdlc.issue` names the `gate:intent` issue, not just any `feature:NNN` issue
+    Many issues can carry one `feature:NNN` label - `t0` deliberately reads the
+    earliest of *all* of them, per the per-feature table above, and
+    `sdlc.t0.source` already records where that came from. But a bare "issue
+    number" attribute needs one specific referent to be useful on a board, and the
+    `gate:intent` issue is the only one of the bunch that's also the accept/reject
+    record `sdlc.intent.outcome` is read from - so `sdlc.issue`/`issue` points at
+    it specifically, letting a board click straight from a snapshot span to the
+    record that produced its outcome. It is omitted entirely when no `gate:intent`
+    issue exists yet, never backfilled with some other issue's number.
 
 Why `sdlc.repo` is a module literal, not `otel_span.get_git_context()`
     That helper deliberately drops non-SSH remotes to avoid ever exporting a
@@ -110,6 +158,27 @@ Why `--t0-from-sessions` exists and stays off by default
     earliest local session timestamp for this repo actually predates the
     issue-derived `t0`. Absent the directory, this falls back to the issue
     timestamp silently - `--t0-from-sessions` is a local nicety, not a requirement.
+
+Why the OTLP preflight treats HTTP 400 as success, and only 401/403 as failure
+    The preflight's only job is proving the endpoint and credential are good
+    *before* spending a whole run on a computation whose export would otherwise
+    fail invisibly. It POSTs an empty body, which is a valid (if empty)
+    `ExportTraceServiceRequest`, so nothing is ingested either way. Honeycomb is
+    confirmed (tested directly) to return 401 for a bad `x-honeycomb-team` against
+    an empty body - that is the credential failure this exists to catch. Whether a
+    *good* key returns 2xx for a zero-byte protobuf body is not something this repo
+    can verify before the real ingest key is handed over, and some strict OTLP
+    receivers reject an empty/malformed payload with `400` regardless of whether
+    auth succeeded. Treating "anything but 401/403" as failure would make the
+    preflight itself the outage: a legitimate credential could 400 on this
+    synthetic empty body and the daily job would exit non-zero forever, which is
+    exactly the silently-dead-board failure mode this script exists to prevent -
+    except now it's this script causing it. So the verdict is deliberately narrow:
+    401/403 (`HTTPError`, read via `.code` - `HTTPError` is itself a response
+    object, not just an exception) means the credential is bad and the job stops;
+    a connection error, DNS failure, or timeout means the endpoint is unreachable
+    and the job stops; everything else - 400 included, and any 2xx - is treated as
+    "auth and reachability are fine" and the run proceeds to the real export.
 
 Why `OTEL_SERVICE_NAME` is assigned, never `setdefault`
     `otel_span.py` reads `service.name` from `OTEL_SERVICE_NAME`, defaulting to
@@ -139,14 +208,6 @@ CLI
                                      [--no-github] [--t0-from-sessions]
 
     Default is compute-and-print. `--emit` is the only path that ships spans.
-
-Test seam
-    `PLAN_METRICS_T0_OVERRIDE_<NNN>` (e.g. `PLAN_METRICS_T0_OVERRIDE_002`), an
-    ISO8601 timestamp, forces that feature's `t0` (with `t0.source: "issue"`,
-    standing in for what an issue's `createdAt` would have supplied). It exists
-    solely because `plan_metrics_test.py` runs under `--no-github` for a hermetic,
-    network-free test suite, and so has no `gh` to fetch a synthetic feature's t0
-    from. Real runs, with `gh` available, never need it.
 """
 from __future__ import annotations
 
@@ -186,6 +247,19 @@ DATASET_NAME = "blog-research-agent-sdlc"
 # three-digit numeric prefix `features/README.md` mandates, not on any name
 # blocklist, so a differently-named non-feature directory is excluded the same way.
 FEATURE_DIR_RE = re.compile(r"^\d{3}-")
+
+# git's --follow rename-pairing similarity threshold. Lowered from git's 50%
+# default to 25% so a renumbering commit that also rewrites a meaningful chunk of
+# intent.md's content still gets paired with its origin - see the module
+# docstring's measured table. The trailing '%' is required: `-M25` without it is a
+# different (and here wrong) argument shape to git.
+FOLLOW_SIMILARITY = "-M25%"
+
+# A `D` on some *other* feature's intent.md inside the commit resolve_creation()
+# picked as an "add" - the signature of a rename --follow could not pair (see the
+# module docstring). Anchored to intent.md specifically, matching what
+# resolve_creation() is ever asked to resolve.
+ORPHAN_D_RE = re.compile(r"^D\tfeatures/[^/]+/intent\.md$")
 
 # This runs once a day from CI, not in a hot loop or an interactive session, so
 # there is no cost to being generous with subprocess/network timeouts here.
@@ -248,10 +322,42 @@ def run_git(root: str, *args: str) -> "str | None":
     return result.stdout
 
 
+def resolve_creation(root: str, rel_path: str) -> "tuple[datetime.datetime, str, str, str] | None":
+    """Resolve the commit that first adds `rel_path`, chasing renames.
+
+    Returns (author_date, author_name, sha, t1_source), or None when the path has
+    never been committed. `t1_source` is "follow" when the resolution looks
+    trustworthy, or "follow-unresolved" when an orphaned `D` on a *different*
+    feature's intent.md turns up in the same commit - the signature of a rename
+    `--follow` could not pair even at `-M25%` (see the module docstring). Callers
+    must not trust the returned date when `t1_source == "follow-unresolved"`.
+    """
+    output = run_git(
+        root, "log", "--follow", FOLLOW_SIMILARITY, "--diff-filter=A",
+        "--format=%H%x09%aI%x09%an", "--", rel_path,
+    )
+    if not output:
+        return None
+    lines = [line for line in output.split("\n") if line.strip()]
+    if not lines:
+        return None
+    sha, author_date, author_name = lines[-1].split("\t", 2)  # oldest = last line
+
+    t1_source = "follow"
+    show_output = run_git(root, "show", "--name-status", "--format=", sha, "--", "features/")
+    if show_output:
+        for line in show_output.split("\n"):
+            if ORPHAN_D_RE.match(line):
+                t1_source = "follow-unresolved"
+                break
+
+    return parse_iso(author_date), author_name, sha, t1_source
+
+
 def _parse_name_status_log(output: str) -> "list[dict[str, Any]]":
     """Parse the output of:
 
-        git log --follow --name-status \\
+        git log --follow -M25% --name-status \\
             --format='C%x09%H%x09%aI%x09%cI%x09%an' -- <path>
 
     into one record per commit that touched `path`: {sha, author_date,
@@ -288,32 +394,18 @@ def _parse_name_status_log(output: str) -> "list[dict[str, Any]]":
 
 
 def git_path_history(root: str, rel_path: str) -> "list[dict[str, Any]]":
-    """The `--follow --name-status` history of `rel_path`, parsed into records.
-    Empty list if the path has never been committed (or on any git failure)."""
+    """The full `--follow -M25% --name-status` history of `rel_path`, parsed into
+    records - every commit that ever touched it, across renames. Empty list if the
+    path has never been committed (or on any git failure). Used only to enumerate
+    committer dates for `post_spec_edits`; `t1` itself comes from
+    `resolve_creation()`, not from this list."""
     output = run_git(
-        root,
-        "log",
-        "--follow",
-        "--name-status",
-        "--format=C%x09%H%x09%aI%x09%cI%x09%an",
-        "--",
-        rel_path,
+        root, "log", "--follow", FOLLOW_SIMILARITY, "--name-status",
+        "--format=C%x09%H%x09%aI%x09%cI%x09%an", "--", rel_path,
     )
     if output is None:
         return []
     return _parse_name_status_log(output)
-
-
-def find_creation(records: "list[dict[str, Any]]") -> "dict[str, Any] | None":
-    """The commit that first ADDs the path: the 'A'-status record with the
-    earliest author date. `--follow` terminates the walk at the original add, so
-    in practice this is the oldest record in the list - taking the minimum by date
-    rather than trusting `git log`'s output order is the defensive version of that
-    same fact, and costs nothing since these lists are tiny."""
-    additions = [r for r in records if r["status"] == "A"]
-    if not additions:
-        return None
-    return min(additions, key=lambda r: parse_iso(r["author_date"]))
 
 
 def count_post_spec_edits(
@@ -334,27 +426,28 @@ def compute_git_facts(root: str, feature_dir: str) -> "dict[str, Any] | None":
     intent_rel = "/".join(("features", feature_dir, "intent.md"))
     spec_rel = "/".join(("features", feature_dir, "spec.md"))
 
-    intent_records = git_path_history(root, intent_rel)
-    creation = find_creation(intent_records)
-    if creation is None:
+    intent_creation = resolve_creation(root, intent_rel)
+    if intent_creation is None:
         return None
+    t1, intent_author, intent_sha, t1_source = intent_creation
 
     facts: "dict[str, Any]" = {
-        "t1": parse_iso(creation["author_date"]),
-        "intent_sha": creation["sha"],
-        "intent_author": creation["author_name"],
+        "t1": t1,
+        "intent_sha": intent_sha,
+        "intent_author": intent_author,
+        "t1_source": t1_source,
         "spec_committed_at": None,
         "spec_sha": None,
         "post_spec_edits": None,
     }
 
-    spec_records = git_path_history(root, spec_rel)
-    spec_creation = find_creation(spec_records)
+    spec_creation = resolve_creation(root, spec_rel)
     if spec_creation is not None:
-        spec_t0 = parse_iso(spec_creation["author_date"])
+        spec_t0, _spec_author, spec_sha, _spec_t1_source = spec_creation
         facts["spec_committed_at"] = spec_t0
-        facts["spec_sha"] = spec_creation["sha"]
-        if spec_creation["sha"] != creation["sha"]:
+        facts["spec_sha"] = spec_sha
+        if spec_sha != intent_sha:
+            intent_records = git_path_history(root, intent_rel)
             facts["post_spec_edits"] = count_post_spec_edits(intent_records, spec_t0)
         # else: intent.md and spec.md were both first added in the same commit -
         # "post-spec churn" has no meaning, so post_spec_edits stays None (omitted).
@@ -390,7 +483,9 @@ def discover_features(root: str) -> "list[str]":
 def fetch_feature_issues(root: str, feature_num: str, use_github: bool) -> "list[dict[str, Any]]":
     """One `gh issue list --label feature:<NNN>` call. Returns [] uniformly on
     --no-github, a missing `gh`, a non-zero exit, or unparsable JSON - all four mean
-    the same thing downstream: no GitHub signal for this feature."""
+    the same thing downstream: no GitHub signal for this feature. `gh` is invoked
+    by bare name so ordinary PATH resolution applies (see the module docstring's
+    note on why - this is also the test seam: a stub `gh` earlier on PATH)."""
     if not use_github:
         return []
     try:
@@ -416,17 +511,6 @@ def fetch_feature_issues(root: str, feature_num: str, use_github: bool) -> "list
     except json.JSONDecodeError:
         return []
     return data if isinstance(data, list) else []
-
-
-def t0_override(feature_num: str) -> "datetime.datetime | None":
-    """PLAN_METRICS_T0_OVERRIDE_<NNN> - see the module docstring's Test seam note."""
-    raw = os.environ.get(f"PLAN_METRICS_T0_OVERRIDE_{feature_num}")
-    if not raw:
-        return None
-    try:
-        return parse_iso(raw)
-    except ValueError:
-        return None
 
 
 def session_t0(root: str) -> "datetime.datetime | None":
@@ -499,19 +583,11 @@ def build_feature(
     issues = fetch_feature_issues(root, feature_num, use_github)
 
     t0: "datetime.datetime | None" = None
-    issue_number: "int | None" = None
     t0_source = "none"
-
     if issues:
         earliest_issue = min(issues, key=lambda i: parse_iso(i["createdAt"]))
         t0 = parse_iso(earliest_issue["createdAt"])
-        issue_number = earliest_issue.get("number")
         t0_source = "issue"
-
-    override = t0_override(feature_num)
-    if override is not None:
-        t0 = override
-        t0_source = "issue"  # stands in for what an issue's createdAt would supply
 
     if apply_session_t0 and cached_session_t0 is not None:
         if t0 is None or cached_session_t0 < t0:
@@ -519,6 +595,7 @@ def build_feature(
             t0_source = "session"
 
     same_commit = facts["spec_sha"] is not None and facts["spec_sha"] == facts["intent_sha"]
+    unresolved_t1 = facts["t1_source"] == "follow-unresolved"
 
     lead_time_hours: "float | None" = None
     if t0 is not None:
@@ -529,8 +606,13 @@ def build_feature(
         and lead_time_hours is not None
         and lead_time_hours >= 0
         and not same_commit
+        and not unresolved_t1
     )
 
+    # sdlc.issue / "issue" names the gate:intent issue specifically - see the
+    # module docstring's "Why sdlc.issue names the gate:intent issue" note. t0
+    # above deliberately still reads the earliest of *all* feature:NNN issues.
+    issue_number: "int | None" = None
     outcome: "str | None" = None
     if issues:
         gate_issues = [
@@ -539,6 +621,7 @@ def build_feature(
         ]
         if gate_issues:
             gate = min(gate_issues, key=lambda i: parse_iso(i["createdAt"]))
+            issue_number = gate.get("number")
             if gate.get("state") == "CLOSED" and gate.get("stateReason") == "COMPLETED":
                 outcome = "accepted"
             elif gate.get("state") == "CLOSED" and gate.get("stateReason") == "NOT_PLANNED":
@@ -551,7 +634,8 @@ def build_feature(
             # 001's real state today - feature:001 issues exist, none is
             # gate:intent - and it correctly counts toward the rollup's
             # open_count rather than being omitted, since some feature:NNN
-            # GitHub signal does exist.
+            # GitHub signal does exist. `issue` stays omitted: there is no
+            # gate:intent issue to point at yet.
             outcome = "open"
 
     now = now_utc()
@@ -566,6 +650,7 @@ def build_feature(
     record["intent_author"] = facts["intent_author"]
     record["intent_committed_at"] = to_iso_z(facts["t1"])
     record["intent_age_days"] = (now - facts["t1"]).total_seconds() / 86400.0
+    record["intent_t1_source"] = facts["t1_source"]
     if measurable:
         record["lead_time_hours"] = lead_time_hours
     if facts["spec_committed_at"] is not None:
@@ -616,12 +701,16 @@ def build_report(root: str, use_github: bool, apply_session_t0: bool) -> "dict[s
     `features` is sorted by directory name. Each feature record's keys mirror the
     `sdlc.*` span attributes with the prefix dropped and '.' replaced by '_':
     feature, issue, measurable, t0, t0_source, intent_author, intent_committed_at,
-    intent_age_days, lead_time_hours, spec_committed_at, intent_outcome,
-    intent_post_spec_edits.
+    intent_age_days, intent_t1_source, lead_time_hours, spec_committed_at,
+    intent_outcome, intent_post_spec_edits.
 
     Omitted means the key is absent, never null and never a fabricated 0 - see the
     module docstring's note on why feature 001 must report unmeasurable rather than
-    a 0-hour lead time / 0 post-spec edits.
+    a 0-hour lead time / 0 post-spec edits. `intent_t1_source` is the one field
+    that is always present, even when unmeasurable: it is "follow" or
+    "follow-unresolved", never absent, since it is what a reader would need to
+    understand *why* a feature reports unmeasurable when the guard responsible is
+    the rename-detection one rather than a missing t0.
     """
     feature_dirs = discover_features(root)
     cached_session = session_t0(root) if apply_session_t0 else None
@@ -659,24 +748,34 @@ def _parse_otlp_headers(raw: str) -> "dict[str, str]":
     return dict(kv.split("=", 1) for kv in raw.split(",") if "=" in kv)
 
 
-def _preflight(endpoint: str) -> "int | None":
+def _preflight(endpoint: str) -> "tuple[str, int | None]":
     """POST an empty body to {endpoint}/v1/traces with the same content-type and
-    headers a real export would use. An empty body is a valid (if empty)
-    ExportTraceServiceRequest, so this ingests nothing - it exists purely to prove
-    the endpoint and credentials are good before spending the run on a computation
-    whose export would otherwise fail silently. Returns the HTTP status, or None on
-    a network-level failure (nothing to name)."""
+    headers a real export would use. Returns (verdict, status):
+
+      "ok"      - endpoint reachable and (as far as this probe can tell) the
+                  credential is fine. Includes any 2xx *and* 400 - see the module
+                  docstring's "Why the OTLP preflight treats HTTP 400 as success"
+                  note: an empty protobuf body is expected to be rejected by a
+                  strict server on payload grounds alone, which is not a
+                  credential failure.
+      "auth"    - HTTP 401 or 403: the credential itself is bad.
+      "network" - connection error, DNS failure, or timeout: nothing to name.
+    """
     url = f"{endpoint.rstrip('/')}/v1/traces"
     headers = {"content-type": "application/x-protobuf"}
     headers.update(_parse_otlp_headers(os.environ.get("OTEL_EXPORTER_OTLP_HEADERS", "")))
     request = urllib.request.Request(url, data=b"", headers=headers, method="POST")
     try:
         with urllib.request.urlopen(request, timeout=PREFLIGHT_TIMEOUT_SECONDS) as response:
-            return response.status
+            return "ok", response.status
     except urllib.error.HTTPError as exc:
-        return exc.code
+        # HTTPError is itself a response object - .code is the real HTTP status,
+        # not a generic exception with no status to read.
+        if exc.code in (401, 403):
+            return "auth", exc.code
+        return "ok", exc.code
     except (urllib.error.URLError, OSError, TimeoutError):
-        return None
+        return "network", None
 
 
 def _build_specs(report: "dict[str, Any]") -> "list[dict[str, Any]]":
@@ -698,6 +797,7 @@ def _build_specs(report: "dict[str, Any]") -> "list[dict[str, Any]]":
         attrs["sdlc.intent.author"] = feature["intent_author"]
         attrs["sdlc.intent.committed_at"] = feature["intent_committed_at"]
         attrs["sdlc.intent.age_days"] = feature["intent_age_days"]
+        attrs["sdlc.intent.t1_source"] = feature["intent_t1_source"]
         if "lead_time_hours" in feature:
             attrs["sdlc.plan.lead_time_hours"] = feature["lead_time_hours"]
         if "spec_committed_at" in feature:
@@ -747,20 +847,24 @@ def run_emit(report: "dict[str, Any]") -> int:
         return 1
 
     if os.environ.get("OTEL_HOOKS_CONSOLE_EXPORT") != "1":
-        status = _preflight(endpoint)
-        if status is None:
+        verdict, status = _preflight(endpoint)
+        if verdict == "network":
             print(
-                "plan_metrics: preflight POST to the OTLP endpoint failed (network error)",
+                "plan_metrics: preflight POST to the OTLP endpoint failed "
+                "(network error / unreachable)",
                 file=sys.stderr,
             )
             return 1
-        if not (200 <= status < 300):
+        if verdict == "auth":
             print(
-                f"plan_metrics: preflight POST to the OTLP endpoint returned HTTP {status} - "
-                "check OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_EXPORTER_OTLP_HEADERS",
+                f"plan_metrics: preflight POST to the OTLP endpoint returned HTTP {status} "
+                "(401/403 = bad credentials) - check OTEL_EXPORTER_OTLP_HEADERS",
                 file=sys.stderr,
             )
             return 1
+        # verdict == "ok": any other status, including 400, is treated as
+        # success - see _preflight's docstring for why a 400 here is expected
+        # and not a sign of a bad credential.
 
     # Assignment, not setdefault - see the module docstring's note on why an
     # ambient OTEL_SERVICE_NAME from the user's own Claude Code hooks must never
@@ -798,6 +902,7 @@ def print_table(report: "dict[str, Any]") -> None:
                 f"  {feature['feature']:<40} "
                 f"measurable={str(feature['measurable']):<5} "
                 f"t0_source={feature['t0_source']:<7} "
+                f"t1_source={feature['intent_t1_source']:<17} "
                 f"lead_time={lead:<9} "
                 f"outcome={outcome:<9} "
                 f"post_spec_edits={churn}"
@@ -841,7 +946,7 @@ def parse_args(argv: "list[str]") -> argparse.Namespace:
         "--no-github",
         action="store_true",
         help="skip all `gh` calls; every feature's t0 degrades to t0_source=none "
-        "unless a PLAN_METRICS_T0_OVERRIDE_<NNN> or --t0-from-sessions hit applies",
+        "unless --t0-from-sessions hits",
     )
     parser.add_argument(
         "--t0-from-sessions",
