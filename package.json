@@ -11,6 +11,8 @@
     "migrate:remote": "wrangler d1 migrations apply blog_research --remote",
     "review:checks": "node scripts/review-checks.mjs",
     "test:checks": "node scripts/review-checks.test.mjs",
+    "plan:metrics": "python3 scripts/plan_metrics.py",
+    "test:plan-metrics": "python3 scripts/plan_metrics_test.py",
     "lint:ts": "eslint",
     "lint:ast": "ast-grep scan",
     "test:ast": "ast-grep test",

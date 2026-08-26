@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .wrangler/
+.venv/
 .dev.vars
 .dev.vars.*
 *.log

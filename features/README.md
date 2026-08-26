@@ -29,6 +29,28 @@ features/NNN-slug/
   to do. A build's task breakdown belongs in `plan.md`, not in issues. See
   [`CONVENTIONS.md`](../CONVENTIONS.md).
 
+## Measuring stage 1
+
+`scripts/plan_metrics.py` reads git and GitHub history and reports Stage 1 (Plan)
+against the playbook's two indicators: leading — lead time from a `feature:NNN` issue to
+a committed `intent.md` — and lagging — intent survival (accepted into Stage 2, rejected,
+or still open) plus how many times `intent.md` is edited after `spec.md` first lands.
+
+`t0` is the earliest `feature:NNN` issue's `createdAt`, so what this actually measures is
+work-item creation → committed intent, a durable, server-side **proxy** for the
+playbook's "first conversation", not that indicator itself. `--t0-from-sessions`
+sharpens it on the author's machine by reading `~/.claude/projects/<slug>/*.jsonl`, and
+degrades to the issue timestamp in CI. `sdlc.t0.source` records which one was used, so a
+board never mixes the two silently.
+
+**`n = 0` today.** Feature 001's artifacts all landed in one bootstrap commit and its
+issues were filed about a minute later, so 001 reports `unmeasurable` — never `0`. A
+0-hour lead time on a board would read as a triumph. Real numbers start at feature 002.
+
+Run `npm run plan:metrics` to see it locally; the daily `sdlc-metrics.yml` workflow is
+what publishes it. Renumbering a feature directory is safe — the extractor follows
+renames.
+
 ## Index
 
 | # | Feature | Stage |
