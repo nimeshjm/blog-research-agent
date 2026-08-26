@@ -68,4 +68,4 @@ in the same commit.
 
 | # | Feature | Stage |
 |---|---|---|
-| 001 | [scheduled-research-drafts](001-scheduled-research-drafts/) | At the stage 3 gate: `intent.md` and `spec.md` written, `plan.md` not. [Open issues](https://github.com/nimeshjm/blog-research-agent/issues?q=is%3Aissue+is%3Aopen+label%3Afeature%3A001) |
+| 001 | [scheduled-research-drafts](001-scheduled-research-drafts/) | Stage 3 gate passed: `intent.md`, `spec.md` and `plan.md` written. Build not started. [Open issues](https://github.com/nimeshjm/blog-research-agent/issues?q=is%3Aissue+is%3Aopen+label%3Afeature%3A001) |
