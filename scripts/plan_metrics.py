@@ -984,5 +984,223 @@ def main(argv: "list[str] | None" = None) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Board definition
+# ---------------------------------------------------------------------------
+#
+# The "SDLC - Stage 1 Plan" board, as data. Nothing in this file reads PANELS:
+# it is the board spec, kept next to the emitter so the two cannot drift, and
+# the creation path is the same one `nimeshjm/claude-otel-hooks` uses for its
+# own board - configure the Honeycomb MCP server, then prompt Claude to read
+# PANELS and create the board. No management key, no API client here.
+#
+# Two things a hand-built board gets wrong and this list exists to pin down:
+#
+#   `time_range` is per panel and is load-bearing. Emission is one snapshot per
+#   day (see the module docstring), so a panel left on Honeycomb's 2h default
+#   renders empty for roughly 22 hours out of every 24 - a board that looks
+#   broken rather than one that looks empty. Every window here is at least 1d.
+#
+#   Every per-feature panel aggregates with MAX() and groups by sdlc.feature.
+#   A re-run, a retry or a `workflow_dispatch` puts several identical rows in
+#   the same window on purpose; MAX() over one feature's rows is idempotent
+#   where COUNT() or SUM() would multiply by the number of runs that day.
+#
+# Four of these panels are not on the board yet, and creating their columns by
+# hand is the wrong way to get them there. This script omits
+# `sdlc.plan.lead_time_hours` and `sdlc.intent.survival_rate` rather than emit a
+# fabricated zero, so while those columns do not exist Honeycomb enforces that
+# for us: a query naming one is rejected outright. Create the column through the
+# Columns API and the rejection turns into a rendered `0` - COUNT is 0 but P50
+# and MAX both come back 0, so an "Intent lead time" panel shows a flat zero-hour
+# line and "Survival rate" a flat 0%. That is the exact misreading the omission
+# exists to prevent; the loud failure was the safety net. Measured on this
+# dataset 2026-08-26 after creating both columns as `float`.
+#
+# So: leave those four off the board until a measurable feature lands and the
+# columns fill themselves on the next emit. The board carries their specs as a
+# text panel until then.
+#
+# Column names below are exactly the attribute names `_build_specs` emits.
+# `npm run plan:metrics -- --json` prints the report those are mapped from, so
+# a name can be checked offline without emitting anything.
+
+BOARD_NAME = "SDLC · Stage 1 Plan"
+
+BOARD_DESCRIPTION = (
+    "Stage 1 (Plan) indicators from the AI-native SDLC playbook: leading = time "
+    "from work-item creation to a committed intent.md; lagging = intent survival "
+    "and the intent.md edits made after spec.md started. Dataset "
+    f"{DATASET_NAME}, refreshed by one daily snapshot from "
+    ".github/workflows/sdlc-metrics.yml."
+)
+
+PANELS: "list[dict[str, Any]]" = [
+    {
+        "name": "Intent lead time",
+        "description": (
+            "Work-item creation to committed intent.md, over the features whose "
+            "lead time is defined. The 24h marker is the target, not a "
+            "threshold anything alerts on."
+        ),
+        "chart_type": "line",
+        "time_range": "1d",
+        "query": {
+            "calculations": [
+                {"op": "HEATMAP", "column": "sdlc.plan.lead_time_hours"},
+                {"op": "P50", "column": "sdlc.plan.lead_time_hours"},
+                {"op": "P95", "column": "sdlc.plan.lead_time_hours"},
+            ],
+            "filters": [
+                {"column": "name", "op": "=", "value": "sdlc.plan.snapshot"},
+                {"column": "sdlc.measurable", "op": "=", "value": True},
+            ],
+        },
+        # chart_index 1 = the P50 calculation; a marker on the HEATMAP would
+        # have nothing to sit against.
+        "thresholds": [
+            {
+                "value": 24,
+                "operation": "gt",
+                "color": "yellow",
+                "line_style": "dotted",
+                "label": "24h",
+                "chart_index": 1,
+            }
+        ],
+    },
+    {
+        "name": "Recent intents only",
+        "description": (
+            "Same lead time, restricted to intents committed in the last 90 "
+            "days. sdlc.intent.age_days is what recovers a trend from spans "
+            "that are all stamped `now` - see the module docstring."
+        ),
+        "chart_type": "line",
+        "time_range": "1d",
+        "query": {
+            "calculations": [
+                {"op": "HEATMAP", "column": "sdlc.plan.lead_time_hours"},
+                {"op": "P50", "column": "sdlc.plan.lead_time_hours"},
+                {"op": "P95", "column": "sdlc.plan.lead_time_hours"},
+            ],
+            "filters": [
+                {"column": "name", "op": "=", "value": "sdlc.plan.snapshot"},
+                {"column": "sdlc.measurable", "op": "=", "value": True},
+                {"column": "sdlc.intent.age_days", "op": "<", "value": 90},
+            ],
+        },
+    },
+    {
+        "name": "Lead time by feature",
+        "description": (
+            "One row per feature. Features reporting measurable=false are "
+            "absent by construction: no lead_time_hours attribute is emitted "
+            "for them, so they cannot show as 0."
+        ),
+        "chart_type": "none",
+        "display_style": "table",
+        "time_range": "1d",
+        "query": {
+            "calculations": [{"op": "MAX", "column": "sdlc.plan.lead_time_hours"}],
+            "filters": [
+                {"column": "name", "op": "=", "value": "sdlc.plan.snapshot"},
+                {"column": "sdlc.measurable", "op": "=", "value": True},
+            ],
+            "breakdowns": ["sdlc.feature"],
+            "orders": [{"op": "MAX", "column": "sdlc.plan.lead_time_hours",
+                        "order": "descending"}],
+        },
+    },
+    {
+        "name": "Intent funnel",
+        "description": (
+            "Accepted / rejected / open, read off the gate:intent issues. Raw "
+            "counters, deliberately - a 7d window so a missed daily run still "
+            "leaves the last known state on the board."
+        ),
+        "chart_type": "bar",
+        "time_range": "7d",
+        "query": {
+            "calculations": [
+                {"op": "MAX", "column": "sdlc.intent.accepted_count"},
+                {"op": "MAX", "column": "sdlc.intent.rejected_count"},
+                {"op": "MAX", "column": "sdlc.intent.open_count"},
+            ],
+            "filters": [{"column": "name", "op": "=", "value": "sdlc.plan.rollup"}],
+        },
+    },
+    {
+        "name": "Survival rate",
+        "description": (
+            "accepted / (accepted + rejected), computed in the script and "
+            "emitted as a scalar. Expect noise: below ~5 decided intents one "
+            "decision swings this between 0 and 1, and intents authored and "
+            "approved by the same person make it near-tautological. Read the "
+            "funnel counters above first."
+        ),
+        "chart_type": "line",
+        "time_range": "90d",
+        "query": {
+            "calculations": [{"op": "MAX", "column": "sdlc.intent.survival_rate"}],
+            "filters": [{"column": "name", "op": "=", "value": "sdlc.plan.rollup"}],
+        },
+    },
+    {
+        "name": "Post-spec intent churn",
+        "description": (
+            "intent.md commits landing after spec.md started, per feature. The "
+            "one number here that means something at n=1: a non-zero bar is "
+            "rework that a Stage 1 gate did not catch."
+        ),
+        "chart_type": "bar",
+        "display_style": "combo",
+        "time_range": "1d",
+        "query": {
+            "calculations": [{"op": "MAX", "column": "sdlc.intent.post_spec_edits"}],
+            "filters": [{"column": "name", "op": "=", "value": "sdlc.plan.snapshot"}],
+            "breakdowns": ["sdlc.feature"],
+            "orders": [{"op": "MAX", "column": "sdlc.intent.post_spec_edits",
+                        "order": "descending"}],
+        },
+        "thresholds": [
+            {
+                "value": 0,
+                "operation": "gt",
+                "color": "red",
+                "line_style": "solid",
+                "label": "rework",
+            }
+        ],
+    },
+]
+
+PRESET_FILTERS = [
+    {"column": "sdlc.feature", "alias": "Feature"},
+    {"column": "sdlc.intent.outcome", "alias": "Outcome"},
+    {"column": "sdlc.t0.source", "alias": "t0 source"},
+]
+
+# Created separately from the board - a trigger needs a recipient, which is an
+# account-level choice this file has no business guessing. Frequency is daily
+# because the data is: anything faster just re-reads the same snapshot.
+TRIGGER = {
+    "name": "Intent edited after its spec started",
+    "description": (
+        "An intent.md commit landed after spec.md's first commit for the same "
+        "feature. That is the Stage 1 rework signal - the gate approved an "
+        "intent that turned out not to be settled."
+    ),
+    "dataset": DATASET_NAME,
+    "frequency": 86400,
+    "query": {
+        "calculations": [{"op": "MAX", "column": "sdlc.intent.post_spec_edits"}],
+        "filters": [{"column": "name", "op": "=", "value": "sdlc.plan.snapshot"}],
+        "breakdowns": ["sdlc.feature"],
+    },
+    "threshold": {"op": ">", "value": 0},
+}
+
+
 if __name__ == "__main__":
     sys.exit(main())
