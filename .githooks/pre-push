@@ -33,7 +33,7 @@ if [ "$hooks_dir" != "$expected" ]; then
   exit 1
 fi
 
-echo "pre-push: npm run typecheck && npm run lint:ast && npm run test:ast && npm run lint:ts && npm run review:checks && npm run test:checks"
+echo "pre-push: npm run typecheck && npm run lint:ast && npm run test:ast && npm run lint:ts && npm run review:checks && npm run test:checks && npm run test:plan-metrics"
 npm run typecheck
 npm run lint:ast
 npm run test:ast

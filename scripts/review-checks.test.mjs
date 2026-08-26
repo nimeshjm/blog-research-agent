@@ -90,6 +90,11 @@ function copyTree(src, dest) {
       const rel = path.relative(src, s);
       if (rel === 'node_modules' || rel.startsWith(`node_modules${path.sep}`)) return false;
       if (rel === '.wrangler' || rel.startsWith(`.wrangler${path.sep}`)) return false;
+      // A local `.venv` is ~26 MB and this copies the tree once per row.
+      // scripts/plan_metrics.py's `--emit` path needs opentelemetry installed,
+      // and CLAUDE.md points at a venv for that, so one shows up here as soon
+      // as anyone follows those instructions.
+      if (rel === '.venv' || rel.startsWith(`.venv${path.sep}`)) return false;
       if (linked && rel === '.git') return false;
       return true;
     },

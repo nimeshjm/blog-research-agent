@@ -43,9 +43,15 @@ sharpens it on the author's machine by reading `~/.claude/projects/<slug>/*.json
 degrades to the issue timestamp in CI. `sdlc.t0.source` records which one was used, so a
 board never mixes the two silently.
 
-**`n = 0` today.** Feature 001's artifacts all landed in one bootstrap commit and its
+**Feature 001 has no lead time.** Its artifacts all landed in one bootstrap commit and its
 issues were filed about a minute later, so 001 reports `unmeasurable` — never `0`. A
-0-hour lead time on a board would read as a triumph. Real numbers start at feature 002.
+0-hour lead time on a board would read as a triumph. Real lead-time numbers start at
+feature 002.
+
+Its **churn** is a different matter and is reported. Sharing a first commit withholds the
+lead time, not the edit count: `spec.md`'s timestamp is real either way, and an `intent.md`
+commit after it is real rework. 001 already has one, which is the number the board's
+post-spec-churn trigger watches.
 
 Run `npm run plan:metrics` to see it locally; the daily `sdlc-metrics.yml` workflow is
 what publishes it.

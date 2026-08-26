@@ -42,13 +42,13 @@ Why spans are stamped `now` with near-zero duration, and lead time is an attribu
 Why feature 001 reports unmeasurable rather than 0
     All six of feature 001's artifacts landed in one bootstrap commit (`7c14ea0`),
     and its `feature:001` issues were filed roughly 75 seconds *after* that commit.
-    Its lead time is genuinely undefined (the issue-derived t0 postdates the intent
-    commit -> a negative "lead time"), and its post-spec churn is trivially
-    undefined too (intent.md and spec.md share one commit, so "edited after spec
-    started" has no meaning). A `0` in either field would read as a real number on
-    the board - a 0-hour lead time reads as a triumph, not as "no data". The guards
-    below exist so a fabricated zero can never reach Honeycomb. Real numbers start
-    at feature 002.
+    Its lead *time* is genuinely undefined (the issue-derived t0 postdates the
+    intent commit -> a negative "lead time"), so `lead_time_hours` is withheld: a
+    0-hour lead time on a board reads as a triumph, not as "no data", and the guards
+    below exist so a fabricated zero can never reach Honeycomb. Its post-spec
+    *churn* is a different matter and is reported - see the note in
+    `compute_git_facts` on why sharing one commit suppresses the lead time but not
+    the edit count. Real lead-time numbers start at feature 002.
 
 Why `--emit` fails loud where the vendored hooks fail soft
     `otel_span.emit_spans` is deliberately fire-and-forget: export failure is
@@ -446,11 +446,20 @@ def compute_git_facts(root: str, feature_dir: str) -> "dict[str, Any] | None":
         spec_t0, _spec_author, spec_sha, _spec_t1_source = spec_creation
         facts["spec_committed_at"] = spec_t0
         facts["spec_sha"] = spec_sha
-        if spec_sha != intent_sha:
-            intent_records = git_path_history(root, intent_rel)
-            facts["post_spec_edits"] = count_post_spec_edits(intent_records, spec_t0)
-        # else: intent.md and spec.md were both first added in the same commit -
-        # "post-spec churn" has no meaning, so post_spec_edits stays None (omitted).
+        # Counted whether or not intent.md and spec.md share their first commit.
+        # Issue #29 said to omit churn in the same-commit case on the grounds that
+        # it is "undefined too", but that conflates two independent things: the
+        # *lead time* is undefined there (see `measurable` below), the churn is
+        # not. spec_t0 is a real timestamp either way, and "intent commits
+        # strictly after it" is a real count either way. Feature 001 is the case
+        # that settled it: its artifacts share the bootstrap commit, and 706ea65
+        # then edited intent.md the next day. That is exactly the rework the
+        # board's `MAX(sdlc.intent.post_spec_edits) > 0` trigger exists to catch,
+        # and omitting it would hide the one signal that means anything at n=1.
+        # post_spec_edits stays None only when there is no spec.md at all - the
+        # case that genuinely has no baseline to measure from.
+        intent_records = git_path_history(root, intent_rel)
+        facts["post_spec_edits"] = count_post_spec_edits(intent_records, spec_t0)
 
     return facts
 

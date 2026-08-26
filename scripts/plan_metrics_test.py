@@ -399,8 +399,19 @@ def row_0(root: str) -> "tuple[bool, list[str]]":
     ok = expect_eq(notes, "001.measurable", feature.get("measurable"), False) and ok
     ok = expect_eq(notes, "001.t0_source", feature.get("t0_source"), "none") and ok
     ok = expect_absent(notes, "001.lead_time_hours", feature, "lead_time_hours") and ok
+    # 001's artifacts share the bootstrap commit, which withholds its lead time -
+    # but 706ea65 edited intent.md afterwards, so its churn is real and must be
+    # reported. Asserted as ">= 1 and present" rather than an exact count on
+    # purpose: this row reads the live repo, and the next edit to that file would
+    # otherwise turn a correct number into a red row.
+    churn = feature.get("intent_post_spec_edits")
     ok = (
-        expect_absent(notes, "001.intent_post_spec_edits", feature, "intent_post_spec_edits")
+        expect_true(
+            notes,
+            f"001.intent_post_spec_edits is present and >= 1 (got {churn!r}) - the "
+            "shared first commit withholds the lead time, not the churn",
+            isinstance(churn, int) and not isinstance(churn, bool) and churn >= 1,
+        )
         and ok
     )
     ok = (
@@ -463,14 +474,23 @@ def row_1(root: str) -> "tuple[bool, list[str]]":
 
 
 def row_2(root: str) -> "tuple[bool, list[str]]":
-    """features/002-synth with intent.md AND spec.md added in the SAME commit.
-    "Post-spec churn" has no meaning when there is no gap to churn into, so
-    intent_post_spec_edits must be omitted (not 0), and the two committed_at
-    timestamps must be identical."""
+    """features/002-synth with intent.md AND spec.md added in the SAME commit, then
+    one later edit to intent.md.
+
+    Sharing a first commit suppresses the *lead time* (see row 3 for why - the
+    guards are about t0) but must NOT suppress the churn count. spec_t0 is a real
+    timestamp even when it equals t1, and an intent edit after it is real rework.
+    Feature 001 is the live case: bootstrap commit 7c14ea0 carries both artifacts
+    and 706ea65 edited intent.md afterwards, which is precisely what the board's
+    MAX(sdlc.intent.post_spec_edits) > 0 trigger watches for. Issue #29 originally
+    specified omitting it here; that was wrong and this row is what pins the
+    correction."""
     notes: "list[str]" = []
     write_file(root, "features/002-synth/intent.md", "intent v1\n")
     write_file(root, "features/002-synth/spec.md", "spec v1\n")
     commit(root, "add intent and spec together", "2026-02-01T00:00:00Z")
+    write_file(root, "features/002-synth/intent.md", "intent v1\nrevised\n")
+    commit(root, "revise the intent after the spec", "2026-02-04T00:00:00Z")
 
     report = run_metrics(root, extra_args=("--no-github",))
     feature = find(report, "002")
@@ -481,7 +501,16 @@ def row_2(root: str) -> "tuple[bool, list[str]]":
     ok = True
     ok = expect_eq(notes, "002.measurable", feature.get("measurable"), False) and ok
     ok = (
-        expect_absent(notes, "002.intent_post_spec_edits", feature, "intent_post_spec_edits")
+        expect_eq(
+            notes,
+            "002.intent_post_spec_edits (counted despite the shared first commit)",
+            feature.get("intent_post_spec_edits"),
+            1,
+        )
+        and ok
+    )
+    ok = (
+        expect_absent(notes, "002.lead_time_hours", feature, "lead_time_hours")
         and ok
     )
     ok = (
@@ -773,7 +802,11 @@ ROWS: "list[tuple[str, Callable[[str], tuple[bool, list[str]]]]]" = [
         "gh stub issue filed 24h before intent",
         row_1,
     ),
-    ("features/002-synth: intent.md and spec.md added in the same commit", row_2),
+    (
+        "features/002-synth: intent.md and spec.md in one commit, then a later "
+        "intent edit - churn still counted",
+        row_2,
+    ),
     (
         "features/002-synth: intent committed before the stubbed issue was filed "
         "(would-be negative lead time)",
