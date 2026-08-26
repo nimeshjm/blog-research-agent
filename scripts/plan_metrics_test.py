@@ -692,6 +692,7 @@ def row_8(root: str) -> "tuple[bool, list[str]]":
 
     extra_env = write_gh_stub(
         root,
+        "002",
         [
             {
                 "number": 201,
@@ -733,6 +734,7 @@ def row_9(root: str) -> "tuple[bool, list[str]]":
 
     extra_env = write_gh_stub(
         root,
+        "002",
         [
             {
                 "number": 301,
