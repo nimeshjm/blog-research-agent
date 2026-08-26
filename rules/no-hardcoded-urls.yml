@@ -1,0 +1,7 @@
+id: no-hardcoded-urls
+language: TypeScript
+severity: warning
+message: no http(s) URL string literal in src/
+rule:
+  kind: string
+  regex: "https?://"

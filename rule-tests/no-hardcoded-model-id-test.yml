@@ -1,0 +1,7 @@
+id: no-hardcoded-model-id
+valid:
+  - const model = env.LLM_MODEL;
+  - const label = "gpt-oss-120b";
+invalid:
+  - const model = "@cf/openai/gpt-oss-120b";
+  - env.AI.run("@cf/meta/llama", { messages });

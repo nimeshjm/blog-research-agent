@@ -1,0 +1,30 @@
+id: tracing-import-seam
+snapshots:
+  import { WorkflowStep, tracing } from 'cloudflare:workers';:
+    labels:
+    - source: tracing
+      style: primary
+      start: 23
+      end: 30
+    - source: '''cloudflare:workers'''
+      style: secondary
+      start: 38
+      end: 58
+    - source: import { WorkflowStep, tracing } from 'cloudflare:workers';
+      style: secondary
+      start: 0
+      end: 59
+  import { tracing } from 'cloudflare:workers';:
+    labels:
+    - source: tracing
+      style: primary
+      start: 9
+      end: 16
+    - source: '''cloudflare:workers'''
+      style: secondary
+      start: 24
+      end: 44
+    - source: import { tracing } from 'cloudflare:workers';
+      style: secondary
+      start: 0
+      end: 45

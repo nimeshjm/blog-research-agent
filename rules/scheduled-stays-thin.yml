@@ -1,0 +1,24 @@
+id: scheduled-stays-thin
+language: TypeScript
+severity: error
+message: keep scheduled() thin - step.do/AI.run/fetch/DB.prepare/loops belong in the Workflow
+files:
+  - "src/index.ts"
+rule:
+  all:
+    - kind: method_definition
+    - has:
+        field: name
+        regex: "^scheduled$"
+    - has:
+        stopBy: end
+        any:
+          - pattern: step.do($$$ARGS)
+          - pattern: $ENV.AI.run($$$ARGS)
+          - pattern: fetch($$$ARGS)
+          - pattern: DB.prepare($$$ARGS)
+          - pattern: $OBJ.DB.prepare($$$ARGS)
+          - kind: for_statement
+          - kind: for_in_statement
+          - kind: while_statement
+          - kind: do_statement

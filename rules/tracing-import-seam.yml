@@ -1,0 +1,18 @@
+id: tracing-import-seam
+language: TypeScript
+severity: warning
+message: value import of `tracing` from cloudflare:workers only in src/lib/trace.ts
+ignores:
+  - "**/lib/trace.ts"
+rule:
+  kind: import_specifier
+  regex: "^tracing$"
+  not:
+    follows:
+      regex: "^type$"
+  inside:
+    kind: import_statement
+    stopBy: end
+    has:
+      field: source
+      regex: "cloudflare:workers"

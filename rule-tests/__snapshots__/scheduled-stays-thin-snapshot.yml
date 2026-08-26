@@ -1,0 +1,134 @@
+id: scheduled-stays-thin
+snapshots:
+  ? |
+    export default {
+      async scheduled(controller, env, _ctx) {
+        await env.AI.run(model, {});
+      },
+    };
+  : labels:
+    - source: |-
+        async scheduled(controller, env, _ctx) {
+            await env.AI.run(model, {});
+          }
+      style: primary
+      start: 19
+      end: 96
+    - source: scheduled
+      style: secondary
+      start: 25
+      end: 34
+    - source: env.AI.run(model, {})
+      style: secondary
+      start: 70
+      end: 91
+  ? |
+    export default {
+      async scheduled(controller, env, _ctx) {
+        await fetch('https://example.com');
+      },
+    };
+  : labels:
+    - source: |-
+        async scheduled(controller, env, _ctx) {
+            await fetch('https://example.com');
+          }
+      style: primary
+      start: 19
+      end: 103
+    - source: scheduled
+      style: secondary
+      start: 25
+      end: 34
+    - source: fetch('https://example.com')
+      style: secondary
+      start: 70
+      end: 98
+  ? |
+    export default {
+      async scheduled(controller, env, _ctx) {
+        env.DB.prepare('select 1');
+      },
+    };
+  : labels:
+    - source: |-
+        async scheduled(controller, env, _ctx) {
+            env.DB.prepare('select 1');
+          }
+      style: primary
+      start: 19
+      end: 95
+    - source: scheduled
+      style: secondary
+      start: 25
+      end: 34
+    - source: env.DB.prepare('select 1')
+      style: secondary
+      start: 64
+      end: 90
+  ? |
+    export default {
+      async scheduled(controller, env, _ctx) {
+        for (let i = 0; i < 3; i++) { doThing(i); }
+      },
+    };
+  : labels:
+    - source: |-
+        async scheduled(controller, env, _ctx) {
+            for (let i = 0; i < 3; i++) { doThing(i); }
+          }
+      style: primary
+      start: 19
+      end: 111
+    - source: scheduled
+      style: secondary
+      start: 25
+      end: 34
+    - source: for (let i = 0; i < 3; i++) { doThing(i); }
+      style: secondary
+      start: 64
+      end: 107
+  ? |
+    export default {
+      async scheduled(controller, env, _ctx) {
+        step.do('x', async () => {});
+      },
+    };
+  : labels:
+    - source: |-
+        async scheduled(controller, env, _ctx) {
+            step.do('x', async () => {});
+          }
+      style: primary
+      start: 19
+      end: 97
+    - source: scheduled
+      style: secondary
+      start: 25
+      end: 34
+    - source: step.do('x', async () => {})
+      style: secondary
+      start: 64
+      end: 92
+  ? |
+    export default {
+      async scheduled(controller, env, _ctx) {
+        while (true) { doThing(); }
+      },
+    };
+  : labels:
+    - source: |-
+        async scheduled(controller, env, _ctx) {
+            while (true) { doThing(); }
+          }
+      style: primary
+      start: 19
+      end: 95
+    - source: scheduled
+      style: secondary
+      start: 25
+      end: 34
+    - source: while (true) { doThing(); }
+      style: secondary
+      start: 64
+      end: 91

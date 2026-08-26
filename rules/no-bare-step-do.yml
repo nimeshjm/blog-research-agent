@@ -1,0 +1,8 @@
+id: no-bare-step-do
+language: TypeScript
+severity: error
+message: step.do( only in src/lib/trace.ts - use tracedStep/tracerFor
+ignores:
+  - "**/lib/trace.ts"
+rule:
+  pattern: step.do($$$ARGS)

@@ -1,0 +1,7 @@
+id: no-hardcoded-urls
+valid:
+  - const path = "/api/feeds";
+  - const label = "not a url at all";
+invalid:
+  - const url = "https://example.com/feed.xml";
+  - const url = "http://example.com/feed.xml";

@@ -1,0 +1,14 @@
+id: ai-run-only-in-llm
+snapshots:
+  const result = await env.AI.run(model, { messages });:
+    labels:
+    - source: env.AI.run(model, { messages })
+      style: primary
+      start: 21
+      end: 52
+  env.AI.run(prompt):
+    labels:
+    - source: env.AI.run(prompt)
+      style: primary
+      start: 0
+      end: 18

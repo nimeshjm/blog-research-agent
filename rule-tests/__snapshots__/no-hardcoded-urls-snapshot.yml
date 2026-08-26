@@ -1,0 +1,14 @@
+id: no-hardcoded-urls
+snapshots:
+  const url = "http://example.com/feed.xml";:
+    labels:
+    - source: '"http://example.com/feed.xml"'
+      style: primary
+      start: 12
+      end: 41
+  const url = "https://example.com/feed.xml";:
+    labels:
+    - source: '"https://example.com/feed.xml"'
+      style: primary
+      start: 12
+      end: 42

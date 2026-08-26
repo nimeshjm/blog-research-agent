@@ -1,0 +1,7 @@
+id: no-hardcoded-model-id
+language: TypeScript
+severity: warning
+message: model id belongs in wrangler.toml LLM_MODEL, not a literal
+rule:
+  kind: string
+  regex: "@cf/"
