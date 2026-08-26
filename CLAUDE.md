@@ -22,7 +22,9 @@ npm run test:checks        # mutation table proving each of those fires
 npm run hooks:install      # git config core.hooksPath .githooks (all of the above on push)
 ```
 
-`pnpm` is not installed on this machine; use `npm`.
+`pnpm` is not installed on this machine; use `npm`. A fresh git worktree has no
+`node_modules`, and the eslint rows of `test:checks` need one — install, or symlink the
+main checkout's.
 
 `npm run dev` requires Cloudflare auth (`npx wrangler login`, interactive): the `AI`
 binding has no local simulation and runs in `remote` mode, so wrangler opens a remote
