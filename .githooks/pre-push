@@ -8,7 +8,32 @@
 # being pushed, so stdin is left alone entirely.
 set -e
 
-echo "pre-push: npm run typecheck && npm run lint:ast && npm run test:ast && npm run lint:ts && npm run review:checks && npm run test:checks && npm run test:plan-metrics"
+# `core.hooksPath` is repository config, so every linked worktree shares one
+# value. That is fine when it is relative - git resolves it against the root of
+# whichever worktree is pushing, so each one runs its own copy of this file.
+# Set to an *absolute* path (which is what `.git/config` held when this guard was
+# written, see issue #33) it stops being per-worktree: every push runs the main
+# checkout's working copy of this script against the pushing worktree's own
+# package.json. The two then come from different branches, and it breaks both
+# ways - a push fails on a script the pushing branch does not have, or, worse and
+# silently, a branch that *changes* a hook pushes without the new hook ever
+# running. Neither is visible without going and looking at the config.
+#
+# So refuse rather than run the wrong branch's checks. `npm run hooks:install`
+# already writes the relative value; this only has to notice when something else
+# has not.
+hooks_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+top=$(git rev-parse --show-toplevel)
+expected=$(CDPATH= cd -- "$top/.githooks" 2>/dev/null && pwd -P)
+if [ "$hooks_dir" != "$expected" ]; then
+  echo "pre-push: refusing to run - this hook lives in $hooks_dir" >&2
+  echo "pre-push: but the push is from $top, whose hooks are in ${expected:-<none>}" >&2
+  echo "pre-push: core.hooksPath is $(git config --get core.hooksPath) and must be relative." >&2
+  echo "pre-push: fix with: npm run hooks:install" >&2
+  exit 1
+fi
+
+echo "pre-push: npm run typecheck && npm run lint:ast && npm run test:ast && npm run lint:ts && npm run review:checks && npm run test:checks"
 npm run typecheck
 npm run lint:ast
 npm run test:ast

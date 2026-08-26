@@ -24,7 +24,9 @@ npm run test:plan-metrics  # mutation table proving each plan_metrics guard fire
 npm run hooks:install      # git config core.hooksPath .githooks (all of the above on push)
 ```
 
-`pnpm` is not installed on this machine; use `npm`.
+`pnpm` is not installed on this machine; use `npm`. A fresh git worktree has no
+`node_modules`, and the eslint rows of `test:checks` need one — install, or symlink the
+main checkout's.
 
 `plan:metrics` and `test:plan-metrics` invoke **`python3.14` by name**, not bare `python3`.
 That is deliberate: bare `python3` is 3.9.6 on this machine, and making it 3.14 would mean

@@ -37,12 +37,14 @@ time; a pull request means something actually turned up.
 - **10,000 neurons per day** is the entire inference budget. A run must fit well inside
   a single day's allowance, with a hard per-run ceiling that stops the pipeline rather
   than overspending.
-- **No paid search API and no API keys for research sources.** Discovery has to work
-  from things that are free and open — RSS and Atom feeds, and direct fetches of the
-  pages those feeds point at.
+- **No paid search API and no API keys for research sources in this iteration.**
+  Discovery has to work from things that are free and open — RSS and Atom feeds, and
+  direct fetches of the pages those feeds point at. A real search API is the next
+  iteration, and relaxing this is the point of it.
 - **The agent writes to branches only.** It never pushes to the blog's default branch
   and never publishes. The merge gate is a human.
-- The single secret it holds is a GitHub token, fine-grained and scoped to the blog repo.
+- The only secret it holds in this iteration is a GitHub token, fine-grained and scoped
+  to the blog repo. The next iteration adds a second one, for the search API.
 
 ## Topic selection
 
@@ -54,6 +56,9 @@ Queue first, else propose.
   `https://nimeshjm.com/rss.xml` for what has already been covered and the source feeds
   for what is new. A proposed topic is marked as agent-originated so it is obvious in
   review which runs were self-directed.
+- Merging a draft closes its topic row. The human merge is the signal that the topic is
+  spent, so the queue follows it automatically rather than needing a second manual step.
+  The merge gate stays with the human either way; only the bookkeeping is automatic.
 
 ## Non-goals
 
@@ -71,11 +76,15 @@ Queue first, else propose.
 - ~~The blog repo name is unknown.~~ **Resolved:** `nimeshjm/nimeshjm.com` — private,
   Astro, default branch `main`, posts at `src/content/blog/<slug>/index.mdx`. The
   content-collection schema is in `src/content.config.ts` and is recorded in `spec.md`.
-- **`GITHUB_TOKEN` is not yet issued.** Needs `contents: write` and
-  `pull_requests: write`, scoped to `nimeshjm/nimeshjm.com` alone. Blocks the
-  pull-request step only; everything upstream of it can be built and tested without it.
-- Should merging a draft automatically close the corresponding row in the topic queue,
-  or should that stay a manual step?
-- A real search API (for example Brave's free tier, 2,000 queries/month) would widen
-  discovery well beyond a feed allowlist. It is out of scope here because it is neither
-  Cloudflare nor key-free, but it is the most likely second iteration.
+- ~~`GITHUB_TOKEN` is not yet issued.~~ **Resolved:** issued, with `contents: write`
+  and `pull_requests: write` scoped to `nimeshjm/nimeshjm.com` alone, and set as a
+  wrangler secret — which is where the Worker reads it from, and the only place it may
+  live. The pull-request step is unblocked.
+- ~~Should merging a draft automatically close the corresponding row in the topic
+  queue, or should that stay a manual step?~~ **Resolved:** automatic. Recorded under
+  Topic selection above.
+- ~~Should discovery use a real search API?~~ **Resolved:** yes, in the next iteration,
+  not this one. A search API (for example Brave's free tier, 2,000 queries/month) widens
+  discovery well beyond a feed allowlist. Adopting it relaxes two constraints above — it
+  is neither Cloudflare nor key-free — which is why it is a new iteration rather than an
+  addition to this one.

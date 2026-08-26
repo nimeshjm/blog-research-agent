@@ -32,21 +32,95 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const CHECKER = path.join(__dirname, 'review-checks.mjs');
 
+// `cwd` is not enough to tell git which repository to act on. Git exports
+// GIT_DIR (and GIT_WORK_TREE, GIT_INDEX_FILE, ...) to its hooks, and those
+// override discovery outright - so under the pre-push hook, every `git` call in
+// this file and in the checker would operate on the real repository no matter
+// which directory it ran in. That is the same bug as the gitdir pointer below,
+// arriving by a second route, and it reproduces only from a hook: `npm run
+// test:checks` by hand is clean. Strip the whole GIT_* family for the same
+// reason the GITHUB_* strip in runChecker takes the whole family.
+function envWithoutGitVars() {
+  return Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')));
+}
+
+/** `git rev-parse <flag>` as an absolute path, or null if git cannot answer. */
+function gitPath(dir, flag) {
+  const r = spawnSync('git', ['rev-parse', '--path-format=absolute', flag], {
+    cwd: dir,
+    encoding: 'utf8',
+    env: envWithoutGitVars(),
+  });
+  return r.status === 0 ? r.stdout.trim() : null;
+}
+
+// The files git keeps per worktree rather than in the common dir. Everything
+// else a row needs - objects, refs, packed-refs, config - is shared and comes
+// across with the common dir. `commondir` and `gitdir` are deliberately absent:
+// copying either one re-links the sandbox to the real repository and silently
+// reintroduces the bug this exists to prevent.
+const PER_WORKTREE_GIT_FILES = ['HEAD', 'index', 'ORIG_HEAD', 'config.worktree'];
+
+function isLinkedWorktree(dir) {
+  const dotGit = path.join(dir, '.git');
+  return fs.existsSync(dotGit) && fs.statSync(dotGit).isFile();
+}
+
+// Each row's sandbox has to be a *self-contained* repository: rows 2 and 11 run
+// `git add -f` and `git checkout -b`, and the checker reads the index, the branch
+// name and full history back out. Copying the tree verbatim gives that in an
+// ordinary checkout, where `.git` is a directory.
+//
+// In a linked worktree it does not. There `.git` is a one-line
+// `gitdir: /repo/.git/worktrees/<name>` pointer, so a verbatim copy leaves every
+// sandbox pointing at the real shared gitdir and every row's `git` call operating
+// on the real repository: row 2 staged `.dev.vars` in the live index and row 11
+// moved the live HEAD onto `not-an-issue-branch`, neither of them undone, which
+// then failed 14 later rows as `unexpected FAIL` (issue #31).
+//
+// So when the source is a linked worktree, skip the pointer and materialise a
+// standalone `.git` from the common dir, taking HEAD and the index from the
+// worktree's own gitdir so the row still sees the state it was launched on.
+// `assertRealRepoUntouched` in the runner is the backstop if this ever regresses.
 function copyTree(src, dest) {
+  const linked = isLinkedWorktree(src);
   fs.cpSync(src, dest, {
     recursive: true,
     filter: (s) => {
       const rel = path.relative(src, s);
       if (rel === 'node_modules' || rel.startsWith(`node_modules${path.sep}`)) return false;
       if (rel === '.wrangler' || rel.startsWith(`.wrangler${path.sep}`)) return false;
-      // A local `.venv` is 26 MB and this copies the tree once per row.
-      // scripts/plan_metrics.py's `--emit` path needs opentelemetry installed,
-      // and CLAUDE.md tells you to put that in a venv, so one shows up here as
-      // soon as anyone follows those instructions.
-      if (rel === '.venv' || rel.startsWith(`.venv${path.sep}`)) return false;
+      if (linked && rel === '.git') return false;
       return true;
     },
   });
+  if (!linked) return;
+
+  const commonDir = gitPath(src, '--git-common-dir');
+  const ownDir = gitPath(src, '--git-dir');
+  if (!commonDir || !ownDir) {
+    throw new Error(`${src} has a gitdir pointer but git could not resolve it (common=${commonDir}, own=${ownDir})`);
+  }
+  const destGit = path.join(dest, '.git');
+  fs.cpSync(commonDir, destGit, {
+    recursive: true,
+    // `worktrees/` holds the per-worktree gitdirs of every linked worktree,
+    // each pointing back out at its own checkout. None of it belongs in a
+    // standalone copy.
+    filter: (s) => {
+      const rel = path.relative(commonDir, s);
+      return !(rel === 'worktrees' || rel.startsWith(`worktrees${path.sep}`));
+    },
+  });
+  for (const name of PER_WORKTREE_GIT_FILES) {
+    const from = path.join(ownDir, name);
+    const to = path.join(destGit, name);
+    // Removing when the worktree has none is the half that matters: the common
+    // dir carries the *main* checkout's HEAD and index, and inheriting those
+    // would be a quieter version of the same bug.
+    if (fs.existsSync(from)) fs.copyFileSync(from, to);
+    else fs.rmSync(to, { force: true });
+  }
 }
 
 function readFile(dir, rel) {
@@ -65,7 +139,7 @@ function mustReplace(dir, rel, oldStr, newStr, { count = 1 } = {}) {
 }
 
 function git(dir, args) {
-  const r = spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+  const r = spawnSync('git', args, { cwd: dir, encoding: 'utf8', env: envWithoutGitVars() });
   if (r.status !== 0) {
     throw new Error(`git ${args.join(' ')} failed in ${dir}: ${r.stderr}`);
   }
@@ -92,7 +166,12 @@ function runChecker(root, extraArgs = [], extraEnv = {}) {
   // exercise the CI code path (assert `currentBranch()`'s GITHUB_HEAD_REF
   // branch) can still do so - `extraEnv` is applied after the strip, so it
   // sets GITHUB_* back deliberately for that one row's child only.
-  const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GITHUB_')));
+  // GIT_* goes too, and for a sharper reason than GITHUB_*: the checker runs
+  // git against `--root <tmp>`, and an inherited GIT_DIR would point it at the
+  // real repository instead. See envWithoutGitVars().
+  const baseEnv = Object.fromEntries(
+    Object.entries(envWithoutGitVars()).filter(([k]) => !k.startsWith('GITHUB_')),
+  );
   const r = spawnSync('node', [CHECKER, '--root', root, '--json', ...extraArgs], {
     encoding: 'utf8',
     env: { ...baseEnv, ...extraEnv },
@@ -117,6 +196,12 @@ const ESLINT_CONFIG = path.join(REPO_ROOT, 'eslint.config.mjs');
 const ESLINT_BIN = path.join(REPO_ROOT, 'node_modules', 'eslint', 'bin', 'eslint.js');
 
 function runEslint(root) {
+  // A fresh worktree has no `node_modules` of its own, and ESLINT_BIN is
+  // resolved under REPO_ROOT. Say so, rather than letting node print a
+  // MODULE_NOT_FOUND stack that reads like a defect in the row.
+  if (!fs.existsSync(ESLINT_BIN)) {
+    throw new Error(`eslint is not installed at ${ESLINT_BIN} - run \`npm install\` in ${REPO_ROOT} (a fresh worktree needs its own install, or a symlink to one)`);
+  }
   // Run via `node <bin>`, not the `.bin/eslint` shim, and point `--config`
   // at *this repo's* eslint.config.mjs by absolute path: flat config
   // resolves plugins relative to the config file's own location, so
@@ -432,11 +517,105 @@ const rows = [
       mustReplace(dir, 'src/workflow.ts', "await traceStep(\n      'record-success',", "traceStep(\n      'record-success',");
     },
   },
+  {
+    // Appended rather than inserted: the row indices above are referred to by
+    // number, here and in issue #31.
+    name: 'copyTree gives a linked worktree a sandbox that owns its gitdir (issue #31)',
+    tool: 'worktree',
+  },
 ];
 
 // ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
+
+// What a leaking row can actually reach, and nothing wider. Deliberately not
+// `for-each-ref` or `git branch`: another session may be committing in the
+// shared checkout at the same time, and its work is not this harness's business
+// to police. HEAD covers row 11's `checkout -b`; porcelain status covers row
+// 2's staged `.dev.vars`.
+function realRepoFingerprint() {
+  const env = envWithoutGitVars();
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8', env });
+  const symref = spawnSync('git', ['symbolic-ref', '--quiet', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8', env });
+  const status = spawnSync('git', ['status', '--porcelain'], { cwd: REPO_ROOT, encoding: 'utf8', env });
+  if (head.status !== 0 || status.status !== 0) return null; // no git, or not a repo
+  // symbolic-ref exits non-zero on a detached HEAD, which is a state, not an error.
+  return JSON.stringify({ head: head.stdout.trim(), ref: symref.stdout.trim(), status: status.stdout });
+}
+
+/**
+ * Fails the whole run the moment a row writes through to the real repository,
+ * rather than letting the pollution surface as `unexpected FAIL` noise on every
+ * row after it. That indirection is what made issue #31 take a while to read.
+ */
+function assertRealRepoUntouched(before, rowLabel) {
+  if (before === null) return;
+  const after = realRepoFingerprint();
+  if (after === before) return;
+  console.log(`\n[HERMETICITY FAIL] ${rowLabel} mutated the real repository at ${REPO_ROOT}`);
+  console.log(`    before: ${before}`);
+  console.log(`    after:  ${after}`);
+  console.log('    Stopping: every later row would report unexpected failures caused by this,');
+  console.log('    not by its own mutation. See issue #31 and copyTree() above.');
+  process.exit(1);
+}
+
+// Proves the linked-worktree branch of copyTree, which is otherwise dead code
+// anywhere `.git` is a directory - CI included, so it would rot unnoticed and
+// only be missed the next time someone works in a worktree. Creates a real
+// linked worktree, copies *that* into a sandbox, and asserts the sandbox owns
+// its gitdir. Read-only with respect to the real repository: every assertion
+// runs before anything would write, so a regression here reports rather than
+// stomps.
+function checkWorktreeContainment(tmpRoot) {
+  const wt = path.join(tmpRoot, 'linked-worktree');
+  const notes = [];
+  git(REPO_ROOT, ['worktree', 'add', '--detach', '--quiet', wt, 'HEAD']);
+  try {
+    if (!isLinkedWorktree(wt)) {
+      notes.push(`expected ${wt}/.git to be a gitdir pointer file - the row proves nothing without one`);
+      return { ok: false, notes };
+    }
+    const sandbox = path.join(tmpRoot, 'linked-worktree-sandbox');
+    copyTree(wt, sandbox);
+
+    const resolved = gitPath(sandbox, '--absolute-git-dir');
+    const root = fs.realpathSync(sandbox);
+    if (!resolved || !fs.realpathSync(resolved).startsWith(root)) {
+      notes.push(`sandbox gitdir resolved to ${resolved}, outside ${root} - rows would run against the real repository`);
+      return { ok: false, notes };
+    }
+    notes.push(`OK: sandbox owns its gitdir (${path.relative(root, fs.realpathSync(resolved))})`);
+
+    // HEAD came from the worktree, not from the common dir's copy: the source
+    // worktree is detached, so a leaked HEAD would name the main checkout's branch.
+    const symref = spawnSync('git', ['symbolic-ref', '--quiet', 'HEAD'], {
+      cwd: sandbox,
+      encoding: 'utf8',
+      env: envWithoutGitVars(),
+    });
+    if (symref.status === 0) {
+      notes.push(`sandbox HEAD is ${symref.stdout.trim()}, but the source worktree is detached - HEAD was inherited from the common dir`);
+      return { ok: false, notes };
+    }
+    notes.push('OK: HEAD came from the worktree, not the common dir');
+
+    // The two things the git-backed checks need, readable from the copy.
+    if (git(sandbox, ['ls-files']).trim() === '') {
+      notes.push('sandbox index lists no files - `git ls-files` checks would pass vacuously');
+      return { ok: false, notes };
+    }
+    if (git(sandbox, ['log', '--all', '--oneline', '-1']).trim() === '') {
+      notes.push('sandbox has no history - the `git log --all` clause of dev-vars-untracked would pass vacuously');
+      return { ok: false, notes };
+    }
+    notes.push('OK: index and full history came across');
+    return { ok: true, notes };
+  } finally {
+    git(REPO_ROOT, ['worktree', 'remove', '--force', wt]);
+  }
+}
 
 function statusMap(result) {
   const m = new Map();
@@ -447,15 +626,31 @@ function statusMap(result) {
 function run() {
   let failures = 0;
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'review-checks-test-'));
+  const fingerprint = realRepoFingerprint();
 
   for (const [i, row] of rows.entries()) {
     const dir = path.join(tmpRoot, `row-${i}`);
-    copyTree(REPO_ROOT, dir);
+    if (row.tool !== 'worktree') copyTree(REPO_ROOT, dir);
     try {
-      row.mutate(dir);
+      row.mutate?.(dir);
     } catch (err) {
       console.log(`[SETUP FAIL] row ${i}: ${row.name}\n    ${err.message}`);
       failures++;
+      continue;
+    }
+
+    if (row.tool === 'worktree') {
+      let result;
+      try {
+        result = checkWorktreeContainment(tmpRoot);
+      } catch (err) {
+        result = { ok: false, notes: [err.message] };
+      }
+      console.log(`\nRow ${i}: ${row.name}`);
+      for (const note of result.notes) console.log(`    ${note}`);
+      console.log(`    -> ${result.ok ? 'PASS' : 'FAIL'}`);
+      if (!result.ok) failures++;
+      assertRealRepoUntouched(fingerprint, `row ${i} (${row.name})`);
       continue;
     }
 
@@ -484,6 +679,7 @@ function run() {
       }
       console.log(`    -> ${rowOk ? 'PASS' : 'FAIL'}`);
       if (!rowOk) failures++;
+      assertRealRepoUntouched(fingerprint, `row ${i} (${row.name})`);
       continue;
     }
 
@@ -534,6 +730,7 @@ function run() {
     for (const note of notes) console.log(`    ${note}`);
     console.log(`    -> ${rowOk ? 'PASS' : 'FAIL'}`);
     if (!rowOk) failures++;
+    assertRealRepoUntouched(fingerprint, `row ${i} (${row.name})`);
   }
 
   fs.rmSync(tmpRoot, { recursive: true, force: true });
