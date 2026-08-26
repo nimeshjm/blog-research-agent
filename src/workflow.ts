@@ -17,7 +17,7 @@ import {
  * Structured as a Workflow rather than a plain cron handler because the free
  * plan gives 10 ms of CPU per *invocation* and 15 minutes of wall-clock for a
  * whole cron run, whereas a Workflow gets 10 ms of CPU per *step* with no
- * wall-clock cap. Parsing ~20 feeds and ~15 articles cannot fit in one 10 ms
+ * wall-clock cap. Parsing ~46 feeds and ~15 articles cannot fit in one 10 ms
  * budget, so each fetch-and-parse is its own step.
  *
  * Every step body must be idempotent: Workflows retry steps on failure.
@@ -66,6 +66,11 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
     //    single feed fetch per step leaves generous headroom for redirects.
     //    Parsing only - dedupe is batched in `shortlist`, because a per-item
     //    seen_urls query would blow both the 10 ms CPU and the 50-query budget.
+    //    Each gather applies GATHER_WINDOW_DAYS before returning. That is not
+    //    tuning: most of the allowlist is whole archives rather than rolling
+    //    feeds, and unwindowed they put 4,742 candidates into `shortlist`,
+    //    whose chunked seen_urls batch would then need 48 of D1's 50 queries
+    //    per invocation. Windowed it is 678 candidates and 7 queries.
     const sources = await traceStep('load-sources', {}, async () => loadSources(this.env));
 
     const candidates: Candidate[] = [];
@@ -196,6 +201,27 @@ function isGrounded(summaries: ArticleSummary[]): boolean {
 const SUMMARY_NEURON_ESTIMATE = 300;
 const SYNTHESIS_NEURON_RESERVE = 1000;
 
+/**
+ * Discovery bounds. They exist because D1 allows 100 bound parameters per query
+ * and 50 queries per invocation, and `shortlist` checks every candidate against
+ * `seen_urls` in one batched pass. See spec.md, "The recency window in
+ * `gather`".
+ *
+ * The window is what the agent is for - it reports on recent work, not on
+ * archives - and the D1 arithmetic wants the same rule for its own reasons.
+ *
+ * There is deliberately no per-feed cap on *dated* items. arXiv publishes a
+ * whole day at once - cs.AI carries 352 items, cs.SE 62, all inside the window -
+ * and truncating that would starve the grounding gate of the papers it exists to
+ * find. The date window bounds the common case; SHORTLIST_MAX_CANDIDATES bounds
+ * a feed that dumps its archive with fresh timestamps.
+ */
+const GATHER_WINDOW_DAYS = 30;
+/** Backstop for items with no parseable date only. Zero such items today. */
+const GATHER_UNDATED_MAX_PER_FEED = 20;
+/** Newest-first ceiling: 40 of D1's 50 queries, ten spare. */
+const SHORTLIST_MAX_CANDIDATES = 4000;
+
 // ---------------------------------------------------------------------------
 // Step bodies. Implemented in feature 001's build stage; see
 // features/001-scheduled-research-drafts/plan.md.
@@ -220,7 +246,13 @@ async function loadSources(_env: Env): Promise<Source[]> {
 }
 
 async function gatherCandidates(_source: Source): Promise<Candidate[]> {
-  return notImplemented('gatherCandidates - fetch one feed, parse with HTMLRewriter, no D1');
+  // Apply GATHER_WINDOW_DAYS here, in the per-feed step, never in `shortlist` -
+  // the point is to bound the candidate count before it is aggregated across 46
+  // feeds. Dated items are filtered by date, never truncated by rank;
+  // GATHER_UNDATED_MAX_PER_FEED applies only to items carrying no parseable date.
+  void GATHER_WINDOW_DAYS;
+  void GATHER_UNDATED_MAX_PER_FEED;
+  return notImplemented('gatherCandidates - fetch one feed, window it, parse with HTMLRewriter, no D1');
 }
 
 async function shortlistCandidates(
@@ -228,8 +260,11 @@ async function shortlistCandidates(
   _candidates: Candidate[],
   _topic: Topic,
 ): Promise<Candidate[]> {
+  // Take the newest SHORTLIST_MAX_CANDIDATES *before* touching D1: the batch is
+  // chunked at 100 bound params per query against a 50-query invocation budget.
+  void SHORTLIST_MAX_CANDIDATES;
   return notImplemented(
-    'shortlistCandidates - one batched seen_urls query, rank against topic, cap at 15',
+    'shortlistCandidates - cap at 4,000, seen_urls in chunks of 100 params, rank, cap at 15',
   );
 }
 
