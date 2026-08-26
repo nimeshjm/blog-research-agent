@@ -373,11 +373,27 @@ checks.push({
     if (!ignored.ok) {
       findings.push({ file: '.dev.vars', line: 0, message: '.dev.vars is not covered by .gitignore' });
     }
-    const everAdded = runGit(ctx.root, [
-      'log', '--all', '--diff-filter=A', '--pretty=format:%H', '--', '.dev.vars', '.dev.vars.*',
-    ]);
-    if (everAdded.ok && everAdded.stdout.trim() !== '') {
-      findings.push({ file: '.dev.vars', line: 0, message: '.dev.vars (or a variant) was committed at some point in history' });
+    // A shallow clone (actions/checkout's default: fetch-depth 1) has almost no
+    // history to search, so `git log --all` here would silently find nothing and
+    // green-light the exact failure mode this clause exists to catch ("never
+    // committed" is the check that costs something, per the issue). Report that
+    // explicitly rather than reusing a false PASS - full history is available
+    // locally and in the pre-push hook, which is where this clause actually bites.
+    const shallow = runGit(ctx.root, ['rev-parse', '--is-shallow-repository']);
+    if (shallow.ok && shallow.stdout.trim() === 'true') {
+      findings.push({
+        file: '.dev.vars',
+        line: 0,
+        message: 'SKIP: shallow clone - cannot search full history for a past commit of .dev.vars; enforced fully by the pre-push hook',
+        skip: true,
+      });
+    } else {
+      const everAdded = runGit(ctx.root, [
+        'log', '--all', '--diff-filter=A', '--pretty=format:%H', '--', '.dev.vars', '.dev.vars.*',
+      ]);
+      if (everAdded.ok && everAdded.stdout.trim() !== '') {
+        findings.push({ file: '.dev.vars', line: 0, message: '.dev.vars (or a variant) was committed at some point in history' });
+      }
     }
     return findings;
   },

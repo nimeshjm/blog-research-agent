@@ -221,6 +221,29 @@ const rows = [
       );
     },
   },
+  {
+    // Row 11 alone can't tell "the spread was skipped" apart from "the call
+    // was never matched in the first place" - both look like zero findings.
+    // Add a forbidden property as the spread's sibling in the same object
+    // literal: if the classifier recognized the call at all, this must still
+    // be flagged even though the spread next to it is not.
+    name: 'spread + a forbidden sibling property in the same attrs literal - only the sibling is flagged',
+    expectFail: ['span-attributes-allowlisted'],
+    mutate(dir) {
+      mustReplace(
+        dir,
+        'src/workflow.ts',
+        "    const topic = await traceStep('select-topic', {}, async (span) => {",
+        "    await traced('spread-plus-forbidden-probe', { ...({ x: 1 }), [ATTR_TOPIC_ID]: ({ message: 'x' }).message }, async () => {});\n    const topic = await traceStep('select-topic', {}, async (span) => {",
+      );
+      mustReplace(
+        dir,
+        'src/workflow.ts',
+        "import {\n  ATTR_NEURONS_BUDGET,",
+        "import {\n  ATTR_NEURONS_BUDGET,\n  traced,",
+      );
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
