@@ -1006,13 +1006,20 @@ def main(argv: "list[str] | None" = None) -> int:
 #   the same window on purpose; MAX() over one feature's rows is idempotent
 #   where COUNT() or SUM() would multiply by the number of runs that day.
 #
-# A panel cannot be created before its column exists. Honeycomb creates a column
-# on first write, and this script deliberately omits `sdlc.plan.lead_time_hours`
-# and `sdlc.intent.survival_rate` rather than emit a fabricated zero - so until a
-# measurable feature lands and an intent is decided, the four panels that read
-# those two columns are rejected by the query API outright. The board carries
-# them as a text panel until then; add them from this list the day the columns
-# appear.
+# Four of these panels are not on the board yet, and creating their columns by
+# hand is the wrong way to get them there. This script omits
+# `sdlc.plan.lead_time_hours` and `sdlc.intent.survival_rate` rather than emit a
+# fabricated zero, so while those columns do not exist Honeycomb enforces that
+# for us: a query naming one is rejected outright. Create the column through the
+# Columns API and the rejection turns into a rendered `0` - COUNT is 0 but P50
+# and MAX both come back 0, so an "Intent lead time" panel shows a flat zero-hour
+# line and "Survival rate" a flat 0%. That is the exact misreading the omission
+# exists to prevent; the loud failure was the safety net. Measured on this
+# dataset 2026-08-26 after creating both columns as `float`.
+#
+# So: leave those four off the board until a measurable feature lands and the
+# columns fill themselves on the next emit. The board carries their specs as a
+# text panel until then.
 #
 # Column names below are exactly the attribute names `_build_specs` emits.
 # `npm run plan:metrics -- --json` prints the report those are mapped from, so
