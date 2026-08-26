@@ -26,9 +26,14 @@ npm run hooks:install      # git config core.hooksPath .githooks (all of the abo
 
 `pnpm` is not installed on this machine; use `npm`.
 
-`plan:metrics` and `test:plan-metrics` need **`python3` 3.14 or newer**. Only `--emit`
-needs `pip install opentelemetry-sdk opentelemetry-exporter-otlp-proto-http`; the default
-path and the tests are stdlib-only.
+`plan:metrics` and `test:plan-metrics` invoke **`python3.14` by name**, not bare `python3`.
+That is deliberate: bare `python3` is 3.9.6 on this machine, and making it 3.14 would mean
+reordering `PATH`, which silently stops the `claude-otel-hooks` hooks exporting until
+`opentelemetry` is reinstalled under the new interpreter. Pinning the name costs a two-file
+edit (`package.json` and `.github/workflows/sdlc-metrics.yml`) whenever the floor moves, and
+`plan_metrics.py` carries its own `sys.version_info` guard so a mismatch fails loudly rather
+than subtly. Only `--emit` needs `pip install opentelemetry-sdk
+opentelemetry-exporter-otlp-proto-http`; the default path and the tests are stdlib-only.
 
 `npm run dev` requires Cloudflare auth (`npx wrangler login`, interactive): the `AI`
 binding has no local simulation and runs in `remote` mode, so wrangler opens a remote

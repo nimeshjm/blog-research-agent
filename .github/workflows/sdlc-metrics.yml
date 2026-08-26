@@ -58,7 +58,7 @@ jobs:
       # everyone to ignore the one signal that matters. Once
       # OTEL_EXPORTER_OTLP_ENDPOINT is set, a red run means something.
       - if: vars.OTEL_EXPORTER_OTLP_ENDPOINT != ''
-        run: python3 scripts/plan_metrics.py --emit
+        run: python3.14 scripts/plan_metrics.py --emit
         env:
           OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
           OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
@@ -79,6 +79,6 @@ jobs:
       - if: vars.OTEL_EXPORTER_OTLP_ENDPOINT == ''
         run: |
           echo "::warning::OTEL_EXPORTER_OTLP_ENDPOINT is unset - no spans emitted. See the prerequisites on issue #29."
-          python3 scripts/plan_metrics.py
+          python3.14 scripts/plan_metrics.py
         env:
           GH_TOKEN: ${{ github.token }}
