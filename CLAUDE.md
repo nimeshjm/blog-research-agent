@@ -23,6 +23,12 @@ binding has no local simulation and runs in `remote` mode, so wrangler opens a r
 proxy session even under `wrangler dev`. `typecheck` and `deploy --dry-run` work
 offline.
 
+A merge to `main` also deploys the Worker automatically via GitHub Actions
+(`.github/workflows/deploy.yml`). Every pull request runs `.github/workflows/ci.yml`
+(`typecheck` + `deploy --dry-run`, secret-free). The Cloudflare API token and account id
+the deploy workflow needs live in this repo's GitHub secrets (`CLOUDFLARE_API_TOKEN`,
+`CLOUDFLARE_ACCOUNT_ID`), not in `wrangler.toml` or `.dev.vars`.
+
 ## Architecture
 
 Cron trigger → creates a `ResearchWorkflow` instance → steps: select topic → one step
