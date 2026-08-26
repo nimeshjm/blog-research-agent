@@ -744,6 +744,134 @@ checks.push({
   },
 });
 
+// Matches a REVIEW.md marker: `(ast-grep: `id`)` or `(mechanical: `id`, `id2`)`
+// - one or more backtick-quoted ids, comma-separated. Deliberately does NOT
+// match the syntax-definition rows in the "marker | tool | ..." table near
+// the top of REVIEW.md (`` `(ast-grep: <id>)` ``): there `<id>` is a bare
+// placeholder with no backticks of its own around it, so this pattern -
+// which requires a backtick immediately after "ast-grep:"/"mechanical:" -
+// never matches inside those rows.
+const REVIEW_MARKER_RE = /\((ast-grep|mechanical):\s*(`[\w.-]+`(?:,\s*`[\w.-]+`)*)\)/g;
+
+checks.push({
+  id: 'checks-and-docs-in-sync',
+  pass: 'CONVENTIONS',
+  severity: 'Important',
+  // Widens beyond REVIEW.md's own bullets, like `branch-carries-issue` above
+  // - this isn't one of the numbered-pass bullets, it's a check that
+  // REVIEW.md and rules/ stay honest about each other as checks and rules
+  // are added, renamed, or removed:
+  //   1. every rules/<id>.yml has a matching rule-tests/<id>-test.yml, and
+  //      the yml's own `id:` field matches its filename stem (otherwise the
+  //      pairing in (1) is meaningless - the test could be testing a
+  //      differently-named rule by accident);
+  //   2. every REVIEW.md `(ast-grep: ...)` / `(mechanical: ...)` marker
+  //      names a rule or check that actually exists;
+  //   3. every rule and every registered check is mentioned *somewhere* in
+  //      REVIEW.md, so nothing new ships undocumented.
+  //
+  // rules/ and rule-tests/ are walked with `fs.readdirSync`, not
+  // `listTrackedFiles`/`ctx.srcFiles` (which go through `git ls-files`): a
+  // rule just added to the working tree but not yet `git add`ed must still
+  // be caught here, and the git index would let it slip through unverified
+  // until the next commit.
+  run(ctx) {
+    const reviewRel = 'REVIEW.md';
+    const rulesDirAbs = path.join(ctx.root, 'rules');
+    const ruleTestsDirAbs = path.join(ctx.root, 'rule-tests');
+    const reviewText = ctx.readTextFile(reviewRel);
+    const rulesDirExists = fs.existsSync(rulesDirAbs) && fs.statSync(rulesDirAbs).isDirectory();
+    if (reviewText === null || !rulesDirExists) {
+      return [{ file: reviewRel, line: 0, message: 'SKIP: REVIEW.md or rules/ not found', skip: true }];
+    }
+
+    const findings = [];
+
+    const ruleIds = fs
+      .readdirSync(rulesDirAbs)
+      .filter((f) => f.endsWith('.yml'))
+      .map((f) => f.slice(0, -'.yml'.length))
+      .sort();
+    const ruleTestIds = new Set(
+      fs.existsSync(ruleTestsDirAbs)
+        ? fs
+            .readdirSync(ruleTestsDirAbs)
+            .filter((f) => f.endsWith('-test.yml'))
+            .map((f) => f.slice(0, -'-test.yml'.length))
+        : [],
+    );
+
+    // --- clause 1: every rule has a test, and its own id matches its file --
+    for (const id of ruleIds) {
+      if (!ruleTestIds.has(id)) {
+        findings.push({
+          file: `rules/${id}.yml`,
+          line: 0,
+          message: `no matching rule-tests/${id}-test.yml`,
+        });
+      }
+      const ruleText = ctx.readTextFile(`rules/${id}.yml`);
+      const idMatch = ruleText ? ruleText.match(/^id:\s*(.+?)\s*$/m) : null;
+      const declaredId = idMatch ? idMatch[1].replace(/^['"]|['"]$/g, '') : null;
+      if (declaredId !== id) {
+        findings.push({
+          file: `rules/${id}.yml`,
+          line: 0,
+          message: `id: field ('${declaredId ?? '(missing)'}') does not match filename stem '${id}' - the rules/rule-tests pairing would be meaningless`,
+        });
+      }
+    }
+
+    // --- REVIEW.md marker scan: build the id sets clause 2 validates against ---
+    const reviewLines = reviewText.split('\n');
+    reviewLines.forEach((lineText, idx) => {
+      for (const m of lineText.matchAll(REVIEW_MARKER_RE)) {
+        const kind = m[1];
+        const ids = [...m[2].matchAll(/`([\w.-]+)`/g)].map((mm) => mm[1]);
+        for (const id of ids) {
+          if (kind === 'ast-grep') {
+            if (!ruleIds.includes(id)) {
+              findings.push({
+                file: reviewRel,
+                line: idx + 1,
+                message: `(ast-grep: \`${id}\`) marker names a rule that doesn't exist: rules/${id}.yml`,
+              });
+            }
+          } else {
+            if (!checks.some((c) => c.id === id)) {
+              findings.push({
+                file: reviewRel,
+                line: idx + 1,
+                message: `(mechanical: \`${id}\`) marker names a check that isn't registered in review-checks.mjs`,
+              });
+            }
+          }
+        }
+      }
+    });
+
+    // --- clause 3: nothing undocumented -------------------------------------
+    // "Referenced" here means "mentioned in backticks somewhere in
+    // REVIEW.md", not necessarily inside a `(kind: id)` marker: the
+    // CONVENTIONS-derived checks (`branch-carries-issue`, `pr-body-not-empty`)
+    // are legitimately documented as plain backtick-quoted bullets rather
+    // than markers, and that's a valid way to document a check, not a gap.
+    const allBacktickTokens = new Set([...reviewText.matchAll(/`([\w.-]+)`/g)].map((m) => m[1]));
+    for (const id of ruleIds) {
+      if (!allBacktickTokens.has(id)) {
+        findings.push({ file: `rules/${id}.yml`, line: 0, message: `rule '${id}' is not referenced anywhere in REVIEW.md` });
+      }
+    }
+    for (const c of checks) {
+      if (!allBacktickTokens.has(c.id)) {
+        findings.push({ file: 'scripts/review-checks.mjs', line: 0, message: `check '${c.id}' is not referenced anywhere in REVIEW.md` });
+      }
+    }
+
+    return findings;
+  },
+});
+
 // ===========================================================================
 // Runner
 // ===========================================================================

@@ -4,9 +4,11 @@ on:
   pull_request:
     branches: [main]
 
-# Least privilege: this job reads the tree and nothing else.
+# Reads the tree, and reads (not writes) pull request metadata so
+# pr-body-not-empty's `gh api` call can look up this PR's body.
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -16,16 +18,31 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      # Full history, not actions/checkout's default shallow clone: dev-vars-untracked's
+      # "was .dev.vars ever committed" clause refuses to search truncated history and
+      # SKIPs instead, so a shallow clone would silently never enforce it here.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npx ast-grep scan
-      - run: npm run review:checks
+      - run: npm run lint:ast
+      - run: npm run test:ast
+      - run: npm run lint:ts
+      # Only trigger is `pull_request` (see above), so github.event.pull_request.number
+      # is always populated here - don't add a push: trigger without revisiting this.
+      - run: npm run review:checks -- --pr ${{ github.event.pull_request.number }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - run: npm run test:checks
       # Validates wrangler.toml and every binding without contacting Cloudflare.
-      # Verified to need no credentials, which is why this workflow holds no secrets
-      # and pull requests from forks run it in full.
+      # Verified to need no credentials, so this workflow holds no repository secrets -
+      # only the automatic, read-only-on-fork-PRs github.token above. On a fork PR that
+      # token may not be enough for the gh api call in pr-body-not-empty, but that's
+      # safe: the check already returns a clean SKIP when gh is unavailable or the call
+      # fails, so it degrades instead of breaking the job.
       - run: npx wrangler deploy --dry-run

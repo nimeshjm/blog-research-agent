@@ -16,6 +16,7 @@ npm run migrate:local      # only after the schema in spec.md is approved; no
 npx wrangler deploy --dry-run   # validate bindings without deploying
 npm run lint:ast           # ast-grep: the seam rules in rules/*.yml - see REVIEW.md
 npm run test:ast           # proves each ast-grep rule fires (a dead rule reports Missing)
+npm run lint:ts            # eslint: type-aware rules for pass 3's unhandled-rejection bullet - see REVIEW.md
 npm run review:checks      # the checks no off-the-shelf tool can express - see REVIEW.md
 npm run test:checks        # mutation table proving each of those fires
 npm run hooks:install      # git config core.hooksPath .githooks (all of the above on push)

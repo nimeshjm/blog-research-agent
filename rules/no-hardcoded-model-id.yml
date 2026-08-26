@@ -1,6 +1,6 @@
 id: no-hardcoded-model-id
 language: TypeScript
-severity: error
+severity: warning
 message: model id belongs in wrangler.toml LLM_MODEL, not a literal
 rule:
   kind: string

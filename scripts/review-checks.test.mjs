@@ -4,20 +4,24 @@
 // The checker passing on HEAD proves nothing - HEAD is already compliant.
 // This test copies the tree (including .git, so git-backed checks like
 // dev-vars-untracked and branch-carries-issue behave exactly as they do on
-// the real repo) into a temp dir per row, applies one mutation, runs the
-// checker with --root <tmp> --json, and asserts:
+// the real repo) into a temp dir per row and applies one mutation. Most rows
+// then run the checker with --root <tmp> --json, and assert:
 //   - every id in `expect` has status 'fail'
 //   - every OTHER Important-severity id does NOT have status 'fail'
 //     (Nit-severity ids are allowed to vary unless explicitly expected -
 //     some mutations are only visible to a Nit check)
+// A `tool: 'eslint'` row instead runs the repo's own eslint.config.mjs
+// against the temp copy and asserts on its exit code (and, for a non-zero
+// expectation, that the specific rule named fired - see runEslint()).
 //
 // Row 0 is the empty mutation: prove the harness itself reports all-green
-// before trusting any row that claims a specific check fails.
+// before trusting any row that claims a specific check fails. The eslint
+// rows get the same treatment (their own baseline row).
 //
-// This table covers exactly the 10 checks review-checks.mjs still implements.
-// The other 8 (moved to ast-grep, or dropped for `no-credential-literals` -
-// see the comment in review-checks.mjs) have no rows here any more; their
-// mutation coverage now lives in rule-tests/*.yml.
+// The checker-based rows cover exactly the 11 checks review-checks.mjs still
+// implements. The other 7 (moved to ast-grep, or dropped for
+// `no-credential-literals` - see the comment in review-checks.mjs) have no
+// rows here any more; their mutation coverage now lives in rule-tests/*.yml.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -64,9 +68,29 @@ function git(dir, args) {
 }
 
 function runChecker(root, extraArgs = [], extraEnv = {}) {
+  // Strip every GITHUB_* var before forwarding to the child, rather than
+  // passing `process.env` straight through. `currentBranch()` in
+  // review-checks.mjs deliberately trusts GITHUB_HEAD_REF over `git branch
+  // --show-current` whenever GITHUB_ACTIONS=true, because actions/checkout
+  // leaves a `pull_request` run on a detached merge ref where git itself has
+  // no branch name to give. That's correct for the checker running for real
+  // in CI - but it means this *test harness*, when it is itself invoked by a
+  // GitHub Actions job, inherits that job's own GITHUB_ACTIONS/GITHUB_HEAD_REF
+  // and would forward them into every row's child process unless stopped.
+  // Row 11 checks out a bad branch name *inside the temp copy*; with the
+  // outer job's env leaking through, the checker would ignore that checkout
+  // and report the outer runner's real PR branch instead - a false PASS that
+  // reproduces only in CI and never on a laptop, which is exactly backwards
+  // for a self-test whose entire point is to be trustworthy in both places.
+  // Strip the whole GITHUB_* family, not just those two names, since more of
+  // them could matter to future checks. A row that genuinely wants to
+  // exercise the CI code path (assert `currentBranch()`'s GITHUB_HEAD_REF
+  // branch) can still do so - `extraEnv` is applied after the strip, so it
+  // sets GITHUB_* back deliberately for that one row's child only.
+  const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GITHUB_')));
   const r = spawnSync('node', [CHECKER, '--root', root, '--json', ...extraArgs], {
     encoding: 'utf8',
-    env: { ...process.env, ...extraEnv },
+    env: { ...baseEnv, ...extraEnv },
   });
   if (r.status === null) {
     throw new Error(`checker did not exit cleanly: ${r.error ?? r.stderr}`);
@@ -78,6 +102,33 @@ function runChecker(root, extraArgs = [], extraEnv = {}) {
     throw new Error(`checker did not print valid JSON.\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
   }
   return parsed;
+}
+
+// eslint.config.mjs's rules apply only to `src/**/*.ts`, so lint just that
+// directory rather than the whole tree - the temp copy also carries
+// scripts/, rule-tests/, etc. that the config doesn't select anyway, but
+// there's no reason to make eslint walk them.
+const ESLINT_CONFIG = path.join(REPO_ROOT, 'eslint.config.mjs');
+const ESLINT_BIN = path.join(REPO_ROOT, 'node_modules', 'eslint', 'bin', 'eslint.js');
+
+function runEslint(root) {
+  // Run via `node <bin>`, not the `.bin/eslint` shim, and point `--config`
+  // at *this repo's* eslint.config.mjs by absolute path: flat config
+  // resolves plugins relative to the config file's own location, so
+  // pointing at the repo's config is what lets resolution find the repo's
+  // node_modules even though the temp copy (deliberately, see copyTree) has
+  // none of its own. `cwd` is the temp dir, not REPO_ROOT - that's what
+  // makes `projectService` (see the comment on `tsconfigRootDir` in
+  // eslint.config.mjs) resolve the *temp* dir's tsconfig.json and lint the
+  // mutated files, not this repo's.
+  const r = spawnSync('node', [ESLINT_BIN, '--config', ESLINT_CONFIG, 'src'], {
+    cwd: root,
+    encoding: 'utf8',
+  });
+  if (r.status === null) {
+    throw new Error(`eslint did not exit cleanly: ${r.error ?? r.stderr}`);
+  }
+  return r;
 }
 
 // ---------------------------------------------------------------------------
@@ -278,6 +329,95 @@ const rows = [
       mustReplace(dir, 'src/workflow.ts', 'tracerFor(step, event)', 'tracerForRenamed(step, event)');
     },
   },
+  // -------------------------------------------------------------------------
+  // `checks-and-docs-in-sync` (see issue #25 follow-up) - proves the three
+  // clauses described in its comment in review-checks.mjs actually fire:
+  // (1) every rules/<id>.yml has a paired rule-tests/<id>-test.yml, whose own
+  // id: field agrees with the filename stem, (2) every REVIEW.md marker
+  // names a rule/check that exists. (Clause 3, "nothing undocumented", isn't
+  // given its own row: it can only be tripped by *removing* a backtick
+  // mention from REVIEW.md, which is indistinguishable in spirit from the
+  // marker mutation below and would just be exercising the same `allBack-
+  // tickTokens` set from the other direction.)
+  // -------------------------------------------------------------------------
+  {
+    name: 'delete rule-tests/no-bare-step-do-test.yml (rule with no matching test)',
+    expectFail: ['checks-and-docs-in-sync'],
+    mutate(dir) {
+      fs.rmSync(path.join(dir, 'rule-tests', 'no-bare-step-do-test.yml'));
+    },
+  },
+  {
+    // A bogus marker is *added* alongside the real ones rather than
+    // overwriting one, so this row can't accidentally also trip clause 3
+    // (an id that stops being mentioned anywhere) - it isolates clause 2.
+    name: 'REVIEW.md marker names a check id that does not exist',
+    expectFail: ['checks-and-docs-in-sync'],
+    mutate(dir) {
+      mustReplace(
+        dir,
+        'REVIEW.md',
+        '- `.dev.vars` must stay gitignored. (mechanical: `dev-vars-untracked`)',
+        '- `.dev.vars` must stay gitignored. (mechanical: `dev-vars-untracked`)\n' +
+          '- Mutation-table probe only, not a real bullet. (mechanical: `not-a-real-check`)',
+      );
+    },
+  },
+  {
+    // Judgement call (see the review prompt for #25): clause 1 has two
+    // independent failure modes - "no test file" (row above) and "test file
+    // exists but the rule's own id: disagrees with its filename stem". The
+    // second is worth its own row: a rule and its test can be paired by
+    // filename while actually testing a *different* rule if the id: field
+    // inside the yml drifts from the filename (e.g. a copy-paste of an
+    // existing rule file renamed but not re-ided). That's a distinct bug
+    // clause 1 exists specifically to catch, and the "no test file" row
+    // above cannot exercise it - the mismatched rule here still has a
+    // same-stem test file sitting right next to it.
+    name: 'rule id: field disagrees with its own filename stem',
+    expectFail: ['checks-and-docs-in-sync'],
+    mutate(dir) {
+      mustReplace(dir, 'rules/no-hardcoded-urls.yml', 'id: no-hardcoded-urls\n', 'id: no-hardcoded-urls-wrong\n');
+    },
+  },
+  // -------------------------------------------------------------------------
+  // eslint rows - a different shape (`tool: 'eslint'`) from everything
+  // above: these don't run the checker at all, they run the repo's own
+  // `eslint.config.mjs` against the temp copy and assert on its exit code.
+  // See runEslint() for why cwd/--config are wired the way they are.
+  //
+  // Row 0 above exists to prove the checker-based rows aren't vacuously
+  // green by running the harness unmutated first; do the same here before
+  // trusting the mutated row below.
+  // -------------------------------------------------------------------------
+  {
+    name: 'eslint baseline (no mutation) - proves the eslint runner itself is not vacuously green',
+    tool: 'eslint',
+    expectExitCode: 0,
+    mutate() {},
+  },
+  {
+    // `no-floating-promises` only flags a promise-producing call in
+    // *statement position* - `const x = traceStep(...)` is an assignment
+    // and the rule has nothing to say about it. Of the eleven `await
+    // traceStep(` call sites in workflow.ts, only four are statement-
+    // position (the four `record-*` outcome steps); this drops the `await`
+    // from `record-success` specifically, not e.g. `select-topic`, whose
+    // result is assigned to `topic` and would leave the rule silent - a
+    // vacuous row that "passed" only because nothing was ever mutated into
+    // its blind spot.
+    name: 'drop the await on the record-success step (statement-position floating promise)',
+    tool: 'eslint',
+    expectExitCode: 'nonzero',
+    // Non-zero alone isn't enough - eslint also exits non-zero on a config
+    // resolution failure or a parse error, and either would make this row a
+    // false PASS that proves nothing about no-floating-promises. Same
+    // reasoning as row 13's sentinel: assert the rule that actually fired.
+    expectStdoutContains: '@typescript-eslint/no-floating-promises',
+    mutate(dir) {
+      mustReplace(dir, 'src/workflow.ts', "await traceStep(\n      'record-success',", "traceStep(\n      'record-success',");
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -302,6 +442,34 @@ function run() {
     } catch (err) {
       console.log(`[SETUP FAIL] row ${i}: ${row.name}\n    ${err.message}`);
       failures++;
+      continue;
+    }
+
+    if (row.tool === 'eslint') {
+      const r = runEslint(dir);
+      const wanted = row.expectExitCode === 0 ? '0' : 'non-zero';
+      let rowOk = row.expectExitCode === 0 ? r.status === 0 : r.status !== 0;
+      const notes = [];
+      if (rowOk && row.expectStdoutContains) {
+        if (r.stdout.includes(row.expectStdoutContains)) {
+          notes.push(`OK: eslint exited ${r.status} and stdout mentions ${JSON.stringify(row.expectStdoutContains)}`);
+        } else {
+          rowOk = false;
+          notes.push(`exited ${r.status} but stdout never mentions ${JSON.stringify(row.expectStdoutContains)} - non-zero for the wrong reason`);
+        }
+      } else if (rowOk) {
+        notes.push(`OK: eslint exited ${r.status} as expected (wanted ${wanted})`);
+      } else {
+        notes.push(`expected eslint exit ${wanted}, got ${r.status}`);
+      }
+      console.log(`\nRow ${i}: ${row.name}`);
+      for (const note of notes) console.log(`    ${note}`);
+      if (!rowOk) {
+        console.log(`    stdout: ${r.stdout}`);
+        console.log(`    stderr: ${r.stderr}`);
+      }
+      console.log(`    -> ${rowOk ? 'PASS' : 'FAIL'}`);
+      if (!rowOk) failures++;
       continue;
     }
 

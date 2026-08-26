@@ -8,7 +8,10 @@
 # being pushed, so stdin is left alone entirely.
 set -e
 
-echo "pre-push: npm run typecheck && npx ast-grep scan && npm run review:checks"
+echo "pre-push: npm run typecheck && npm run lint:ast && npm run test:ast && npm run lint:ts && npm run review:checks && npm run test:checks"
 npm run typecheck
-npx ast-grep scan
+npm run lint:ast
+npm run test:ast
+npm run lint:ts
 npm run review:checks
+npm run test:checks
