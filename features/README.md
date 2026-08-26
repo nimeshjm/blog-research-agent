@@ -48,8 +48,15 @@ issues were filed about a minute later, so 001 reports `unmeasurable` — never 
 0-hour lead time on a board would read as a triumph. Real numbers start at feature 002.
 
 Run `npm run plan:metrics` to see it locally; the daily `sdlc-metrics.yml` workflow is
-what publishes it. Renumbering a feature directory is safe — the extractor follows
-renames.
+what publishes it.
+
+Renumbering a feature directory is safe, with one caveat worth knowing: the extractor
+follows renames at a deliberately loose similarity threshold, because at git's default
+50 % a renumbering that *also* rewrote the file would look like the creation commit and
+understate lead time. If it still cannot pair the two, it reports
+`sdlc.intent.t1_source = "follow-unresolved"` and declines to emit a lead time rather
+than emitting a wrong one. So renumber freely; just avoid rewriting `intent.md` wholesale
+in the same commit.
 
 ## Index
 
