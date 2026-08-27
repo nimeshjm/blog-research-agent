@@ -720,6 +720,22 @@ checks.push({
   },
 });
 
+// An intermediate PR in a stack against the same issue (CONVENTIONS.md's
+// branch rule means every branch in the stack shares that issue's number)
+// cannot carry `Closes #N` itself - only the *last* PR in the stack may
+// close the tracking issue. See issue #47. The alternative has to be an
+// explicit, deliberately-authored marker rather than a loose match: a PR
+// body that merely *mentions* the issue number elsewhere must not satisfy
+// this, or the check is gutted back to the thing #16/#17 shipped blank
+// through. `N` and `M` are validated as `1 <= N <= M` so a mistyped ordinal
+// (a swapped N/M, an M of 0) doesn't silently pass either - see
+// CONVENTIONS.md's "Stacked pull requests" section for the human-facing form.
+// `g` because a PR body can legitimately quote more than one marker (e.g.
+// a stack summary that also repeats an earlier sibling PR's line) - the
+// check accepts if *any* marker resolves against this branch's issue,
+// rather than only ever looking at the first one found.
+const STACKED_PART_RE = /\bPart (\d+) of (\d+) of #(\d+)\b/g;
+
 checks.push({
   id: 'pr-body-not-empty',
   pass: 'CONVENTIONS',
@@ -737,10 +753,36 @@ checks.push({
     if (body === '') return [{ file: '(pr)', line: 0, message: `PR #${ctx.pr} has an empty body` }];
     const branch = currentBranch(ctx.root);
     const issueMatch = branch ? branch.match(/^(?:\w+\/)?(\d+)-/) : null;
-    if (issueMatch && !body.includes(`Closes #${issueMatch[1]}`)) {
-      return [{ file: '(pr)', line: 0, message: `PR #${ctx.pr} body does not contain 'Closes #${issueMatch[1]}'` }];
+    if (!issueMatch) return [];
+    const issue = issueMatch[1];
+    if (body.includes(`Closes #${issue}`)) return [];
+    const partMatches = [...body.matchAll(STACKED_PART_RE)];
+    if (partMatches.length > 0) {
+      const resolves = ([, nStr, mStr, partIssue]) =>
+        partIssue === issue && Number(nStr) >= 1 && Number(mStr) >= Number(nStr);
+      if (partMatches.some(resolves)) return [];
+      // None of the markers resolve against this branch's issue. Surface
+      // one specific reason rather than the generic "missing" message -
+      // prefer a wrong-issue marker over a bad-range one, since a wrong
+      // issue number is the more common way to paste a sibling PR's line.
+      const wrongIssue = partMatches.find(([, , , partIssue]) => partIssue !== issue);
+      const bad = wrongIssue ?? partMatches[0];
+      const [, nStr, mStr, partIssue] = bad;
+      if (partIssue !== issue) {
+        return [{
+          file: '(pr)', line: 0,
+          message: `PR #${ctx.pr} body's 'Part ${nStr} of ${mStr} of #${partIssue}' marker names issue #${partIssue}, not the branch's #${issue}`,
+        }];
+      }
+      return [{
+        file: '(pr)', line: 0,
+        message: `PR #${ctx.pr} body's 'Part ${nStr} of ${mStr} of #${issue}' marker has an invalid range (need 1 <= N <= M)`,
+      }];
     }
-    return [];
+    return [{
+      file: '(pr)', line: 0,
+      message: `PR #${ctx.pr} body does not contain 'Closes #${issue}' or a valid 'Part N of M of #${issue}' marker`,
+    }];
   },
 });
 

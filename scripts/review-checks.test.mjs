@@ -405,6 +405,81 @@ const rows = [
     },
   },
   {
+    // Proves the new stacked-PR branch of pr-body-not-empty (issue #47):
+    // an intermediate PR against issue 47 whose body carries the explicit
+    // `Part N of M of #47` marker instead of `Closes #47` must NOT fail.
+    // Without the fix this row fails, exactly like the pre-fix checker
+    // failed every real intermediate PR in a stack - that's what makes this
+    // a true positive rather than a vacuous pass. Checks out a branch
+    // explicitly (as the rename row above does) rather than trusting
+    // whatever branch the outer test run happens to be on.
+    name: "PR body carries 'Part N of M of #47' instead of 'Closes #47' (legitimate intermediate stacked PR)",
+    expectFail: [],
+    // A note only asserts "not fail"; a stub `gh` that silently fell off
+    // PATH would SKIP the check and still read as a pass there (issue #47's
+    // own warning about a row that passes vacuously). Assert the exact
+    // status so this row actually proves the accept branch ran and passed.
+    expectStatus: { 'pr-body-not-empty': 'pass' },
+    extraArgs: ['--pr', '999999'],
+    mutate(dir) {
+      git(dir, ['checkout', '-b', '47-stacked-row']);
+      const binDir = path.join(dir, '.fake-bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      fs.writeFileSync(path.join(binDir, 'gh'), '#!/bin/sh\nprintf "Part 2 of 4 of #47"\nexit 0\n');
+      fs.chmodSync(path.join(binDir, 'gh'), 0o755);
+    },
+    extraEnv(dir) {
+      return { PATH: `${path.join(dir, '.fake-bin')}${path.delimiter}${process.env.PATH}` };
+    },
+  },
+  {
+    // The mirror of the row above: the marker is present and well-formed,
+    // but names a different issue than the branch does. Must still fail -
+    // proves the check ties the marker to the branch's own issue rather
+    // than accepting any 'Part N of M of #<anything>' text. Asserts the
+    // actual finding message, not just the status: an unrecognized-marker
+    // FAIL and a wrong-issue FAIL look identical as a bare status, and the
+    // point of this row is that the wrong-issue branch specifically fired.
+    name: "PR body's 'Part N of M of #<issue>' marker names the wrong issue",
+    expectFail: ['pr-body-not-empty'],
+    expectFindingMatch: {
+      'pr-body-not-empty': /names issue #99, not the branch's #47/,
+    },
+    extraArgs: ['--pr', '999999'],
+    mutate(dir) {
+      git(dir, ['checkout', '-b', '47-stacked-row-wrong-issue']);
+      const binDir = path.join(dir, '.fake-bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      fs.writeFileSync(path.join(binDir, 'gh'), '#!/bin/sh\nprintf "Part 2 of 4 of #99"\nexit 0\n');
+      fs.chmodSync(path.join(binDir, 'gh'), 0o755);
+    },
+    extraEnv(dir) {
+      return { PATH: `${path.join(dir, '.fake-bin')}${path.delimiter}${process.env.PATH}` };
+    },
+  },
+  {
+    // Well-formed marker, right issue, but N > M - an invalid ordinal. Must
+    // still fail - proves N/M are validated rather than accepted as-is.
+    // Same reasoning as the row above for asserting the message, not just
+    // the status.
+    name: "PR body's 'Part N of M of #47' marker has N > M",
+    expectFail: ['pr-body-not-empty'],
+    expectFindingMatch: {
+      'pr-body-not-empty': /invalid range \(need 1 <= N <= M\)/,
+    },
+    extraArgs: ['--pr', '999999'],
+    mutate(dir) {
+      git(dir, ['checkout', '-b', '47-stacked-row-bad-range']);
+      const binDir = path.join(dir, '.fake-bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      fs.writeFileSync(path.join(binDir, 'gh'), '#!/bin/sh\nprintf "Part 5 of 2 of #47"\nexit 0\n');
+      fs.chmodSync(path.join(binDir, 'gh'), 0o755);
+    },
+    extraEnv(dir) {
+      return { PATH: `${path.join(dir, '.fake-bin')}${path.delimiter}${process.env.PATH}` };
+    },
+  },
+  {
     // The issue's wording is "rename traceStep so the matcher stops
     // matching". Under an initializer-based resolver ("any identifier
     // initialized from a tracerFor(...) call"), consistently renaming the
@@ -729,6 +804,22 @@ function run() {
     for (const id of row.expectPassStillGreen ?? []) {
       const r = statuses.get(id);
       notes.push(`note: '${id}' status is '${r?.status}' (sites unaffected by this mutation)`);
+    }
+
+    // Unlike expectPassStillGreen (a note only), this hard-asserts an exact
+    // status. Exists because "not in expectFail" only rules out 'fail'
+    // above - a check that quietly SKIPs (e.g. its `gh` stub falling off
+    // PATH) would still read as a pass there. A row proving a new accept
+    // branch fires needs the stronger claim: the check actually ran and
+    // actually passed, not that it merely didn't fail.
+    for (const [id, want] of Object.entries(row.expectStatus ?? {})) {
+      const r = statuses.get(id);
+      if (r?.status !== want) {
+        rowOk = false;
+        notes.push(`expected '${id}' status to be '${want}', got '${r?.status}'`);
+      } else {
+        notes.push(`OK: '${id}' status is '${want}'`);
+      }
     }
 
     console.log(`\nRow ${i}: ${row.name}`);
