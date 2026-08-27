@@ -1,6 +1,7 @@
 import { env as testEnv } from 'cloudflare:test';
 import migrationSql from '../migrations/0001_init.sql?raw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SEEN_URLS_CHUNK_SIZE } from '../src/lib/d1';
 import { loadFeeds } from '../src/lib/feeds';
 import type { Candidate, Env, Topic } from '../src/lib/types';
 import {
@@ -180,9 +181,10 @@ describe('shortlistCandidates()', () => {
 
     const result = await shortlistCandidates(countingEnv, candidates, topic());
 
-    // The cap runs *before* D1: ceil(SHORTLIST_MAX_CANDIDATES / 100), not
-    // ceil(4742 / 100) - proves ordering, not just that both stay under 50.
-    expect(queryCount).toBe(SHORTLIST_MAX_CANDIDATES / 100);
+    // The cap runs *before* D1: ceil(SHORTLIST_MAX_CANDIDATES / chunk size),
+    // not ceil(4742 / chunk size) - proves ordering, not just that both stay
+    // under 50.
+    expect(queryCount).toBe(SHORTLIST_MAX_CANDIDATES / SEEN_URLS_CHUNK_SIZE);
     expect(result.length).toBeLessThanOrEqual(SHORTLIST_TOP_N);
   });
 

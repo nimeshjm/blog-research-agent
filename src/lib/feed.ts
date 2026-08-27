@@ -36,12 +36,22 @@ import type { FeedItem } from './types';
  *    neither is the article URL. The `item` handler below instead captures
  *    the first non-blank text chunk it sees immediately after a `link`
  *    start tag, which *is* the URL wherever `link` is a direct child of
- *    `item` (true of every allowlisted RSS feed).
+ *    `item` (true of every allowlisted RSS feed) - but that same `item`
+ *    text handler also fires for every *other* direct-child element's text
+ *    (title, guid, pubDate all do), so an empty `<link></link>` would
+ *    otherwise let the very next chunk - typically `<guid>`, exactly the
+ *    non-URL string this workaround exists to avoid - be mistaken for the
+ *    URL. The chunk is only accepted when it looks like a URL; an item
+ *    that never produces one is dropped rather than emitted with a
+ *    wrong or empty `url`.
  *
  * Atom has neither problem: `entry`, `title`, `published`/`updated` and
  * `id` are ordinary elements, and Atom's `<link href="..."/>` carries the
  * URL as an attribute, not text.
  */
+
+/** RSS's `<link>` void-element workaround and Atom's `<link href>` both validate against this before being trusted as a URL. */
+const URL_RE = /^https?:\/\//;
 
 function isTruthyText(text: string): boolean {
   return text.trim() !== '';
@@ -87,6 +97,11 @@ export async function parseFeed(response: Response): Promise<FeedItem[]> {
         rssUrl = '';
         expectingRssLinkText = false;
         el.onEndTag(() => {
+          // An item whose <link> never yielded a real URL (empty <link></link>,
+          // no <link> at all) is dropped rather than emitted with a wrong or
+          // empty url - see the `text()` handler below for why this can't be
+          // caught earlier.
+          if (!URL_RE.test(rssUrl)) return;
           items.push({
             url: rssUrl,
             title: rssTitle.trim(),
@@ -103,10 +118,13 @@ export async function parseFeed(response: Response): Promise<FeedItem[]> {
         // selectors below, which never fire for CDATA content (the HTML
         // tokenizer treats `<![CDATA[...]]>` as a bogus comment, not text).
         if (!expectingRssLinkText) return;
-        if (isTruthyText(chunk.text)) {
-          rssUrl = chunk.text.trim();
-          expectingRssLinkText = false;
-        }
+        if (!isTruthyText(chunk.text)) return;
+        // First non-blank chunk after <link> decides it either way, so a
+        // later, unrelated chunk (guid, pubDate, ...) is never mistaken for
+        // the URL - only accept it when it actually looks like one.
+        const candidate = chunk.text.trim();
+        if (URL_RE.test(candidate)) rssUrl = candidate;
+        expectingRssLinkText = false;
       },
     })
     .on('item > title', {
@@ -131,6 +149,9 @@ export async function parseFeed(response: Response): Promise<FeedItem[]> {
         atomUpdated = '';
         atomUrl = '';
         el.onEndTag(() => {
+          // An entry with no rel="alternate" (or unmarked) <link> - e.g. only
+          // rel="self" - never gets a URL and is dropped, same as the RSS side.
+          if (!URL_RE.test(atomUrl)) return;
           const publishedAt = atomPublished.trim() !== '' ? atomPublished.trim() : atomUpdated.trim();
           items.push({
             url: atomUrl,
@@ -149,10 +170,12 @@ export async function parseFeed(response: Response): Promise<FeedItem[]> {
       element(el) {
         // Atom entries commonly carry several <link> elements (self,
         // alternate, ...). Keep the first one that is either unmarked or
-        // explicitly `rel="alternate"`, and never overwrite once set.
+        // explicitly `rel="alternate"` and actually looks like a URL, and
+        // never overwrite once set.
         const rel = el.getAttribute('rel');
         if (atomUrl !== '' || (rel !== null && rel !== 'alternate')) return;
-        atomUrl = el.getAttribute('href') ?? '';
+        const href = el.getAttribute('href') ?? '';
+        if (URL_RE.test(href)) atomUrl = href;
       },
     })
     .on('entry > published', {

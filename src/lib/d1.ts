@@ -103,8 +103,15 @@ export async function findOrProposeTopic(
   db: D1Database,
   proposal: { title: string; angle: string | null },
 ): Promise<Topic> {
+  // Only recovers a row still in a claimable state, matching claimRow()'s
+  // own rule right above ("done/rejected: not selectable"). Without this, a
+  // proposal whose earlier PR was opened but never merged - so the title
+  // stays genuinely uncovered on later runs - would keep resolving to that
+  // same `done`/`rejected` row forever instead of being researched again.
   const existing = await db
-    .prepare(`SELECT ${TOPIC_COLUMNS} FROM topics WHERE title = ? AND origin = 'agent' ORDER BY created_at DESC LIMIT 1`)
+    .prepare(
+      `SELECT ${TOPIC_COLUMNS} FROM topics WHERE title = ? AND origin = 'agent' AND status IN ('queued', 'in_progress') ORDER BY created_at DESC LIMIT 1`,
+    )
     .bind(proposal.title)
     .first<TopicRow>();
   if (existing !== null) return toTopic(existing);

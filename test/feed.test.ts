@@ -91,6 +91,36 @@ describe('parseFeed() - RSS', () => {
     expect(items.map((i) => i.title)).toEqual(['First', 'Second']);
     expect(items.map((i) => i.url)).toEqual(['https://example.com/1', 'https://example.com/2']);
   });
+
+  it('drops an item whose <link> is empty, instead of mistaking the next element (guid) for the URL', async () => {
+    // The `item` text handler that recovers <link>'s void-element text also
+    // sees every other direct child's text (title, guid, pubDate). An empty
+    // <link></link> must not let the *next* chunk it sees - here <guid>, a
+    // non-URL string, exactly the shape this workaround exists to avoid -
+    // be mistaken for the URL.
+    const xml = rssFeed(
+      `<item>
+<title>Empty link</title>
+<link></link>
+<guid isPermaLink="false">oai:arXiv.org:2608.99999v1</guid>
+<pubDate>Wed, 26 Aug 2026 00:00:00 GMT</pubDate>
+</item>`,
+    );
+    const items = await parseFeed(new Response(xml));
+    expect(items).toHaveLength(0);
+  });
+
+  it('drops an item with no <link> element at all', async () => {
+    const xml = rssFeed(
+      `<item>
+<title>No link at all</title>
+<guid isPermaLink="false">some-uuid</guid>
+<pubDate>Wed, 26 Aug 2026 00:00:00 GMT</pubDate>
+</item>`,
+    );
+    const items = await parseFeed(new Response(xml));
+    expect(items).toHaveLength(0);
+  });
 });
 
 describe('parseFeed() - Atom', () => {
@@ -126,6 +156,19 @@ describe('parseFeed() - Atom', () => {
     );
     const items = await parseFeed(new Response(xml));
     expect(items.map((i) => i.title)).toEqual(['E1', 'E2']);
+  });
+
+  it('drops an entry that carries only a rel="self" <link>, never a real article URL', async () => {
+    const xml = atomFeed(
+      `<entry>
+<title>Self-link only</title>
+<link rel="self" href="https://example.com/self-link-not-the-article"/>
+<id>urn:uuid:abc</id>
+<published>2026-08-20T00:00:00Z</published>
+</entry>`,
+    );
+    const items = await parseFeed(new Response(xml));
+    expect(items).toHaveLength(0);
   });
 });
 
