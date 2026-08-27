@@ -82,8 +82,47 @@ Part 2 of 4 of #47
 - The **last** PR in the stack is an ordinary PR: it drops the `Part N of M` marker and
   carries `Closes #N` like any other.
 
+There is a second, quieter way to close the tracking issue too early, which the
+`Part N of M` marker does not protect against. GitHub's auto-close keywords are
+**case-insensitive**, so an ordinary English sentence in an intermediate PR's body —
+"pass 2 adds the span and closes #42" — closes the issue the moment *that* PR merges,
+with the rest of the stack still unwritten. `pr-body-not-empty` cannot catch it: it
+looks for the exact string `Closes #N`, which a lowercase `closes #42` is not. So in an
+intermediate PR's body, never put a closing keyword (`close`/`closes`/`closed`,
+`fix`/`fixes`/`fixed`, `resolve`/`resolves`/`resolved`) immediately before an issue
+reference, in any casing. Write "is the PR that closes the tracking issue" instead, and
+grep the body before posting it.
+
 `pr-body-not-empty` (`scripts/review-checks.mjs`, documented in `REVIEW.md`) enforces
 this mechanically.
+
+## Model delegation
+
+Non-trivial work on this repo is split across three model roles, deliberately, in this
+order. The split exists because the three jobs fail differently: orchestration fails by
+misreading the design, implementation fails by writing the wrong code, and verification
+fails by believing a green test run.
+
+- **Orchestrate with Opus.** Read the issue, read the code it touches, check the issue's
+  factual claims against the tree *before* delegating — this repo's issues carry measured
+  evidence (blob hashes, commit shas, timing tables) that can go stale between filing and
+  implementation. Write the brief. Own the git surface: branch, commits, and the pull
+  request are never delegated, because that is where `CONVENTIONS.md` is violated
+  (branch-number rule, `Closes #N`, the stdin trap in "Repeated mistakes").
+- **Implement with Sonnet**, via the `Agent` tool with `model: "sonnet"`, one pass per
+  coherent slice of the issue's own **Sequencing** section — not one per file, and not
+  one giant pass. Each brief carries the exact identifiers (function names, field names,
+  attribute names) the next pass will build on, so a later pass never has to rediscover
+  what an earlier one chose. Passes that share state run **serially**.
+- **Verify with Opus.** Not "the suite is green" — that is the implementer's own claim
+  and it is the weakest evidence available. Verification re-derives the numbers from git
+  by hand, and for anything guarded by a mutation-table row (`test:plan-metrics`,
+  `test:checks`, `test:ast`) it **removes each new guard in turn and confirms the row goes
+  red**. A row that passes with its guard removed is dead, and a dead row is the exact
+  failure mode those suites exist to prevent.
+
+The orchestrator states which role produced what in the pull request body, so a reviewer
+knows which claims were re-derived and which were taken from a subagent.
 
 ## The turn log
 
