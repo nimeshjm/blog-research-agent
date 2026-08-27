@@ -61,15 +61,17 @@ Why `--emit` fails loud where the vendored hooks fail soft
     moment any of them fails. Do not loosen `otel_span.py` itself to match - the
     hooks' fail-soft behaviour is load-bearing for interactive sessions.
 
-Why the git walk uses `--follow -M25% --diff-filter=A`, not a plain `--follow`
+Why the git walk uses `--follow -M25%`, and reads post-image blobs off `--raw`
     `features/README.md` mandates renumbering, so a feature directory can be
     renamed after it's created - and the rename commit can also rewrite the file's
     contents (e.g. resolving open questions in intent.md at the same time it's
     renumbered). `--follow`'s rename detector uses git's ordinary similarity
     threshold (50% by default), and once a rename's content changes enough to fall
     below that threshold, the detector declines to pair old-path -> new-path, the
-    follow chain loses the trail, and the *rename* commit is mistaken for the
-    *creation* commit - understating lead time by the whole gap between them.
+    follow chain loses the trail, and the commit `resolve_filled()` picks as
+    "filled" is truncated at the rename - understating the fill date (or, for
+    `count_edits_after`'s history walk, silently dropping pre-rename commits) by
+    the whole gap between the true commit and the rename.
     Measured directly (true creation 2026-01-01, `git mv` + rewrite on 2026-03-01):
 
         rename commit contents          | default -M | -M25%           | orphan D?
@@ -81,19 +83,33 @@ Why the git walk uses `--follow -M25% --diff-filter=A`, not a plain `--follow`
     `-M25%` lowers the pairing threshold enough to correctly resolve the 65% case.
     It does not (cannot) resolve 100%-rewritten renames - git has no signal left to
     pair on - but that failure mode is now *detectable*: when `--follow` can't pair
-    a rename, the resulting "creation" commit's diff still carries an orphaned `D`
-    on some *other* `features/*/intent.md` in the very same commit (the deletion
-    half of the unpaired rename). `resolve_creation()` below checks for exactly
+    a rename, the resulting commit's diff still carries an orphaned `D`
+    on some *other* `features/*/<artifact>` in the very same commit (the deletion
+    half of the unpaired rename). `resolve_filled()` below checks for exactly
     that and reports `t1_source = "follow-unresolved"` instead of `"follow"`; the
     caller then refuses to trust the date and reports the feature unmeasurable
     rather than emit a number that might be wrong by weeks. `-M25%` did not
     false-pair against `features/_template/intent.md` in manual testing, so the
-    low threshold is safe on this tree. With `-M25%` in place, `--diff-filter=A`
-    is safe to use directly (it wasn't at the default threshold, because the
-    unpaired-rename "add" entry the filter selects is exactly the wrong commit) -
-    so the git-log invocation for `t1` is the simpler `--diff-filter=A` form, and a
-    separate `--name-status` walk (no filter) supplies the full commit list
-    `post_spec_edits` needs.
+    low threshold is safe on this tree. `FOLLOW_SIMILARITY` is always passed as
+    that one named constant, never a literal, so the two git-log invocations that
+    need it (`resolve_filled()` and `git_path_history()`) cannot drift apart.
+
+    `resolve_filled()` reads each commit's post-image blob sha directly off the
+    `--raw --no-abbrev` diff line, never off `git rev-parse <sha>:<rel_path>`.
+    Under `--follow`, `rel_path` is the path's *current* name, and a commit that
+    predates a rename has no blob at that path at all - `rev-parse` on it returns
+    nothing, indistinguishable from "path didn't exist yet", which would make
+    every pre-rename commit silently unreadable and the whole feature read as
+    first-filled only at the rename. Reading the post-image off the log walk
+    itself sidesteps the lookup: the walk already names the blob for every
+    commit, pre- and post-rename alike. `--no-abbrev` (equivalently
+    `--full-index`) is required for a different reason: without it, git
+    abbreviates the raw blob shas, they never equal a 40-character template sha
+    from `template_blob_shas()`, the set comparison never matches, and every
+    artifact reads as filled at its first commit - silently reverting to plain
+    first-add behaviour with no error to notice it by. The synthetic pinned-date
+    row in `plan_metrics_test.py` that asserts an exact `design_lead_time_hours`
+    is what catches this: drop `--no-abbrev` and that row's number goes to `0.0`.
 
     Known false positive, accepted deliberately: a commit that renames one feature
     directory *and* creates a different feature's intent.md in the same commit
@@ -103,14 +119,56 @@ Why the git walk uses `--follow -M25% --diff-filter=A`, not a plain `--follow`
     `measurable: false` and no number emitted, rather than a wrong number - which
     is the correct side to be wrong on, so it ships as-is.
 
-Why `post_spec_edits` mixes an author date and a committer date
-    Per the spec: commits touching `intent.md` whose *committer* date is strictly
-    after `spec_t0`, where `spec_t0` is spec.md's first-add commit's *author* date.
-    That's deliberate, not a typo to "fix" to one clock: author date is when the
-    spec's content was actually written (the right anchor for "after the spec
-    started"), while committer date is when a commit actually landed in history -
-    including rebases and amends - which is the right clock for "was this intent
-    edit real churn that happened after that point in the recorded history".
+Why `t1` is template divergence, not first add
+    `features/README.md` mandates "Copy `_template/` to start a feature", so every
+    artifact can - and, on the only feature that exists, does - first appear in
+    one commit as an unfilled template copy. Measured directly: each of
+    `features/_template/{intent,spec,plan}.md` has exactly one historical blob,
+    all three introduced in the same bootstrap commit (`7c14ea0`). At that
+    commit, `features/001-scheduled-research-drafts/`'s `intent.md` and
+    `spec.md` already differ from their template blobs (so both correctly read
+    as "filled" there), but its `plan.md` blob at `7c14ea0` is byte-identical to
+    `features/_template/plan.md`'s - it is still the template - and first
+    diverges only at `ae1e86c` (2026-08-26). A first-add anchor would call
+    `7c14ea0` "the plan commit" and every number built on that date would be
+    wrong by a day. `t1 = filled_at(path)`, computed by `resolve_filled()`, is
+    instead the author date of the first commit whose blob at that path is
+    outside the *historical set* of blobs `features/_template/<name>` has ever
+    had - "historical set", not "the template as of that commit" or "the
+    template now": the template can itself be edited after a feature copies from
+    it, and either point-in-time comparison would then declare an untouched copy
+    "filled" the moment the template changes under it. `template_blob_shas()`
+    computes that set once per artifact name (three names, not per feature -
+    templates change rarely, so a `git log --all` plus one `rev-parse` per
+    historical revision is cheap) and memoises it in a module-level cache keyed
+    by `(root, artifact_name)`.
+
+Why `count_edits_after` excludes the anchor commit by sha
+    `ae1e86c` is `001`'s `plan.md`-filling commit, and in that same commit also
+    edits `spec.md`. Measured directly: its AUTHOR date is
+    2026-08-26T20:28:30Z; its COMMITTER date is 2026-08-26T20:30:14Z, almost two
+    minutes later - the signature of a rebase that moved the commit in history
+    without touching what it actually did. Under a naive "committer date
+    strictly after the anchor's author date" rule, that gap makes the anchor
+    commit count itself as rework: its own committer date is after its own
+    author date, which is the anchor it is being compared to. Whether that
+    self-count fires then depends on whether the commit happened to get rebased
+    - a metric that moves on rebase state is measuring clock skew, not rework.
+    `count_edits_after()` takes an optional `anchor_sha` and excludes any commit
+    whose sha matches it, so the anchor commit is never counted as evidence of
+    edits after itself, rebased or not.
+
+Why `count_edits_after` mixes an author date and a committer date
+    Both stages of this measure the same shape: commits touching one artifact
+    whose *committer* date is strictly after another artifact's *anchor*, an
+    *author* date (`spec_t0` for Stage 1's intent churn, `plan_filled_at` for
+    Stage 2's spec churn). That's deliberate, not a typo to "fix" to one clock:
+    author date is when the anchor artifact's content was actually written (the
+    right anchor for "after the anchor started"), while committer date is when a
+    commit actually landed in history - including rebases and amends - which is
+    the right clock for "was this edit real churn that happened after that
+    point in the recorded history". `count_edits_after()` is shared by both
+    stages specifically so they cannot drift apart on this.
 
 Why GitHub issues are fetched once per feature and filtered client-side
     `gh issue list --label a --label b` is an AND, not an OR. Asking for
@@ -255,11 +313,13 @@ FEATURE_DIR_RE = re.compile(r"^\d{3}-")
 # different (and here wrong) argument shape to git.
 FOLLOW_SIMILARITY = "-M25%"
 
-# A `D` on some *other* feature's intent.md inside the commit resolve_creation()
-# picked as an "add" - the signature of a rename --follow could not pair (see the
-# module docstring). Anchored to intent.md specifically, matching what
-# resolve_creation() is ever asked to resolve.
-ORPHAN_D_RE = re.compile(r"^D\tfeatures/[^/]+/intent\.md$")
+# A `D` on some *other* feature's copy of the same artifact inside the commit
+# resolve_filled() picked as "filled" - the signature of a rename --follow could
+# not pair (see the module docstring). Compiled per artifact basename
+# (intent.md / spec.md / plan.md) and memoised in _ORPHAN_D_RE_CACHE below, so
+# the guard covers all three artifacts rather than being hardcoded to one.
+_ORPHAN_D_RE_CACHE: "dict[str, re.Pattern[str]]" = {}
+
 
 # This runs once a day from CI, not in a hot loop or an interactive session, so
 # there is no cost to being generous with subprocess/network timeouts here.
@@ -322,36 +382,163 @@ def run_git(root: str, *args: str) -> "str | None":
     return result.stdout
 
 
-def resolve_creation(root: str, rel_path: str) -> "tuple[datetime.datetime, str, str, str] | None":
-    """Resolve the commit that first adds `rel_path`, chasing renames.
+# template_blob_shas() cache: {(root, artifact_name): {blob_sha, ...}}. Module-
+# level and never invalidated within a process - see template_blob_shas()'s own
+# docstring for why that's safe (this script runs once per process, and the
+# whole point of memoising is that a feature's template rarely changes).
+def _orphan_d_re(artifact_name: str) -> "re.Pattern[str]":
+    """The orphaned-`D` regex for one artifact basename (e.g. "intent.md"),
+    compiled once and cached. Behaviour for "intent.md" is byte-identical to
+    the previous hardcoded ORPHAN_D_RE."""
+    pattern = _ORPHAN_D_RE_CACHE.get(artifact_name)
+    if pattern is None:
+        pattern = re.compile(rf"^D\tfeatures/[^/]+/{re.escape(artifact_name)}$")
+        _ORPHAN_D_RE_CACHE[artifact_name] = pattern
+    return pattern
 
-    Returns (author_date, author_name, sha, t1_source), or None when the path has
-    never been committed. `t1_source` is "follow" when the resolution looks
-    trustworthy, or "follow-unresolved" when an orphaned `D` on a *different*
-    feature's intent.md turns up in the same commit - the signature of a rename
-    `--follow` could not pair even at `-M25%` (see the module docstring). Callers
-    must not trust the returned date when `t1_source == "follow-unresolved"`.
+
+_TEMPLATE_BLOB_CACHE: "dict[tuple[str, str], set[str]]" = {}
+
+
+def template_blob_shas(root: str, artifact_name: str) -> "set[str]":
+    """Every blob sha `features/_template/<artifact_name>` has EVER had, as a
+    set - not the template as of any one point in time. Memoised per
+    `(root, artifact_name)` in `_TEMPLATE_BLOB_CACHE`, since this is called once
+    per feature per artifact and the underlying history barely ever changes.
+
+    Why a set and not a single "the template" lookup: see the module
+    docstring's "Why `t1` is template divergence, not first add" note. A
+    feature's copy can be byte-identical to some *earlier* version of the
+    template even after the template itself has since been edited, and only
+    the full historical set catches that.
+
+    Implementation: `git log --all` for every commit that ever touched the
+    path, then `git rev-parse <sha>:<path>` per revision - the template path
+    itself is never renamed, so there's no `--follow`/rename concern here, only
+    for the per-feature copies `resolve_filled()` resolves. Empty set (not an
+    error) when the template path has no history at all; every commit then
+    reads as "filled", which is the right degradation - nothing to compare
+    against means nothing can be withheld as "still the template".
     """
+    key = (root, artifact_name)
+    cached = _TEMPLATE_BLOB_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    path = f"features/_template/{artifact_name}"
+    output = run_git(root, "log", "--all", "--format=%H", "--", path)
+    shas: "set[str]" = set()
+    if output:
+        for rev in output.split("\n"):
+            rev = rev.strip()
+            if not rev:
+                continue
+            blob = run_git(root, "rev-parse", f"{rev}:{path}")
+            if blob:
+                shas.add(blob.strip())
+
+    _TEMPLATE_BLOB_CACHE[key] = shas
+    return shas
+
+
+def _parse_raw_log(output: str) -> "list[dict[str, Any]]":
+    """Parse the output of:
+
+        git log --follow -M25% --raw --no-abbrev \\
+            --format='C%x09%H%x09%aI%x09%an' -- <path>
+
+    into one record per commit that touched `path`, in git's own (newest-first)
+    order: {sha, author_date, author_name, post_image}. `post_image` is the
+    post-image blob sha read directly off the raw diff line - see the module
+    docstring's note on why this, and not `git rev-parse <sha>:<path>`, is the
+    only correct way to get it under `--follow`. A rename status line
+    (`R100\\t<old>\\t<new>`) still has exactly five space-separated fields before
+    the tab - `<old_mode> <new_mode> <old_sha> <new_sha> <status>` - so this
+    never needs to special-case it. Commits with no raw line at all (seen for
+    merge commits touching this path) are dropped: `post_image` stays None and
+    the record is filtered out below.
+    """
+    records: "list[dict[str, Any]]" = []
+    current: "dict[str, Any] | None" = None
+    for raw_line in output.split("\n"):
+        if raw_line.startswith("C\t"):
+            fields = raw_line.split("\t")
+            if len(fields) != 4:
+                continue
+            _, sha, author_date, author_name = fields
+            current = {
+                "sha": sha,
+                "author_date": author_date,
+                "author_name": author_name,
+                "post_image": None,
+            }
+            records.append(current)
+        elif raw_line.startswith(":"):
+            if current is None or current["post_image"] is not None:
+                continue
+            meta, _, _rest = raw_line[1:].partition("\t")
+            parts = meta.split()
+            if len(parts) != 5:
+                continue
+            _old_mode, _new_mode, _old_blob, new_blob, _status = parts
+            current["post_image"] = new_blob
+        # blank separator lines and anything else: ignore.
+    return [r for r in records if r["post_image"] is not None]
+
+
+def resolve_filled(root: str, rel_path: str) -> "tuple[datetime.datetime, str, str, str] | None":
+    """Resolve the commit that first FILLS `rel_path` - the first commit,
+    walked oldest-first across renames, whose post-image blob at that path is
+    outside `template_blob_shas()` for that artifact's basename. See the
+    module docstring's "Why `t1` is template divergence, not first add" note
+    for why this replaced a plain "first add" resolution.
+
+    Returns (author_date, author_name, sha, t1_source), or None when the path
+    has never been committed, or has been committed but every commit's blob is
+    still in the template's historical set (never actually filled in). A
+    deletion (all-zero post-image) is skipped rather than treated as "filled" -
+    there is no content there to compare.
+
+    `t1_source` is "follow" when the resolution looks trustworthy, or
+    "follow-unresolved" when an orphaned `D` on a *different* feature's copy of
+    the *same artifact* turns up in the same commit - the signature of a
+    rename `--follow` could not pair even at `-M25%` (see the module
+    docstring). Callers must not trust the returned date when
+    `t1_source == "follow-unresolved"`.
+    """
+    artifact_name = os.path.basename(rel_path)
+    template_shas = template_blob_shas(root, artifact_name)
+
     output = run_git(
-        root, "log", "--follow", FOLLOW_SIMILARITY, "--diff-filter=A",
-        "--format=%H%x09%aI%x09%an", "--", rel_path,
+        root, "log", "--follow", FOLLOW_SIMILARITY, "--raw", "--no-abbrev",
+        "--format=C%x09%H%x09%aI%x09%an", "--", rel_path,
     )
     if not output:
         return None
-    lines = [line for line in output.split("\n") if line.strip()]
-    if not lines:
+    records = _parse_raw_log(output)
+    if not records:
         return None
-    sha, author_date, author_name = lines[-1].split("\t", 2)  # oldest = last line
 
-    t1_source = "follow"
-    show_output = run_git(root, "show", "--name-status", "--format=", sha, "--", "features/")
-    if show_output:
-        for line in show_output.split("\n"):
-            if ORPHAN_D_RE.match(line):
-                t1_source = "follow-unresolved"
-                break
+    zero_sha = "0" * 40
+    orphan_re = _orphan_d_re(artifact_name)
 
-    return parse_iso(author_date), author_name, sha, t1_source
+    for record in reversed(records):  # git logs newest-first; walk oldest-first
+        post_image = record["post_image"]
+        if post_image == zero_sha or post_image in template_shas:
+            continue
+
+        sha = record["sha"]
+        t1_source = "follow"
+        show_output = run_git(root, "show", "--name-status", "--format=", sha, "--", "features/")
+        if show_output:
+            for line in show_output.split("\n"):
+                if orphan_re.match(line):
+                    t1_source = "follow-unresolved"
+                    break
+
+        return parse_iso(record["author_date"]), record["author_name"], sha, t1_source
+
+    return None
 
 
 def _parse_name_status_log(output: str) -> "list[dict[str, Any]]":
@@ -397,8 +584,8 @@ def git_path_history(root: str, rel_path: str) -> "list[dict[str, Any]]":
     """The full `--follow -M25% --name-status` history of `rel_path`, parsed into
     records - every commit that ever touched it, across renames. Empty list if the
     path has never been committed (or on any git failure). Used only to enumerate
-    committer dates for `post_spec_edits`; `t1` itself comes from
-    `resolve_creation()`, not from this list."""
+    committer dates for `count_edits_after`; `t1`/`filled_at` itself comes from
+    `resolve_filled()`, not from this list."""
     output = run_git(
         root, "log", "--follow", FOLLOW_SIMILARITY, "--name-status",
         "--format=C%x09%H%x09%aI%x09%cI%x09%an", "--", rel_path,
@@ -408,58 +595,133 @@ def git_path_history(root: str, rel_path: str) -> "list[dict[str, Any]]":
     return _parse_name_status_log(output)
 
 
-def count_post_spec_edits(
-    intent_records: "list[dict[str, Any]]", spec_t0: datetime.datetime
+def count_edits_after(
+    history: "list[dict[str, Any]]",
+    anchor: datetime.datetime,
+    anchor_sha: "str | None" = None,
 ) -> int:
-    """Commits touching intent.md whose COMMITTER date is strictly after spec_t0
-    (spec.md's first-add commit's AUTHOR date). See the module docstring's note on
-    why these are two different clocks on purpose."""
-    return sum(1 for r in intent_records if parse_iso(r["committer_date"]) > spec_t0)
+    """Commits in `history` whose COMMITTER date is strictly after `anchor` (an
+    AUTHOR-date datetime), excluding the commit whose sha == `anchor_sha`.
+
+    Shared by both stages - Stage 1's intent-post-spec-edits and Stage 2's
+    spec-post-plan-edits both call this with their own `(history, anchor,
+    anchor_sha)` triple, so the two counts cannot silently drift onto two
+    different definitions of "after". See the module docstring's "Why
+    `count_edits_after` mixes an author date and a committer date" and "Why
+    `count_edits_after` excludes the anchor commit by sha" notes for why the
+    two clocks and the sha exclusion are both deliberate, not bugs.
+    """
+    return sum(
+        1
+        for r in history
+        if r["sha"] != anchor_sha and parse_iso(r["committer_date"]) > anchor
+    )
 
 
 def compute_git_facts(root: str, feature_dir: str) -> "dict[str, Any] | None":
-    """Everything this script can learn from git alone for one feature directory.
+    """Everything this script can learn from git alone for one feature directory -
+    both Stage 1 (Plan) and Stage 2 (Design) facts.
 
-    Returns None when intent.md has never been committed (present on disk but not
-    yet added to history - nothing to measure yet, not an error).
+    Returns None when intent.md has never been FILLED (never committed, or
+    committed but still byte-identical to some historical template blob - see
+    `resolve_filled()`). A committed-but-still-template intent.md starts no
+    clock; that is the whole point of the anchor redefinition documented in the
+    module docstring.
     """
     intent_rel = "/".join(("features", feature_dir, "intent.md"))
     spec_rel = "/".join(("features", feature_dir, "spec.md"))
+    plan_rel = "/".join(("features", feature_dir, "plan.md"))
 
-    intent_creation = resolve_creation(root, intent_rel)
-    if intent_creation is None:
+    intent_filled = resolve_filled(root, intent_rel)
+    if intent_filled is None:
         return None
-    t1, intent_author, intent_sha, t1_source = intent_creation
+    t1, intent_author, intent_sha, t1_source = intent_filled
 
     facts: "dict[str, Any]" = {
         "t1": t1,
         "intent_sha": intent_sha,
         "intent_author": intent_author,
         "t1_source": t1_source,
+        # Stage 1 (existing, now filled-based).
         "spec_committed_at": None,
         "spec_sha": None,
+        "spec_t1_source": None,
         "post_spec_edits": None,
+        # Stage 2 (Design) - new.
+        "design_lead_time_hours": None,
+        "design_measurable": False,
+        "plan_filled_at": None,
+        "plan_sha": None,
+        "design_anchor_source": "none",
+        "spec_post_plan_edits": None,
     }
 
-    spec_creation = resolve_creation(root, spec_rel)
-    if spec_creation is not None:
-        spec_t0, _spec_author, spec_sha, _spec_t1_source = spec_creation
-        facts["spec_committed_at"] = spec_t0
+    spec_filled = resolve_filled(root, spec_rel)
+    if spec_filled is not None:
+        spec_t1, _spec_author, spec_sha, spec_t1_source = spec_filled
+        facts["spec_committed_at"] = spec_t1
         facts["spec_sha"] = spec_sha
-        # Counted whether or not intent.md and spec.md share their first commit.
-        # Issue #29 said to omit churn in the same-commit case on the grounds that
-        # it is "undefined too", but that conflates two independent things: the
-        # *lead time* is undefined there (see `measurable` below), the churn is
-        # not. spec_t0 is a real timestamp either way, and "intent commits
-        # strictly after it" is a real count either way. Feature 001 is the case
-        # that settled it: its artifacts share the bootstrap commit, and 706ea65
-        # then edited intent.md the next day. That is exactly the rework the
-        # board's `MAX(sdlc.intent.post_spec_edits) > 0` trigger exists to catch,
-        # and omitting it would hide the one signal that means anything at n=1.
-        # post_spec_edits stays None only when there is no spec.md at all - the
+        facts["spec_t1_source"] = spec_t1_source
+        # Counted whether or not intent.md and spec.md share their first FILLED
+        # commit. Issue #29 said to omit churn in the same-commit case on the
+        # grounds that it is "undefined too", but that conflates two
+        # independent things: the *lead time* is undefined there (see
+        # `design_measurable` below), the churn is not. spec_t1 is a real
+        # timestamp either way, and "intent commits strictly after it" is a
+        # real count either way. Feature 001 is the case that settled it: its
+        # artifacts share the bootstrap commit, and 706ea65 then edited
+        # intent.md the next day. That is exactly the rework the board's
+        # `MAX(sdlc.intent.post_spec_edits) > 0` trigger exists to catch, and
+        # omitting it would hide the one signal that means anything at n=1.
+        # post_spec_edits stays None only when spec.md is never filled - the
         # case that genuinely has no baseline to measure from.
         intent_records = git_path_history(root, intent_rel)
-        facts["post_spec_edits"] = count_post_spec_edits(intent_records, spec_t0)
+        facts["post_spec_edits"] = count_edits_after(intent_records, spec_t1, anchor_sha=spec_sha)
+
+        # design_lead_time_hours / design_measurable both need spec_t1, so they
+        # live inside this branch - see issue #42's unmeasurable guards, mirrored
+        # exactly here:
+        #   - spec.md not filled: design_measurable stays its False default below.
+        #   - intent.md and spec.md first FILLED in the same commit (001's real
+        #     case): same_commit.
+        #   - design_lead_time_hours < 0 (spec filled before intent - possible
+        #     when intent.md was copied as a template and filled later than the
+        #     spec): the >= 0 check.
+        #   - either artifact's t1_source == "follow-unresolved": unresolved.
+        same_commit = spec_sha == intent_sha
+        lead_time_hours = (spec_t1 - t1).total_seconds() / 3600.0
+        facts["design_lead_time_hours"] = lead_time_hours
+        unresolved = t1_source == "follow-unresolved" or spec_t1_source == "follow-unresolved"
+        facts["design_measurable"] = (
+            not same_commit and lead_time_hours >= 0 and not unresolved
+        )
+
+    # plan.md is resolved unconditionally, independent of whether spec.md is
+    # filled: design_anchor_source names what plan.md itself is doing ("has it
+    # diverged from the template"), not a joint fact about spec and plan, so a
+    # feature with a filled plan.md but an unfilled spec.md (gate-skipping, but
+    # real) must still report anchor_source == "plan-filled" rather than
+    # silently misreporting "none" because spec wasn't filled yet.
+    plan_filled = resolve_filled(root, plan_rel)
+    if plan_filled is not None:
+        plan_t1, _plan_author, plan_sha, _plan_t1_source = plan_filled
+        facts["plan_filled_at"] = plan_t1
+        facts["plan_sha"] = plan_sha
+        facts["design_anchor_source"] = "plan-filled"
+        # spec_post_plan_edits is a churn count ABOUT spec.md, so it stays None
+        # (omitted) when spec.md itself has never been filled - there is no
+        # spec to have been reworked, the same "no baseline to measure from"
+        # reasoning post_spec_edits already applies above for a missing
+        # spec.md, not a claim that a nonexistent spec had exactly 0 edits.
+        # When spec.md HAS been filled, count_edits_after() on its history
+        # returning 0 is a defined, real zero ("no edits after the anchor
+        # exist"), not a fabricated one; see the module docstring's
+        # anchor-sha-exclusion note for the general shape of that argument.
+        if facts["spec_committed_at"] is not None:
+            spec_history = git_path_history(root, spec_rel)
+            facts["spec_post_plan_edits"] = count_edits_after(
+                spec_history, plan_t1, anchor_sha=plan_sha
+            )
 
     return facts
 
@@ -582,8 +844,9 @@ def build_feature(
     apply_session_t0: bool,
     cached_session_t0: "datetime.datetime | None",
 ) -> "dict[str, Any] | None":
-    """Assemble one feature's report record, or None if it has no committed
-    intent.md yet (see compute_git_facts)."""
+    """Assemble one feature's report record - Stage 1 (Plan) and Stage 2
+    (Design) fields both - or None if intent.md has never been filled yet (see
+    compute_git_facts)."""
     facts = compute_git_facts(root, feature_dir)
     if facts is None:
         return None
@@ -664,10 +927,30 @@ def build_feature(
         record["lead_time_hours"] = lead_time_hours
     if facts["spec_committed_at"] is not None:
         record["spec_committed_at"] = to_iso_z(facts["spec_committed_at"])
+        # Present whenever spec_committed_at is - see build_report()'s docstring
+        # key list.
+        record["spec_t1_source"] = facts["spec_t1_source"]
+        record["spec_age_days"] = (now - facts["spec_committed_at"]).total_seconds() / 86400.0
     if outcome is not None:
         record["intent_outcome"] = outcome
     if facts["post_spec_edits"] is not None:
         record["intent_post_spec_edits"] = facts["post_spec_edits"]
+
+    # Stage 2 (Design). design_measurable and design_anchor_source are ALWAYS
+    # present (like intent_t1_source above) so a reader can see *why* a feature
+    # is unmeasurable rather than just that it is. design_lead_time_hours,
+    # design_plan_filled_at and spec_post_plan_edits are omitted - key absent,
+    # never null, never a fabricated 0 - exactly when their underlying fact is
+    # undefined: no fabricated number reaches the report or a span.
+    record["design_measurable"] = facts["design_measurable"]
+    if facts["design_measurable"]:
+        record["design_lead_time_hours"] = facts["design_lead_time_hours"]
+    record["design_anchor_source"] = facts["design_anchor_source"]
+    if facts["plan_filled_at"] is not None:
+        record["design_plan_filled_at"] = to_iso_z(facts["plan_filled_at"])
+    if facts["spec_post_plan_edits"] is not None:
+        record["spec_post_plan_edits"] = facts["spec_post_plan_edits"]
+
     return record
 
 
@@ -709,17 +992,26 @@ def build_report(root: str, use_github: bool, apply_session_t0: bool) -> "dict[s
 
     `features` is sorted by directory name. Each feature record's keys mirror the
     `sdlc.*` span attributes with the prefix dropped and '.' replaced by '_':
-    feature, issue, measurable, t0, t0_source, intent_author, intent_committed_at,
-    intent_age_days, intent_t1_source, lead_time_hours, spec_committed_at,
-    intent_outcome, intent_post_spec_edits.
+
+    Stage 1 (Plan): feature, issue, measurable, t0, t0_source, intent_author,
+    intent_committed_at, intent_age_days, intent_t1_source, lead_time_hours,
+    spec_committed_at, intent_outcome, intent_post_spec_edits.
+
+    Stage 2 (Design): design_measurable, spec_t1_source, spec_age_days,
+    design_lead_time_hours, design_plan_filled_at, design_anchor_source,
+    spec_post_plan_edits. (spec_committed_at is shared with Stage 1, now
+    filled-based for both.)
 
     Omitted means the key is absent, never null and never a fabricated 0 - see the
     module docstring's note on why feature 001 must report unmeasurable rather than
-    a 0-hour lead time / 0 post-spec edits. `intent_t1_source` is the one field
-    that is always present, even when unmeasurable: it is "follow" or
-    "follow-unresolved", never absent, since it is what a reader would need to
-    understand *why* a feature reports unmeasurable when the guard responsible is
-    the rename-detection one rather than a missing t0.
+    a 0-hour lead time / 0 post-spec edits. `intent_t1_source`, `design_measurable`
+    and `design_anchor_source` are the fields that are always present, even when
+    unmeasurable: `intent_t1_source` is "follow" or "follow-unresolved", never
+    absent, since it is what a reader would need to understand *why* a feature
+    reports unmeasurable when the guard responsible is the rename-detection one
+    rather than a missing t0; `design_measurable`/`design_anchor_source` play the
+    same role for Stage 2 - a reader can always see why a feature's design lead
+    time or churn number is missing, never just that it is.
     """
     feature_dirs = discover_features(root)
     cached_session = session_t0(root) if apply_session_t0 else None
