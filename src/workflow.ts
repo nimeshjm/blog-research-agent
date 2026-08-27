@@ -1,5 +1,14 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import { claimOldestQueuedTopic, claimTopicById, findOrProposeTopic, findSeenUrls, recordRunOutcome } from './lib/d1';
+import {
+  claimOldestQueuedTopic,
+  claimTopicById,
+  findOrProposeTopic,
+  findSeenUrls,
+  pruneRunCandidates,
+  readRunCandidates,
+  recordRunOutcome,
+  writeRunCandidates,
+} from './lib/d1';
 import { extractArticleText } from './lib/extract';
 import { applyGatherWindow, parseFeed } from './lib/feed';
 import { loadFeeds } from './lib/feeds';
@@ -87,24 +96,35 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
     //    feeds, and unwindowed they put 4,742 candidates into `shortlist`,
     //    whose chunked seen_urls batch would then need 48 of D1's 50 queries
     //    per invocation. Windowed it is 678 candidates and 7 queries.
+    //
+    //    `gathered` stays an integer, not an array: `run()` re-executes from
+    //    the top on every replay, so anything it accumulates here is rebuilt
+    //    once per attempt, and replay cost grows with the number of
+    //    *completed* gathers (requirement 4). Each feed writes its own
+    //    candidates straight to D1 (`gatherCandidates`); this loop only
+    //    totals the counts.
     const sources = await traceStep('load-sources', {}, async () => loadSources(this.env));
 
-    const candidates: Candidate[] = [];
+    let gathered = 0;
     for (const source of sources) {
       // `agent.step` on this span is the `gather` prefix, not the full step
       // name - `tracedStep` strips after the first `:` so a per-feed span
       // never needs a source name judged sensitive enough to redact by hand.
-      const found = await traceStep(`gather:${source.name}`, {}, async (span) => {
-        const result = await gatherCandidates(source);
-        span.setAttribute(ATTR_SOURCES_GATHERED, result.length);
-        return result;
+      gathered += await traceStep(`gather:${source.name}`, {}, async (span) => {
+        const count = await gatherCandidates(this.env, event.instanceId, source);
+        span.setAttribute(ATTR_SOURCES_GATHERED, count);
+        return count;
       });
-      candidates.push(...found);
     }
 
-    // Batched dedupe against seen_urls happens here, in one query.
+    // Batched dedupe against seen_urls happens inside shortlistCandidates.
+    // `gathered` is not otherwise read downstream - it lands on this span
+    // alongside the shortlisted count, so acceptance criterion 5 ("all 46
+    // feeds gathered with no CPU failure") is readable from one span instead
+    // of summed by hand across 46 gather spans.
     const shortlist = await traceStep('shortlist', {}, async (span) => {
-      const result = await shortlistCandidates(this.env, candidates, topic);
+      const result = await shortlistCandidates(this.env, event.instanceId, topic);
+      span.setAttribute(ATTR_SOURCES_GATHERED, gathered);
       span.setAttribute(ATTR_SOURCES_SHORTLISTED, result.length);
       return result;
     });
@@ -267,6 +287,12 @@ const SYNTHESIS_MAX_TOKENS = 8192;
 export const GATHER_WINDOW_DAYS = 30;
 /** Backstop for items with no parseable date only. Zero such items today. */
 export const GATHER_UNDATED_MAX_PER_FEED = 20;
+/**
+ * `run_candidates` is per-run scratch, not a second cross-run dedupe key -
+ * `seen_urls` stays the only one. Pruned once per run, in `recordOutcome`,
+ * so no terminal path needs its own step.
+ */
+export const RUN_CANDIDATE_RETENTION_DAYS = 7;
 /** Newest-first ceiling: 40 of D1's 50 queries, ten spare. */
 export const SHORTLIST_MAX_CANDIDATES = 4000;
 /**
@@ -391,29 +417,25 @@ async function fetchFeedTitles(feedUrl: string): Promise<string[]> {
 }
 
 /**
- * One fetch, streamed parse (src/lib/feed.ts), no D1. The 30-day window and
- * the undated-item cap are applied here, per feed, never in `shortlist` -
- * see GATHER_WINDOW_DAYS / GATHER_UNDATED_MAX_PER_FEED above and spec.md,
- * "The recency window in `gather`". A feed that cannot be fetched or fails
- * to parse contributes zero candidates rather than failing the step: one
- * dead feed must not fail the run (spec.md risk table), and a feed that
- * consistently returns nothing is a review finding against the allowlist,
- * visible via `agent.sources.gathered` on the step's own span.
+ * One fetch, streamed parse (src/lib/feed.ts), then one D1 write
+ * (`writeRunCandidates`). The 30-day window and the undated-item cap are
+ * applied here, per feed, never in `shortlist` - see GATHER_WINDOW_DAYS /
+ * GATHER_UNDATED_MAX_PER_FEED above and spec.md, "The recency window in
+ * `gather`". A feed that cannot be fetched or fails to parse contributes
+ * zero candidates rather than failing the step: `fetchFeedItems` already
+ * swallows that failure and returns `[]`, so one dead feed must not fail the
+ * run (spec.md risk table), and a feed that consistently returns nothing is
+ * a review finding against the allowlist, visible via `agent.sources.gathered`
+ * on the step's own span. A D1 write failure, though, does still fail the
+ * step, and should - that is not a dead feed, it is a dead database.
  */
-export async function gatherCandidates(source: Source): Promise<Candidate[]> {
+export async function gatherCandidates(env: Env, runId: string, source: Source): Promise<number> {
   const items = await fetchFeedItems(source.feedUrl);
   const windowed = applyGatherWindow(items, {
     windowDays: GATHER_WINDOW_DAYS,
     undatedMax: GATHER_UNDATED_MAX_PER_FEED,
   });
-  return windowed.map((item) => ({ ...item, sourceName: source.name }));
-}
-
-/** Sort key for "newest first": undated items sort last, so they are the first the SHORTLIST_MAX_CANDIDATES ceiling drops. */
-function dateKey(publishedAt: string | null): number {
-  if (publishedAt === null) return Number.NEGATIVE_INFINITY;
-  const parsed = Date.parse(publishedAt);
-  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+  return writeRunCandidates(env.DB, runId, source.name, windowed);
 }
 
 const STOPWORDS = new Set([
@@ -461,15 +483,17 @@ function relevanceScore(candidate: Candidate, topic: Topic): number {
 }
 
 /**
- * Newest-first cap at SHORTLIST_MAX_CANDIDATES *before* touching D1 (D1
- * caps a query at 100 bound params and an invocation at 50 queries), then
- * the batched `seen_urls` dedupe (`findSeenUrls`, chunked at 100 params -
- * `d1.ts` owns that chunking, not reimplemented here), then heuristic
- * ranking against `topic`, then a cap of SHORTLIST_TOP_N. See spec.md, "The
- * aggregate ceiling in `shortlist`".
+ * Reads the run's whole candidate set from D1, newest-first and capped at
+ * SHORTLIST_MAX_CANDIDATES in SQL (`readRunCandidates`'s `ORDER BY`, not a
+ * JS sort - see that function's doc comment for why undated items sort
+ * last) - so this does zero `Date.parse` calls where it used to do one per
+ * candidate. Then the batched `seen_urls` dedupe (`findSeenUrls`, chunked at
+ * 100 params - `d1.ts` owns that chunking, not reimplemented here), then
+ * heuristic ranking against `topic`, then a cap of SHORTLIST_TOP_N. See
+ * spec.md, "The aggregate ceiling in `shortlist`".
  */
-export async function shortlistCandidates(env: Env, candidates: Candidate[], topic: Topic): Promise<Candidate[]> {
-  const capped = [...candidates].sort((a, b) => dateKey(b.publishedAt) - dateKey(a.publishedAt)).slice(0, SHORTLIST_MAX_CANDIDATES);
+export async function shortlistCandidates(env: Env, runId: string, topic: Topic): Promise<Candidate[]> {
+  const capped = await readRunCandidates(env.DB, runId, SHORTLIST_MAX_CANDIDATES);
 
   const seen = await findSeenUrls(env.DB, capped.map((c) => c.url));
   const unseen = capped.filter((c) => !seen.has(c.url));
@@ -666,7 +690,7 @@ async function recordOutcome(
   // INSERT ... ON CONFLICT(instance_id) DO UPDATE, keyed on the Workflow
   // instance id: spec requirement 9 wants exactly one row per run whatever
   // the outcome, and every record-* step above is retried like any other.
-  return recordRunOutcome(env.DB, {
+  await recordRunOutcome(env.DB, {
     instanceId,
     topicId: outcome.topicId ?? null,
     status: outcome.status,
@@ -674,4 +698,17 @@ async function recordOutcome(
     sourcesUsed: outcome.sourcesUsed ?? 0,
     prUrl: outcome.prUrl ?? null,
   });
+
+  // `run_candidates` is per-run scratch, not a second cross-run dedupe key -
+  // `seen_urls` stays the only one. Every terminal path (record-no-topic,
+  // record-no-sources, record-no-summaries, record-success) routes through
+  // this function, so pruning here covers all of them without a new step.
+  //
+  // The order matters and no test covers it: retention runs *after* the
+  // outcome write, never before. Reversed, a prune that threw would fail the
+  // step before the row existed, and spec req. 10's "every run writes a runs
+  // row, including one that dies mid-step" would quietly become "unless the
+  // prune threw". This way the step retries with the row already written and
+  // `recordRunOutcome`'s ON CONFLICT rewrites it identically.
+  await pruneRunCandidates(env.DB, RUN_CANDIDATE_RETENTION_DAYS);
 }

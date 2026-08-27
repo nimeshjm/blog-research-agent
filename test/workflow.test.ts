@@ -1,6 +1,6 @@
 import { env as testEnv } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SEEN_URLS_CHUNK_SIZE } from '../src/lib/d1';
+import { SEEN_URLS_CHUNK_SIZE, writeRunCandidates } from '../src/lib/d1';
 import { loadFeeds } from '../src/lib/feeds';
 import { InvalidDraftError } from '../src/lib/mdx';
 import type { ArticleSummary, Candidate, Draft, Env, Topic } from '../src/lib/types';
@@ -87,7 +87,9 @@ function topic(overrides: Partial<Topic> = {}): Topic {
 }
 
 describe('gatherCandidates()', () => {
-  it('applies the recency window and attaches the source name', async () => {
+  const runId = 'run-gather';
+
+  it('applies the recency window, attaches the source name, and persists to run_candidates', async () => {
     const now = new Date();
     const inWindow = new Date(now.getTime() - 5 * 24 * 60 * 60 * 1000).toUTCString();
     const outOfWindow = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000).toUTCString();
@@ -103,11 +105,13 @@ describe('gatherCandidates()', () => {
       ),
     );
 
-    const result = await gatherCandidates({ name: 'Fixture', feedUrl: 'https://feed.test.example/x.xml' });
+    const count = await gatherCandidates(env, runId, { name: 'Fixture', feedUrl: 'https://feed.test.example/x.xml' });
 
-    expect(result).toHaveLength(1);
-    expect(result[0]?.title).toBe('Recent');
-    expect(result[0]?.sourceName).toBe('Fixture');
+    expect(count).toBe(1);
+    const rows = await env.DB.prepare(`SELECT url, title, source_name FROM run_candidates WHERE run_id = ?`)
+      .bind(runId)
+      .all<{ url: string; title: string; source_name: string }>();
+    expect(rows.results).toEqual([{ url: 'https://example.com/recent', title: 'Recent', source_name: 'Fixture' }]);
   });
 
   it('a full day of dated items is not truncated', async () => {
@@ -118,9 +122,9 @@ describe('gatherCandidates()', () => {
     }));
     vi.stubGlobal('fetch', vi.fn(async () => new Response(rssFeed(items))));
 
-    const result = await gatherCandidates({ name: 'arXiv cs.AI (fixture)', feedUrl: 'https://feed.test.example/arxiv.xml' });
+    const count = await gatherCandidates(env, runId, { name: 'arXiv cs.AI (fixture)', feedUrl: 'https://feed.test.example/arxiv.xml' });
 
-    expect(result).toHaveLength(352);
+    expect(count).toBe(352);
   });
 
   it(`caps undated items at ${GATHER_UNDATED_MAX_PER_FEED}`, async () => {
@@ -130,15 +134,15 @@ describe('gatherCandidates()', () => {
     }));
     vi.stubGlobal('fetch', vi.fn(async () => new Response(rssFeed(items))));
 
-    const result = await gatherCandidates({ name: 'Fixture', feedUrl: 'https://feed.test.example/undated.xml' });
+    const count = await gatherCandidates(env, runId, { name: 'Fixture', feedUrl: 'https://feed.test.example/undated.xml' });
 
-    expect(result).toHaveLength(GATHER_UNDATED_MAX_PER_FEED);
+    expect(count).toBe(GATHER_UNDATED_MAX_PER_FEED);
   });
 
   it('a dead feed (non-2xx) contributes zero candidates rather than failing the step', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
-    const result = await gatherCandidates({ name: 'Dead feed', feedUrl: 'https://feed.test.example/dead.xml' });
-    expect(result).toEqual([]);
+    const count = await gatherCandidates(env, runId, { name: 'Dead feed', feedUrl: 'https://feed.test.example/dead.xml' });
+    expect(count).toBe(0);
   });
 
   it('a network error contributes zero candidates rather than failing the step', async () => {
@@ -148,20 +152,47 @@ describe('gatherCandidates()', () => {
         throw new Error('network down');
       }),
     );
-    const result = await gatherCandidates({ name: 'Unreachable', feedUrl: 'https://feed.test.example/unreachable.xml' });
-    expect(result).toEqual([]);
+    const count = await gatherCandidates(env, runId, { name: 'Unreachable', feedUrl: 'https://feed.test.example/unreachable.xml' });
+    expect(count).toBe(0);
+  });
+
+  it('a re-run against the same run_id leaves the row count unchanged (acceptance criterion 8)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          rssFeed([
+            { title: 'A', url: 'https://example.com/repeat-a', pubDate: new Date().toUTCString() },
+            { title: 'B', url: 'https://example.com/repeat-b', pubDate: new Date().toUTCString() },
+          ]),
+        ),
+      ),
+    );
+    const source = { name: 'Repeatable', feedUrl: 'https://feed.test.example/repeatable.xml' };
+
+    // writeRunCandidates itself is proven idempotent at the row level in
+    // test/d1.test.ts; this proves the same property through gatherCandidates'
+    // own step body (fetch + parse + window + write), not just the write.
+    await gatherCandidates(env, runId, source);
+    await gatherCandidates(env, runId, source);
+
+    const rows = await env.DB.prepare(`SELECT COUNT(*) as n FROM run_candidates WHERE run_id = ? AND source_name = ?`)
+      .bind(runId, source.name)
+      .first<{ n: number }>();
+    expect(rows?.n).toBe(2);
   });
 });
 
 describe('shortlistCandidates()', () => {
-  it('caps at SHORTLIST_MAX_CANDIDATES before touching D1, and issues exactly the expected chunk count', async () => {
-    const candidates = Array.from({ length: 4742 }, (_, i) =>
-      candidate({
-        url: `https://example.com/article-${i}`,
-        title: `Article ${i}`,
-        publishedAt: new Date(Date.now() - i * 1000).toISOString(), // strictly newest-first
-      }),
-    );
+  it('caps at SHORTLIST_MAX_CANDIDATES in SQL, before the seen_urls dedupe', async () => {
+    const runId = 'run-shortlist-cap';
+    const items = Array.from({ length: SHORTLIST_MAX_CANDIDATES + 742 }, (_, i) => ({
+      url: `https://example.com/article-${i}`,
+      title: `Article ${i}`,
+      publishedAt: new Date(Date.now() - i * 1000).toISOString(), // strictly newest-first
+      publishedMs: Date.now() - i * 1000,
+    }));
+    await writeRunCandidates(env.DB, runId, 'Source', items);
 
     let queryCount = 0;
     const countingEnv: Env = {
@@ -174,46 +205,168 @@ describe('shortlistCandidates()', () => {
       } as D1Database,
     };
 
-    const result = await shortlistCandidates(countingEnv, candidates, topic());
+    const result = await shortlistCandidates(countingEnv, runId, topic());
 
-    // The cap runs *before* D1: ceil(SHORTLIST_MAX_CANDIDATES / chunk size),
-    // not ceil(4742 / chunk size) - proves ordering, not just that both stay
-    // under 50.
-    expect(queryCount).toBe(SHORTLIST_MAX_CANDIDATES / SEEN_URLS_CHUNK_SIZE);
+    // One query reads the capped, ordered set (readRunCandidates), then the
+    // chunked seen_urls dedupe runs over exactly SHORTLIST_MAX_CANDIDATES
+    // rows - not the 4,742 written - proving the cap is applied in SQL
+    // before the dedupe, not after.
+    expect(queryCount).toBe(1 + SHORTLIST_MAX_CANDIDATES / SEEN_URLS_CHUNK_SIZE);
     expect(result.length).toBeLessThanOrEqual(SHORTLIST_TOP_N);
   });
 
   it('excludes candidates already present in seen_urls', async () => {
     await env.DB.prepare(`INSERT INTO seen_urls (url, source) VALUES (?, 'test')`).bind('https://example.com/seen').run();
 
-    const result = await shortlistCandidates(
-      env,
-      [candidate({ url: 'https://example.com/seen', title: 'Seen' }), candidate({ url: 'https://example.com/new', title: 'New' })],
-      topic(),
-    );
+    const runId = 'run-shortlist-seen';
+    await writeRunCandidates(env.DB, runId, 'Source', [
+      candidate({ url: 'https://example.com/seen', title: 'Seen' }),
+      candidate({ url: 'https://example.com/new', title: 'New' }),
+    ]);
+
+    const result = await shortlistCandidates(env, runId, topic());
 
     expect(result.map((c) => c.url)).toEqual(['https://example.com/new']);
   });
 
   it('caps the final ranked list at SHORTLIST_TOP_N', async () => {
-    const candidates = Array.from({ length: SHORTLIST_TOP_N + 10 }, (_, i) =>
+    const runId = 'run-shortlist-topn';
+    const items = Array.from({ length: SHORTLIST_TOP_N + 10 }, (_, i) =>
       candidate({ url: `https://example.com/r-${i}`, title: `Agentic code review practice paper ${i}` }),
     );
-    const result = await shortlistCandidates(env, candidates, topic());
+    await writeRunCandidates(env.DB, runId, 'Source', items);
+
+    const result = await shortlistCandidates(env, runId, topic());
     expect(result).toHaveLength(SHORTLIST_TOP_N);
   });
 
   it('ranks a title carrying an attributable-practice signal above pure commentary with equal topic overlap', async () => {
     const t = topic({ title: 'agentic code review', angle: null });
-    const result = await shortlistCandidates(
-      env,
-      [
-        candidate({ url: 'https://example.com/commentary', title: 'Some thoughts on agentic code review' }),
-        candidate({ url: 'https://example.com/study', title: 'A study of agentic code review practice' }),
-      ],
-      t,
-    );
+    const runId = 'run-shortlist-rank';
+    await writeRunCandidates(env.DB, runId, 'Source', [
+      candidate({ url: 'https://example.com/commentary', title: 'Some thoughts on agentic code review' }),
+      candidate({ url: 'https://example.com/study', title: 'A study of agentic code review practice' }),
+    ]);
+
+    const result = await shortlistCandidates(env, runId, t);
     expect(result[0]?.url).toBe('https://example.com/study');
+  });
+
+  // ---------------------------------------------------------------------
+  // Acceptance criterion 7: "The shortlist produced from `run_candidates`
+  // is identical to the shortlist the in-memory array produces for the
+  // same inputs." The in-memory implementation this replaced is deleted
+  // from src/workflow.ts, so it is reconstructed here, deliberately as a
+  // standalone copy rather than a call into shortlistCandidates or any of
+  // its private helpers - the point of the criterion is that the D1-backed
+  // path and the old in-memory path agree, which a shared implementation
+  // could not prove.
+  // ---------------------------------------------------------------------
+  describe('shortlist parity (acceptance criterion 7)', () => {
+    const REF_STOPWORDS = new Set([
+      'the', 'a', 'an', 'of', 'in', 'on', 'for', 'to', 'and', 'or', 'is', 'are',
+      'with', 'how', 'why', 'what', 'this', 'that', 'from', 'at', 'by', 'as',
+      'it', 'its', 'be', 'we', 'you', 'your', 'new', 'v1', 'vs',
+    ]);
+    function refTokenize(text: string): string[] {
+      return text
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((w) => w.length > 2 && !REF_STOPWORDS.has(w));
+    }
+    const REF_PRACTICE_SIGNAL_RE =
+      /\b(paper|study|studies|research|benchmark|arxiv|survey|dataset|evaluation|evaluat\w*|results?|findings?|we (built|found|measured|shipped)|case study)\b/i;
+    const REF_COMMENTARY_SIGNAL_RE = /\b(opinion|thoughts on|roundup|newsletter|weekly|digest|why i think|announcing)\b/i;
+    function refRelevanceScore(c: Candidate, t: Topic): number {
+      const topicWords = new Set([...refTokenize(t.title), ...refTokenize(t.angle ?? '')]);
+      const candidateWords = refTokenize(c.title);
+      let overlap = 0;
+      for (const word of candidateWords) if (topicWords.has(word)) overlap++;
+      let score = overlap;
+      if (REF_PRACTICE_SIGNAL_RE.test(c.title)) score += 2;
+      if (REF_COMMENTARY_SIGNAL_RE.test(c.title)) score -= 1;
+      return score;
+    }
+    /** Undated items sort last - the same rule readRunCandidates's `ORDER BY published_ms IS NULL, published_ms DESC` now applies in SQL. */
+    function refDateKey(publishedAt: string | null): number {
+      if (publishedAt === null) return Number.NEGATIVE_INFINITY;
+      const parsed = Date.parse(publishedAt);
+      return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+    }
+    function referenceShortlist(candidates: Candidate[], seenUrls: Set<string>, t: Topic): Candidate[] {
+      const capped = [...candidates]
+        .sort((a, b) => refDateKey(b.publishedAt) - refDateKey(a.publishedAt))
+        .slice(0, SHORTLIST_MAX_CANDIDATES);
+      const unseen = capped.filter((c) => !seenUrls.has(c.url));
+      return unseen
+        .map((c) => ({ candidate: c, score: refRelevanceScore(c, t) }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, SHORTLIST_TOP_N)
+        .map((r) => r.candidate);
+    }
+
+    it('the D1-backed shortlist matches the reference in-memory shortlist over a mixed fixture', async () => {
+      const now = Date.now();
+      const minutesAgo = (n: number) => new Date(now - n * 60_000).toISOString();
+
+      const fixture: Candidate[] = [
+        candidate({
+          url: 'https://example.com/newest',
+          title: 'Agentic code review: a case study of catching bugs',
+          publishedAt: minutesAgo(0),
+          publishedMs: now,
+        }),
+        candidate({
+          url: 'https://example.com/seen-item',
+          title: 'Agentic code review benchmark results',
+          publishedAt: minutesAgo(1),
+          publishedMs: now - 1 * 60_000,
+        }),
+        candidate({
+          url: 'https://example.com/mid',
+          title: 'A study of agentic code review practice',
+          publishedAt: minutesAgo(2),
+          publishedMs: now - 2 * 60_000,
+        }),
+        // A deliberate score tie: neither shares a word with the topic nor
+        // carries a practice or commentary signal, so both score 0.
+        candidate({
+          url: 'https://example.com/tie-a',
+          title: 'Weekend cooking notes',
+          publishedAt: minutesAgo(3),
+          publishedMs: now - 3 * 60_000,
+        }),
+        candidate({
+          url: 'https://example.com/tie-b',
+          title: 'Garden maintenance log',
+          publishedAt: minutesAgo(4),
+          publishedMs: now - 4 * 60_000,
+        }),
+        candidate({
+          url: 'https://example.com/commentary',
+          title: 'Some thoughts on agentic code review',
+          publishedAt: minutesAgo(5),
+          publishedMs: now - 5 * 60_000,
+        }),
+        candidate({
+          url: 'https://example.com/undated',
+          title: 'A general benchmark discussion',
+          publishedAt: null,
+          publishedMs: null,
+        }),
+      ];
+
+      const runId = 'run-shortlist-parity';
+      await writeRunCandidates(env.DB, runId, 'Source', fixture);
+      await env.DB.prepare(`INSERT INTO seen_urls (url, source) VALUES (?, 'test')`).bind('https://example.com/seen-item').run();
+
+      const t = topic({ title: 'agentic code review', angle: 'catching bugs' });
+
+      const actual = await shortlistCandidates(env, runId, t);
+      const expected = referenceShortlist(fixture, new Set(['https://example.com/seen-item']), t);
+
+      expect(actual.map((c) => c.url)).toEqual(expected.map((c) => c.url));
+    });
   });
 });
 
