@@ -48,6 +48,15 @@ issues were filed about a minute later, so 001 reports `unmeasurable` — never 
 0-hour lead time on a board would read as a triumph. Real lead-time numbers start at
 feature 002.
 
+**Feature 002's lead time is measurable but is not a design cycle.** It reports
+`lead_time=0.03h`, and that number is an artifact of how it was produced: the
+`feature:002` issue and the `intent.md` commit landed minutes apart inside a single agent
+session, because the run that motivated the feature failed and was diagnosed in that same
+session. Read it as "issue and intent were authored together", not as a two-minute plan
+stage. 001 reports `unmeasurable` to keep a 0 off the board; 002 needs the opposite
+footnote — the metric is working, the number is just small for a reason that is not
+speed.
+
 Its **churn** is a different matter and is reported. Sharing a first commit withholds the
 lead time, not the edit count: `spec.md`'s timestamp is real either way, and an `intent.md`
 commit after it is real rework. 001 already has one, which is the number the board's
@@ -78,6 +87,10 @@ are the same commit.
 indicators: leading — elapsed time between `intent.md` being filled and `spec.md` being
 filled, for the same feature — and lagging — `spec.md` commits landing after `plan.md`
 first diverged from the template (requirements rework after a build started).
+
+**Feature 002's design lead time carries the same footnote** as its Stage 1 number
+above: `intent.md` and `spec.md` were written in one session at the requester's
+direction, so `design_lead_time=0.03h` measures authoring order, not a design cycle.
 
 Both come from **git alone**. No `gh` call, no label, no issue state — `--no-github`
 yields complete Stage 2 output; only Stage 1's `t0` and `intent_outcome` degrade without

@@ -216,6 +216,7 @@ same signal `TOPIC_CLAIM_TTL` acts on, from the other side.
 | Bounding the parse is not enough on its own | It attacks the dominant measured cost, and requirement 4 attacks the growth term independently. If a full 46-feed run still fails, the remaining lever is forcing an invocation boundary per gather step, which is why acceptance criterion 5 is a real run rather than a bench |
 | `run_candidates` becomes a second cross-run dedupe key | It is per-run scratch, pruned, and `shortlist` reads it scoped to `run_id`. `seen_urls` stays the only cross-run key |
 | Reclaim races a live run | `TOPIC_CLAIM_TTL` of 6 hours against a minutes-long run and a 48-hour cron gap; both margins stated in the design rather than left to be inferred |
+| `shortlist`'s scoped read relocates the problem rather than removing it | Requirement 5 materializes the whole candidate set for the run in one step — 678 candidates by feature 001's measurement, against a bench that failed at 393 accumulated plus three parses. Taking the array out of `run()` does not by itself prove it fits in `shortlist`. Acceptance criterion 5 is the check, and the fallback is a `LIMIT`-ordered read plus chunked ranking rather than one materialized set. Named here because a stage-2 approver should not have to derive it |
 | The corrected CPU rule is itself wrong | It is measured and the measurement is recorded with it. The failure mode being avoided is an *unmeasured* number derived from documentation, which is what produced this feature |
 
 ## Deferred
