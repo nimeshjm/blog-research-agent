@@ -1379,20 +1379,30 @@ def main(argv: "list[str] | None" = None) -> int:
 #   the same window on purpose; MAX() over one feature's rows is idempotent
 #   where COUNT() or SUM() would multiply by the number of runs that day.
 #
-# Four of these panels are not on the board yet, and creating their columns by
-# hand is the wrong way to get them there. This script omits
-# `sdlc.plan.lead_time_hours` and `sdlc.intent.survival_rate` rather than emit a
-# fabricated zero, so while those columns do not exist Honeycomb enforces that
-# for us: a query naming one is rejected outright. Create the column through the
-# Columns API and the rejection turns into a rendered `0` - COUNT is 0 but P50
-# and MAX both come back 0, so an "Intent lead time" panel shows a flat zero-hour
-# line and "Survival rate" a flat 0%. That is the exact misreading the omission
-# exists to prevent; the loud failure was the safety net. Measured on this
-# dataset 2026-08-26 after creating both columns as `float`.
+# Three of these panels are still blocked, and creating their column by hand
+# is the wrong way to unblock them. This script omits
+# `sdlc.plan.lead_time_hours` rather than emit a fabricated zero, so while that
+# column does not exist Honeycomb enforces that for us: a query naming it is
+# rejected outright. Create the column through the Columns API and the
+# rejection turns into a rendered `0` - COUNT is 0 but P50 and MAX both come
+# back 0, so an "Intent lead time" panel shows a flat zero-hour line. That is
+# the exact misreading the omission exists to prevent; the loud failure was
+# the safety net. Measured on this dataset 2026-08-26 after creating the
+# column as `float`.
 #
-# So: leave those four off the board until a measurable feature lands and the
-# columns fill themselves on the next emit. The board carries their specs as a
-# text panel until then.
+# So: "Intent lead time", "Recent intents only" and "Lead time by feature"
+# stay off the board until a measurable feature lands and
+# `sdlc.plan.lead_time_hours` fills itself on the next emit. The board carries
+# their specs as a text panel until then.
+#
+# `sdlc.intent.survival_rate` was never blocked by `measurable` in the first
+# place: `compute_rollup` emits it whenever accepted + rejected > 0 - feature
+# 001's gate:intent issue (#1) closing COMPLETED supplied the first decided
+# intent, so the 2026-08-27 run emitted survival_rate (1.0) for the first
+# time. "Survival rate" below is a normal panel entry now, not a blocked one,
+# and was added to the board on 2026-08-27; its description carries both the
+# n=1 caveat that a rate this early is near-tautological and the reason its
+# `exists` filter cannot be dropped.
 #
 # Column names below are exactly the attribute names `_build_specs` emits.
 # `npm run plan:metrics -- --json` prints the report those are mapped from, so
@@ -1401,10 +1411,10 @@ def main(argv: "list[str] | None" = None) -> int:
 BOARD_NAME = "SDLC · Stage 1 Plan"
 
 BOARD_DESCRIPTION = (
-    "Stage 1 (Plan) indicators from the AI-native SDLC playbook: leading = time "
-    "from work-item creation to a committed intent.md; lagging = intent survival "
-    "and the intent.md edits made after spec.md started. Dataset "
-    f"{DATASET_NAME}, refreshed by one daily snapshot from "
+    "Stage 1 (Plan) indicators from the AI-native SDLC playbook, for "
+    f"{REPO_SLUG}. Leading: work-item creation to committed intent.md. "
+    "Lagging: intent survival and intent.md edits made after spec.md started. "
+    "Refreshed by one idempotent daily snapshot from "
     ".github/workflows/sdlc-metrics.yml."
 )
 
@@ -1489,10 +1499,13 @@ PANELS: "list[dict[str, Any]]" = [
         "name": "Intent funnel",
         "description": (
             "Accepted / rejected / open, read off the gate:intent issues. Raw "
-            "counters, deliberately - a 7d window so a missed daily run still "
-            "leaves the last known state on the board."
+            "counters by design - below ~5 decided intents a percentage "
+            "swings between 0 and 100 on a single decision. Window 7d, so a "
+            "missed daily run still leaves the last known state on the "
+            "board."
         ),
         "chart_type": "bar",
+        "display_style": "combo",
         "time_range": "7d",
         "query": {
             "calculations": [
@@ -1507,24 +1520,39 @@ PANELS: "list[dict[str, Any]]" = [
         "name": "Survival rate",
         "description": (
             "accepted / (accepted + rejected), computed in the script and "
-            "emitted as a scalar. Expect noise: below ~5 decided intents one "
-            "decision swings this between 0 and 1, and intents authored and "
-            "approved by the same person make it near-tautological. Read the "
-            "funnel counters above first."
+            "emitted as a scalar on sdlc.plan.rollup. Filtered on "
+            "`sdlc.intent.survival_rate exists` - NOT decoration, see the note "
+            "below. Expect noise: below ~5 decided intents one decision swings "
+            "this between 0 and 1, and intents authored and approved by the "
+            "same person make it near-tautological. Read the funnel counters "
+            "above first."
         ),
         "chart_type": "line",
         "time_range": "90d",
         "query": {
             "calculations": [{"op": "MAX", "column": "sdlc.intent.survival_rate"}],
-            "filters": [{"column": "name", "op": "=", "value": "sdlc.plan.rollup"}],
+            # The `exists` filter is load-bearing and must not be dropped when
+            # transcribing this panel. `compute_rollup` omits survival_rate
+            # while accepted + rejected == 0, so most rollup spans in a 90d
+            # window carry no value at all - measured 2026-08-27, 1 of 3 did.
+            # MAX over an absent column renders 0, so without this filter the
+            # panel draws a line climbing out of zero and reads as "every
+            # intent was rejected until yesterday": the same fabricated zero
+            # the omission exists to prevent, reintroduced at query time
+            # rather than at emit time. With it, empty buckets are simply
+            # absent.
+            "filters": [
+                {"column": "name", "op": "=", "value": "sdlc.plan.rollup"},
+                {"column": "sdlc.intent.survival_rate", "op": "exists"},
+            ],
         },
     },
     {
         "name": "Post-spec intent churn",
         "description": (
-            "intent.md commits landing after spec.md started, per feature. The "
-            "one number here that means something at n=1: a non-zero bar is "
-            "rework that a Stage 1 gate did not catch."
+            "intent.md commits landing after spec.md's first commit, per "
+            "feature. A non-zero bar is Stage 1 rework: the gate approved "
+            "an intent that turned out not to be settled."
         ),
         "chart_type": "bar",
         "display_style": "combo",
@@ -1581,30 +1609,39 @@ TRIGGER = {
 #
 # The "SDLC - Stage 2 Design" board, same convention as PANELS/BOARD_NAME/
 # TRIGGER above: spec-in-file next to the emitter, nothing in this file reads
-# it, created (when it is created) by pointing the Honeycomb MCP server at
-# this list.
+# it. Created by pointing the Honeycomb MCP server at this list.
 #
-# Do NOT create this board yet - but the reason splits by panel, and issue #42
-# understated that split, so it is corrected here rather than carried forward
-# stale. Both Stage 2 numbers are per-feature (see the module docstring's "Why
-# there is no `sdlc.design.rollup`" note), and today only one feature exists:
+# Created 2026-08-27: board "SDLC · Stage 2 Design", id `aS-JthyHahMW`, tagged
+# `repo:blog-research-agent` / `stage:design`. The reason the rollout still
+# splits by panel is unchanged from when this board didn't exist, so it is
+# kept here rather than dropped. Both Stage 2 numbers are per-feature (see the
+# module docstring's "Why there is no `sdlc.design.rollup`" note), and today
+# only one feature exists:
 #
 #   "Design lead time", "Recent designs only" and "Lead time by feature" all
 #   query `sdlc.design.lead_time_hours`, which is NEVER emitted while every
 #   feature is `design_measurable = false` - 001 is, by construction (its
 #   intent and spec share a bootstrap commit). Creating that column by hand to
-#   get these three panels to render reproduces #29's measured failure mode
-#   exactly: P50/MAX come back a fabricated `0` instead of "no data". These
-#   three wait for feature 002's spec to land.
+#   get these three panels to render would reproduce #29's measured failure
+#   mode exactly: P50/MAX would come back a fabricated `0` instead of "no
+#   data". Today, with the column uncreated, a query naming it is verified to
+#   be rejected outright instead, with `unknown column or derived column
+#   "sdlc.design.lead_time_hours"`. These three are NOT on the board; they
+#   wait for feature 002's spec to land, and until then the board carries
+#   their specs as a text panel, same convention as PANELS' three blocked
+#   panels above.
 #
 #   "Post-plan spec churn" and "Build not started" query
 #   `sdlc.spec.post_plan_edits` and `sdlc.design.anchor_source`, and BOTH are
-#   real today: 001 emits `spec_post_plan_edits` (a real, positive count) and
-#   `anchor_source = "plan-filled"` right now (`npm run plan:metrics -- --json`
-#   proves it - see features/README.md's "Measuring stage 2" section for the
-#   current number). These two panels are safe to put on the board today; they
-#   are listed here rather than created early only to keep this board's rollout
-#   as one change instead of two.
+#   real today: 001 emits `spec_post_plan_edits` (a real, positive count of 3)
+#   and `anchor_source = "plan-filled"` (a real count of 1) right now (`npm run
+#   plan:metrics -- --json` proves it - see features/README.md's "Measuring
+#   stage 2" section for the current number). These two ARE on the board, with
+#   real data on the first emit.
+#
+#   `TRIGGER_DESIGN` below is specified but not yet created - like `TRIGGER`
+#   above, it needs a recipient, an account-level choice this file has no
+#   business guessing.
 #
 # Column names below are exactly the attribute names `_build_specs` emits for
 # `sdlc.design.snapshot` - `npm run plan:metrics -- --json` prints the report
