@@ -436,6 +436,44 @@ shortfall: requirement 4 removes the growth term independently, and the deferred
 invocation-boundary lever is what replaces requirement 1 if acceptance criterion 5 still
 fails.
 
+### Measured 2026-08-27: it pays, so requirement 1 is implemented
+
+Neither instrument above was the one that worked, and the one `spec.md` nominated cannot
+work: `wrangler dev`'s local observability API exposes `spans` with a wall-clock
+`duration_ms` and **no CPU column**, so it cannot answer this question at any number of
+repetitions.
+
+What does work is a local-only throwaway Worker — no bindings, so no Cloudflare auth and no
+remote session. It fetches each feed once, then replays the buffered bytes through a
+`ReadableStream` whose `pull` respects an `AbortSignal`. With no I/O inside the timed loop,
+`performance.now()` elapsed *is* CPU, and the abort genuinely stops tokenizing rather than a
+JS reader loop deciding per chunk — which is precisely what the two attempts recorded in
+`spec.md` got wrong. Nine repetitions per feed, medians:
+
+| | unbounded | bounded | ratio |
+|---|---|---|---|
+| all 46 feeds, summed | 1,241 ms | 973 ms | **0.784** |
+| OpenAI alone (685 KB, 1,155 raw, 61 kept) | 250 ms | 46 ms | **0.184** |
+| arXiv cs.AI (743 KB, 352 kept, nothing stale to skip) | 130 ms | 131 ms | 1.008 |
+
+Three readings that matter more than the aggregate:
+
+- **The saving is concentrated.** OpenAI is 204 ms of the 268 ms total. This is not "21%
+  cheaper everywhere"; it is one feed 5.4x cheaper and everything else unchanged. It is
+  still the right shape of fix, because the 2026-08-27 run died at the fifth feed with
+  OpenAI third — the spike sits inside the failing window.
+- **Bounding costs nothing where it cannot help.** The largest feed in the allowlist, every
+  item of which is in-window so the stop never fires, measures 1.008. Exactly one feed is
+  2 ms or more slower (Perplexity, 25 → 29 ms).
+- **Requirement 2 holds through the real mechanism.** All 46 feeds produce identical
+  candidate sets with a **live `fetch` aborted mid-stream**, zero errors — not merely with
+  buffered bodies on both sides, which would prove the stopping logic without proving that
+  aborting a real response preserves the items already collected.
+
+These are local `workerd` numbers, so they are a **ratio** and never an absolute, which is
+what `spec.md` asks for. 250 ms locally is not 250 ms in production, and acceptance
+criterion 5 remains the check that decides.
+
 If it is implemented, two constraints from `spec.md` are hard:
 
 - **No second `Date.parse` per item.** PR 3 already threads the parsed value out of
@@ -508,9 +546,16 @@ npx wrangler d1 execute blog_research --remote --command \
   "SELECT name FROM pragma_table_info('topics') WHERE name = 'claimed_at'"
 ```
 
-Seven columns and one `claimed_at` prove `0002` landed. **`migrate:remote` runs after the
-stack merges, not before** — a schema the deployed Worker does not yet use is harmless, but
-a Worker deployed against a schema that is not there is not.
+Seven columns and one `claimed_at` prove `0002` landed.
+
+**`migrate:remote` runs BEFORE the stack merges, not after.** An earlier version of this
+plan had it backwards, and the merge mechanics are why it matters: `gh stack merge` lands
+all six PRs on `main` atomically, and every merge to `main` deploys the Worker via
+`.github/workflows/deploy.yml`. So the moment the stack merges, a Worker whose `gather`
+writes to `run_candidates` is live. Apply the migration first: a schema the deployed Worker
+does not use yet is inert, and `topics.claimed_at` is invisible to the currently deployed
+`claimRow`, which does not write it. The reverse — a Worker deployed against a schema that
+is not there — fails on the first run.
 
 ### Each guard, by removing it
 
