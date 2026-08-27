@@ -67,18 +67,29 @@ PR 5 with the other three.
 |---|---|
 | `migrations/0002_run_candidates_and_claims.sql` | new: `run_candidates`, `topics.claimed_at` |
 | `src/lib/d1.ts` | new exports: `writeRunCandidates`, `readRunCandidates`, `pruneRunCandidates`, `startRun`, `attachRunTopic`, `reclaimStaleTopics`; `claimRow` also stamps `claimed_at` |
-| `src/lib/types.ts` | `Candidate` gains `publishedMs: number \| null` |
+| `src/lib/types.ts` | `Candidate` gains `publishedMs`; new `WindowedItem` |
+| `src/lib/feed.ts` | `applyGatherWindow` returns `WindowedItem[]`, carrying the epoch-ms it already parsed |
+| `src/workflow.ts` | `gatherCandidates`'s map picks `publishedMs` up from `WindowedItem`. No behaviour change |
+| `test/schema.ts` | new: shared migration application for the two test files that build the schema by hand |
+| `test/d1.test.ts` | `applySchema`; coverage for all six new functions and the `claimed_at` stamp |
+| `test/workflow.test.ts`, `test/feed.test.ts`, `test/prompts.test.ts` | `applySchema`, the new return shape, fixtures for the new required field |
 
-Nothing calls the new functions yet. That is deliberate: the migration and its query layer
-are reviewable on their own, and `typecheck` covers unused exports.
+Nothing calls the six new query functions yet. That is deliberate: the migration and its
+query layer are reviewable on their own.
+
+**Why `feed.ts` is here and not in PR 3.** `Candidate.publishedMs` is a *required* field, so
+every construction site has to compile the moment it exists. Filling it with `null` until
+PR 3 would mean a column that exists and is always a lie for one commit. Doing the real
+thread here instead makes PR 2 "the data is present and correct, nothing reads it yet" and
+PR 3 purely the behaviour change. `spec.md`'s "no second `Date.parse` per item" constraint
+was written for requirement 1; it applies to `shortlist` just as much.
 
 ### PR 3 — `61-gather-returns-count` (Part 3 of 6)
 
 | file | change |
 |---|---|
-| `src/lib/feed.ts` | `applyGatherWindow` returns `WindowedItem[]`, carrying the epoch-ms it already parsed |
-| `src/lib/types.ts` | new `WindowedItem` |
 | `src/workflow.ts` | `gatherCandidates` persists and returns a count; `run()` holds an integer; `shortlistCandidates` reads from D1; `dateKey` deleted; `RUN_CANDIDATE_RETENTION_DAYS` added |
+| `test/workflow.test.ts` | both changed signatures, and the shortlist-parity case for acceptance criterion 7 |
 | `features/002-gather-without-accumulation/spec.md` | design section: `json_each` write, `published_ms`, both open questions closed |
 
 ### PR 4 — `61-run-row-and-reclaim` (Part 4 of 6)
@@ -151,9 +162,13 @@ export async function writeRunCandidates(
   db: D1Database,
   runId: string,
   sourceName: string,
-  candidates: Candidate[],
+  items: WindowedItem[],
 ): Promise<number>
 ```
+
+`WindowedItem`, not `Candidate`: `sourceName` is bound once as `?2` for the whole statement,
+so no caller has a reason to attach it to every item first. That also spares the gather loop
+one object allocation per item, up to 1,154 of them on the largest feed.
 
 Two statements in one `db.batch()`:
 
@@ -179,7 +194,7 @@ SELECT ?1,
   `spec.md`'s prose reads — a `run_id`-wide delete in a per-feed step would wipe every
   earlier feed's rows. Scoping it is what makes the step idempotent without making it
   destructive. Say so in the doc comment.
-- Returns `candidates.length`. Do not read `meta.changes`: `INSERT OR REPLACE` reports
+- Returns `items.length`. Do not read `meta.changes`: `INSERT OR REPLACE` reports
   replacements too, and the caller wants the candidate count, not a row delta.
 - `candidates.length === 0` returns `0` and still runs the `DELETE`, so a feed that went
   empty between attempts does not leave an earlier attempt's rows behind.
@@ -467,12 +482,20 @@ npm run lint:ast && npm run test:ast
 npm run lint:ts
 npm run review:checks && npm run test:checks
 npm run test:plan-metrics
+npm test
 npx wrangler deploy --dry-run
 ```
 
-The pre-push hook runs these; `branch-carries-issue` means they must run on a branch, not
-on `main`. A clean baseline was recorded on `61-plan-md` at `c8bed71` so any later red is
-attributable.
+`npm test` is the 10-file vitest suite under `test/`, run against real Workers bindings
+through `@cloudflare/vitest-pool-workers`. It is a gate in both `.githooks/pre-push` and
+`ci.yml`, so it belongs in this list; an earlier draft of this plan omitted it and PR 2 was
+briefed without it. Two of its files build the schema by hand from `migrations/*.sql?raw`,
+so **every migration has to be added to `test/schema.ts` or the suite goes red** - which is
+how the omission surfaced.
+
+The pre-push hook runs all of these; `branch-carries-issue` means they must run on a
+branch, not on `main`. A clean baseline was recorded on `61-plan-md` at `c8bed71` so any
+later red is attributable.
 
 ### The migration, applied
 
@@ -491,10 +514,24 @@ a Worker deployed against a schema that is not there is not.
 
 ### Each guard, by removing it
 
-For every new mutation-table row in PR 5: delete the guard, confirm the row goes red,
-restore it. A row that stays green with its guard removed is dead. This is done by hand and
-reported as such, not taken from a subagent's summary (`CONVENTIONS.md`, "Model
-delegation").
+For every new guard: delete it, confirm the covering test goes red, restore it. A test that
+stays green with its guard removed is dead. Done by hand and reported as such, not taken
+from a subagent's summary (`CONVENTIONS.md`, "Model delegation").
+
+PR 2 found both the case this catches and the case it does not. Four of six mutations went
+red as they should. Two stayed green, and neither is a dead test - both clauses are
+**redundant with SQLite's own semantics**, verified against D1 directly:
+
+```
+SELECT * FROM (SELECT 1 AS v UNION ALL SELECT NULL UNION ALL SELECT 2) ORDER BY v DESC
+-> [2, 1, NULL]                           -- DESC already sorts NULLs last
+SELECT (NULL < datetime('now')) IS NULL   -> 1
+```
+
+So `readRunCandidates`'s `published_ms IS NULL` term and `reclaimStaleTopics`'s
+`AND claimed_at IS NOT NULL` state intent that no mutation can change. Both are kept, and
+both doc comments now say so - otherwise the next reader either deletes them as dead code or
+writes a test that cannot tell them from load-bearing.
 
 ### Acceptance criteria, by number
 
