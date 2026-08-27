@@ -119,7 +119,10 @@ open pull request → record run.
 Each feature lives in `features/NNN-slug/` with `intent.md` → `spec.md` → `plan.md`, per
 [the AI-native SDLC playbook](https://claude.com/blog/the-ai-native-sdlc-playbook). Do
 not start implementing a feature whose `plan.md` is still the unfilled template.
-`REVIEW.md` defines the review passes every PR here gets.
+`REVIEW.md` defines the review passes every PR here gets. `scripts/plan_metrics.py`
+anchors its SDLC metrics on template divergence, not first commit — committing a
+template artifact unchanged (as "copy `_template/` to start a feature" does) starts no
+clock; see `features/README.md`.
 
 ## Work tracking
 

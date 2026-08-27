@@ -44,6 +44,7 @@ Why `git commit -am` never appears here
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -61,8 +62,23 @@ from typing import Any, Callable
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # The script under test, invoked as a subprocess (never imported) so that this
-# harness exercises the exact same CLI surface CI does.
+# harness exercises the exact same CLI surface CI does. Every row EXCEPT the
+# _build_specs/PANELS_DESIGN consistency rows (22, 23) below uses this path -
+# see plan_metrics's own import, immediately after, for why those two need the
+# module instead.
 PLAN_METRICS = os.path.join(REPO_ROOT, "scripts", "plan_metrics.py")
+
+# `_build_specs()`, `PANELS`, `PANELS_DESIGN`, `TRIGGER` and `TRIGGER_DESIGN`
+# are Python data this file's own assertions need to inspect directly (a
+# `dict`, not stdout text), so rows 22-23 import plan_metrics as a module
+# rather than shelling out to PLAN_METRICS like every other row. Importing it
+# runs its own `sys.version_info < (3, 14)` guard (module-level, not gated on
+# `__name__`) at import time - safe here because `test:plan-metrics` itself is
+# always invoked as `python3.14 scripts/plan_metrics_test.py` (see
+# package.json / CLAUDE.md), the same interpreter floor plan_metrics.py
+# requires.
+sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
+import plan_metrics  # noqa: E402
 
 # Directories copy_tree() prunes entirely rather than descending into. Matched
 # at the exact relative path shown (not by substring), the same rule
@@ -129,6 +145,38 @@ def env_without_git_vars() -> "dict[str, str]":
     as a family: enumerating the ones that matter today is a list that rots.
     """
     return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
+@contextlib.contextmanager
+def hermetic_environ() -> "Any":
+    """Temporarily replace the real `os.environ` with `env_without_git_vars()`'s
+    output, for a row that calls INTO plan_metrics (`build_report()`,
+    `_build_specs()`) in-process rather than through `run_metrics()`'s
+    subprocess.
+
+    Every other row is hermetic because `run_metrics()`/`git()` build an
+    explicit, GIT_*-free `env` dict and pass it to `subprocess.run(..., env=...)`
+    - the child never sees the ambient environment at all. An in-process call
+    has no such seam: `plan_metrics.run_git()` does
+    `subprocess.run(["git", ...], cwd=root)` with no `env=`, which inherits
+    `os.environ` directly. Under `hooks:install`'s pre-push hook (which runs
+    `npm run test:plan-metrics`), that ambient environment carries GIT_DIR /
+    GIT_WORK_TREE pointed at the real repository - see
+    `env_without_git_vars()`'s own docstring - so without this, an in-process
+    row would silently walk the real repo instead of its own sandbox and fail
+    for a reason that has nothing to do with what it tests.
+
+    Restores the real `os.environ` unconditionally on the way out, success or
+    exception.
+    """
+    saved = dict(os.environ)
+    try:
+        os.environ.clear()
+        os.environ.update(env_without_git_vars())
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
 
 
 def git_path(root: str, flag: str) -> "str | None":
@@ -1506,6 +1554,340 @@ def row_21(root: str) -> "tuple[bool, list[str]]":
     return ok, notes
 
 
+# ---------------------------------------------------------------------------
+# _build_specs / board-spec consistency rows - issue #42, pass 2
+# ---------------------------------------------------------------------------
+
+
+def row_22(root: str) -> "tuple[bool, list[str]]":
+    """Span-shape row for `_build_specs`'s new `sdlc.design.snapshot` span.
+    Builds a tree with a fully-filled, measurable synthetic 002 (template
+    copied, intent/spec/plan all filled, then spec.md edited once more after
+    the plan fill - row_12/row_14's dated-in-October fixture, so the churn
+    count is not inflated by `--follow -M25%` walking into the template's own
+    real 2026-08-25 history) alongside the real 001, then calls
+    `plan_metrics.build_report()` and `plan_metrics._build_specs()` directly
+    (see the module-level `plan_metrics` import and `hermetic_environ()` for
+    why an in-process call needs its own GIT_*-scrubbing).
+
+    Asserts: exactly one `sdlc.design.snapshot` span per feature, alongside
+    the existing per-feature `sdlc.plan.snapshot` and the single
+    `sdlc.plan.rollup` (2 + 2 + 1 = 5 specs for a 2-feature report); 002's
+    design span - fully filled, so every mapped attribute is present - carries
+    EXACTLY the attribute-name set issue #42's mapping table specifies, no
+    more and no less (this is what catches a typo'd name AND a stray extra
+    one, e.g. the `sdlc.design.plan_filled_at` vs `sdlc.plan.filled_at`
+    trap); `sdlc.measurable` and `sdlc.design.anchor_source` are present on
+    BOTH features' design spans, including 001's unmeasurable one;
+    `sdlc.design.lead_time_hours` is present for 002 and absent for 001 (its
+    design is unmeasurable); no attribute value is `None` anywhere; and no
+    `sdlc.design.rollup` span exists at all - see plan_metrics.py's module
+    docstring for why that span is deliberately absent.
+
+    Deliberately does NOT assert "no negative number" here: these dates are
+    pinned in October 2026 for the reason above, which makes
+    `spec_age_days`/`intent_age_days` negative relative to "now" by
+    construction - rows 12/14/20/21 already live with the same fixture-dating
+    trade-off. The no-negative guarantee is checked in `--json` against the
+    live repo, not against a future-dated synthetic fixture.
+    """
+    notes: "list[str]" = []
+    copy_template_artifacts(root, "002-synth")
+    commit(root, "copy template verbatim", "2026-10-01T00:00:00Z")
+    write_file(root, "features/002-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
+    commit(root, "fill intent", "2026-10-02T00:00:00Z")
+    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in.\n")
+    commit(root, "fill spec", "2026-10-04T00:00:00Z")
+    write_file(root, "features/002-synth/plan.md", "# Plan: synth\n\nfilled in.\n")
+    commit(root, "fill plan", "2026-10-05T00:00:00Z")
+    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in, revised.\n")
+    commit(root, "edit spec after plan started", "2026-10-06T00:00:00Z")
+
+    with hermetic_environ():
+        report = plan_metrics.build_report(root, use_github=False, apply_session_t0=False)
+    specs = plan_metrics._build_specs(report)
+
+    ok = True
+    feature_count = len(report["features"])
+    # >= 2, not == 2: 002-synth plus the real, currently-sole 001. This must
+    # keep passing the day a real features/002-* lands in this repo (the
+    # board this row is proving out exists precisely so that can happen) -
+    # the per-span counts below key off feature_count so they still catch a
+    # missing/duplicated span regardless of how many real features exist.
+    ok = expect_true(notes, f"feature count >= 2 (got {feature_count})", feature_count >= 2) and ok
+    ok = (
+        expect_eq(
+            notes,
+            "total spec count (2 spans/feature + 1 rollup)",
+            len(specs),
+            2 * feature_count + 1,
+        )
+        and ok
+    )
+
+    design_spans = [s for s in specs if s["name"] == "sdlc.design.snapshot"]
+    plan_spans = [s for s in specs if s["name"] == "sdlc.plan.snapshot"]
+    rollup_spans = [s for s in specs if s["name"] == "sdlc.plan.rollup"]
+    design_rollup_spans = [s for s in specs if s["name"] == "sdlc.design.rollup"]
+
+    ok = expect_eq(notes, "count of sdlc.design.snapshot spans", len(design_spans), feature_count) and ok
+    ok = expect_eq(notes, "count of sdlc.plan.snapshot spans", len(plan_spans), feature_count) and ok
+    ok = expect_eq(notes, "count of sdlc.plan.rollup spans", len(rollup_spans), 1) and ok
+    ok = (
+        expect_eq(
+            notes,
+            "count of sdlc.design.rollup spans (must be 0 - deliberately absent)",
+            len(design_rollup_spans),
+            0,
+        )
+        and ok
+    )
+
+    def find_design(feature_prefix: str) -> "dict[str, Any] | None":
+        for span in design_spans:
+            if span["attributes"].get("sdlc.feature", "").startswith(feature_prefix):
+                return span
+        return None
+
+    span_002 = find_design("002")
+    span_001 = find_design("001")
+    if span_002 is None or span_001 is None:
+        notes.append(
+            "FAIL: expected a sdlc.design.snapshot span for both 001 and 002, got "
+            f"features {[s['attributes'].get('sdlc.feature') for s in design_spans]!r}"
+        )
+        return False, notes
+
+    for label, span in (("002 (fully filled)", span_002), ("001 (real, design-unmeasurable)", span_001)):
+        attrs = span["attributes"]
+        ok = expect_true(notes, f"{label}: sdlc.measurable present", "sdlc.measurable" in attrs) and ok
+        ok = (
+            expect_true(
+                notes, f"{label}: sdlc.design.anchor_source present", "sdlc.design.anchor_source" in attrs
+            )
+            and ok
+        )
+        ok = (
+            expect_true(
+                notes,
+                f"{label}: no attribute value is None ({attrs!r})",
+                all(v is not None for v in attrs.values()),
+            )
+            and ok
+        )
+
+    # 002 is fully filled: EVERY mapped attribute is present, and nothing else.
+    expected_002_keys = {
+        "sdlc.feature",
+        "sdlc.repo",
+        "sdlc.measurable",
+        "sdlc.spec.committed_at",
+        "sdlc.spec.t1_source",
+        "sdlc.spec.age_days",
+        "sdlc.design.lead_time_hours",
+        "sdlc.design.plan_filled_at",
+        "sdlc.design.anchor_source",
+        "sdlc.spec.post_plan_edits",
+    }
+    ok = (
+        expect_eq(
+            notes,
+            "002 sdlc.design.snapshot attribute key set (exact - issue #42's mapping table)",
+            set(span_002["attributes"].keys()),
+            expected_002_keys,
+        )
+        and ok
+    )
+    ok = expect_eq(notes, "002 sdlc.feature", span_002["attributes"].get("sdlc.feature"), "002-synth") and ok
+    ok = expect_eq(notes, "002 sdlc.repo", span_002["attributes"].get("sdlc.repo"), report["repo"]) and ok
+    ok = expect_eq(notes, "002 sdlc.measurable", span_002["attributes"].get("sdlc.measurable"), True) and ok
+    ok = (
+        expect_eq(
+            notes,
+            "002 sdlc.design.lead_time_hours",
+            span_002["attributes"].get("sdlc.design.lead_time_hours"),
+            48.0,
+        )
+        and ok
+    )
+    ok = (
+        expect_eq(
+            notes,
+            "002 sdlc.design.anchor_source",
+            span_002["attributes"].get("sdlc.design.anchor_source"),
+            "plan-filled",
+        )
+        and ok
+    )
+    ok = (
+        expect_eq(
+            notes,
+            "002 sdlc.spec.post_plan_edits",
+            span_002["attributes"].get("sdlc.spec.post_plan_edits"),
+            1,
+        )
+        and ok
+    )
+
+    # 001's real, live case: design unmeasurable (intent+spec share the
+    # bootstrap commit), but a real plan-filled anchor and real churn.
+    attrs_001 = span_001["attributes"]
+    ok = expect_eq(notes, "001 sdlc.measurable", attrs_001.get("sdlc.measurable"), False) and ok
+    ok = (
+        expect_eq(
+            notes, "001 sdlc.design.anchor_source", attrs_001.get("sdlc.design.anchor_source"), "plan-filled"
+        )
+        and ok
+    )
+    ok = (
+        expect_true(notes, "001 sdlc.design.plan_filled_at present", "sdlc.design.plan_filled_at" in attrs_001)
+        and ok
+    )
+    ok = (
+        expect_true(notes, "001 sdlc.spec.post_plan_edits present", "sdlc.spec.post_plan_edits" in attrs_001)
+        and ok
+    )
+    ok = (
+        expect_true(
+            notes,
+            "001 sdlc.design.lead_time_hours absent (design unmeasurable)",
+            "sdlc.design.lead_time_hours" not in attrs_001,
+        )
+        and ok
+    )
+    return ok, notes
+
+
+def row_23(root: str) -> "tuple[bool, list[str]]":
+    """Panel/emitter consistency row - the row that catches an `sdlc.*` column
+    named in `PANELS`/`PANELS_DESIGN`/`TRIGGER`/`TRIGGER_DESIGN` that
+    `_build_specs` never actually emits (the `sdlc.design.plan_filled_at` vs
+    `sdlc.plan.filled_at` trap issue #42 calls out by name), and the narrower,
+    easier-to-miss mistake of a panel whose `name` filter names the wrong span
+    - which would silently mix Stage 1 and Stage 2 rows into one query, since
+    `sdlc.measurable` and `sdlc.feature` are emitted on BOTH span names.
+
+    Builds one hand-constructed "maximal" report record - every optional key
+    `build_feature()` can ever produce, set at once - rather than deriving one
+    from git history: this row's job is to check the panel spec against
+    `_build_specs`'s mapping, not to re-prove `build_feature()` (rows 0-21
+    already do that job against real and synthetic history). Wired over BOTH
+    boards (`PANELS`/`TRIGGER` for Stage 1, `PANELS_DESIGN`/`TRIGGER_DESIGN`
+    for Stage 2) since a single walk over all four costs nothing extra, and
+    issue #42 explicitly asked for that.
+    """
+    notes: "list[str]" = []
+
+    maximal_feature: "dict[str, Any]" = {
+        "feature": "002-synth",
+        "issue": 999,
+        "measurable": True,
+        "t0": "2026-01-01T00:00:00Z",
+        "t0_source": "issue",
+        "intent_author": "T",
+        "intent_committed_at": "2026-01-02T00:00:00Z",
+        "intent_age_days": 1.0,
+        "intent_t1_source": "follow",
+        "lead_time_hours": 24.0,
+        "spec_committed_at": "2026-01-03T00:00:00Z",
+        "spec_t1_source": "follow",
+        "spec_age_days": 0.5,
+        "intent_outcome": "accepted",
+        "intent_post_spec_edits": 1,
+        "design_measurable": True,
+        "design_lead_time_hours": 24.0,
+        "design_anchor_source": "plan-filled",
+        "design_plan_filled_at": "2026-01-05T00:00:00Z",
+        "spec_post_plan_edits": 1,
+    }
+    report: "dict[str, Any]" = {
+        "repo": "nimeshjm/blog-research-agent",
+        "dataset": "blog-research-agent-sdlc",
+        "generated_at": "2026-01-01T00:00:00Z",
+        "features": [maximal_feature],
+        "rollup": {
+            "accepted_count": 1,
+            "rejected_count": 0,
+            "open_count": 0,
+            "survival_rate": 1.0,
+        },
+    }
+
+    specs = plan_metrics._build_specs(report)
+    emitted_names = {spec["name"] for spec in specs}
+    emitted_attrs: "set[str]" = set()
+    for spec in specs:
+        emitted_attrs.update(spec["attributes"].keys())
+    notes.append(f"emitted span names: {sorted(emitted_names)!r}")
+    notes.append(f"emitted attribute names (union across spans): {sorted(emitted_attrs)!r}")
+
+    ok = True
+
+    def query_columns(query: "dict[str, Any]") -> "list[str]":
+        columns: "list[str]" = []
+        for calc in query.get("calculations", []):
+            if "column" in calc:
+                columns.append(calc["column"])
+        for filt in query.get("filters", []):
+            columns.append(filt["column"])
+        for breakdown in query.get("breakdowns", []):
+            columns.append(breakdown)
+        for order in query.get("orders", []):
+            if "column" in order:
+                columns.append(order["column"])
+        return columns
+
+    def check_panel(source_label: str, query: "dict[str, Any]") -> None:
+        nonlocal ok
+        # Every sdlc.* column referenced must be an attribute _build_specs can
+        # actually emit (or "name", the span-name meta-field, never itself an
+        # emitted attribute - see the exemption check below).
+        for column in query_columns(query):
+            if not column.startswith("sdlc."):
+                continue
+            ok = (
+                expect_true(
+                    notes,
+                    f"{source_label}: column {column!r} is an attribute _build_specs can emit",
+                    column in emitted_attrs,
+                )
+                and ok
+            )
+
+        # Every panel/trigger must filter on `name` naming an actual emitted
+        # span name - not just SOME panel somewhere, but THIS one. Without
+        # this, a design panel that forgets `name = sdlc.design.snapshot`
+        # would silently mix Stage 1 and Stage 2 rows (sdlc.measurable and
+        # sdlc.feature are emitted on both spans) and still pass the
+        # column-membership check above.
+        name_filters = [f["value"] for f in query.get("filters", []) if f.get("column") == "name"]
+        ok = (
+            expect_true(
+                notes,
+                f"{source_label}: has a 'name' filter",
+                len(name_filters) == 1,
+            )
+            and ok
+        )
+        if name_filters:
+            ok = (
+                expect_true(
+                    notes,
+                    f"{source_label}: 'name' filter value {name_filters[0]!r} is an emitted span name",
+                    name_filters[0] in emitted_names,
+                )
+                and ok
+            )
+
+    for board_label, panels in (("PANELS", plan_metrics.PANELS), ("PANELS_DESIGN", plan_metrics.PANELS_DESIGN)):
+        for panel in panels:
+            check_panel(f"{board_label}/{panel['name']}", panel["query"])
+    for trigger_label, trigger in (("TRIGGER", plan_metrics.TRIGGER), ("TRIGGER_DESIGN", plan_metrics.TRIGGER_DESIGN)):
+        check_panel(trigger_label, trigger["query"])
+
+    return ok, notes
+
+
 ROWS: "list[tuple[str, Callable[[str], tuple[bool, list[str]]]]]" = [
     ("baseline (no mutation) - proves the harness itself is not vacuously green", row_0),
     (
@@ -1599,6 +1981,17 @@ ROWS: "list[tuple[str, Callable[[str], tuple[bool, list[str]]]]]" = [
         "Stage 2: plan.md filled but spec.md left as the verbatim template - "
         "spec_post_plan_edits absent (no spec exists to have been reworked)",
         row_21,
+    ),
+    (
+        "_build_specs span shape: exactly one sdlc.design.snapshot per feature, "
+        "exact attribute key set for a fully-filled feature, no sdlc.design.rollup",
+        row_22,
+    ),
+    (
+        "Panel/emitter consistency: every sdlc.* column in PANELS/PANELS_DESIGN/"
+        "TRIGGER/TRIGGER_DESIGN is an attribute _build_specs actually emits, and "
+        "every panel's 'name' filter names an emitted span",
+        row_23,
     ),
 ]
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-plan_metrics.py - Stage 1 (Plan) SDLC extractor: git + GitHub -> OTLP -> Honeycomb.
+plan_metrics.py - Stage 1 (Plan) and Stage 2 (Design) SDLC extractor: git (+ GitHub for
+Stage 1 only) -> OTLP -> Honeycomb.
 
-See issue #29 for the full design. This docstring carries the decisions that aren't
-obvious from the code alone - the things a future reader (or reviewer) would otherwise
-have to re-derive or, worse, "fix".
+See issue #29 for the Stage 1 (Plan) design and issue #42 for Stage 2 (Design). This
+docstring carries the decisions that aren't obvious from the code alone - the things a
+future reader (or reviewer) would otherwise have to re-derive or, worse, "fix".
 
 Why reuse otel_span.py instead of writing a second emitter
     `scripts/otel_span.py` is vendored verbatim from `nimeshjm/claude-otel-hooks`
@@ -22,13 +23,21 @@ Why the emission is one idempotent daily snapshot, not a one-shot transition
     by the next one, and every board widget aggregates with MAX()/GROUP BY over a
     short window, so repeats are free.
 
-Why two span names, sibling not parent-child
+Why three span names, siblings not parent-child
     `sdlc.plan.snapshot` (one per feature) and `sdlc.plan.rollup` (one per run) are
     emitted as independent root spans in a single `emit_spans(specs)` call, with no
     `session_id`/`turn_id` - that's the exact "standalone root span" degradation
     `otel_span.emit_spans` already implements when `turn_id` is empty. Every board
     widget queries by `name` alone; a parent-child link would buy nothing and would
     cost explicit context propagation plus span end-ordering for no benefit.
+
+    #42 adds a third, `sdlc.design.snapshot` (one per feature), in the same sibling
+    shape and the same `emit_spans(specs)` call - not extra attributes bolted onto
+    `sdlc.plan.snapshot`. The reason is the same one that justifies two names instead
+    of one: every widget queries by `name` alone, so folding Stage 2's fields onto the
+    Stage 1 span would force every Stage 1 query to also filter Design's attributes
+    back out, or vice versa. A separate name is what lets "Design lead time" and
+    "Intent lead time" stay two independent, unconfusable queries.
 
 Why spans are stamped `now` with near-zero duration, and lead time is an attribute
     `otel_span.py` accepts explicit `start_time_ns`/`end_time_ns`, so backdating a
@@ -169,6 +178,20 @@ Why `count_edits_after` mixes an author date and a committer date
     the right clock for "was this edit real churn that happened after that
     point in the recorded history". `count_edits_after()` is shared by both
     stages specifically so they cannot drift apart on this.
+
+Why there is no `sdlc.design.rollup`
+    `sdlc.plan.rollup` exists because Stage 1 has something to aggregate that no
+    single feature carries: accepted/rejected/open counts and a survival rate
+    computed across all of them. Stage 2 has no analogue.
+    `design_lead_time_hours` and `spec_post_plan_edits` are already per-feature
+    numbers with no accepted/rejected/survival-style question to ask across
+    features - a rollup here would just restate counts already visible on the
+    per-feature panels (a count of how many features are measurable, a sum of
+    churn across unrelated features), which is a span with nothing to say. Add
+    one later, deliberately, if a real cross-feature Stage 2 question shows up
+    (e.g. "how many features have reached the Stage 3 gate") - do not add it
+    now just because Stage 1 has one; a symmetrical-looking file is not the
+    goal.
 
 Why GitHub issues are fetched once per feature and filtered client-side
     `gh issue list --label a --label b` is an AND, not an OR. Asking for
@@ -1080,8 +1103,12 @@ def _preflight(endpoint: str) -> "tuple[str, int | None]":
 
 
 def _build_specs(report: "dict[str, Any]") -> "list[dict[str, Any]]":
-    """One sdlc.plan.snapshot spec per feature, plus one sdlc.plan.rollup spec -
-    exactly the attribute names from issue #29, nothing extra."""
+    """One `sdlc.plan.snapshot` spec per feature, one `sdlc.design.snapshot` spec
+    per feature, plus one `sdlc.plan.rollup` spec for the whole run - exactly the
+    attribute names from issue #29 (Stage 1) and issue #42 (Stage 2), nothing
+    extra. No `sdlc.design.rollup` - see the module docstring's "Why there is no
+    `sdlc.design.rollup`" note; do not add one here to "match" the Stage 1 shape.
+    """
     specs: "list[dict[str, Any]]" = []
 
     for feature in report["features"]:
@@ -1108,6 +1135,41 @@ def _build_specs(report: "dict[str, Any]") -> "list[dict[str, Any]]":
         if "intent_post_spec_edits" in feature:
             attrs["sdlc.intent.post_spec_edits"] = feature["intent_post_spec_edits"]
         specs.append({"name": "sdlc.plan.snapshot", "attributes": attrs})
+
+        # Stage 2 (Design) - issue #42. Own span, own attribute names - see the
+        # module docstring's "Why three span names" note. The mapping below is
+        # exactly issue #42's table: design_measurable -> sdlc.measurable,
+        # spec_committed_at -> sdlc.spec.committed_at, spec_t1_source ->
+        # sdlc.spec.t1_source, spec_age_days -> sdlc.spec.age_days,
+        # design_lead_time_hours -> sdlc.design.lead_time_hours,
+        # design_plan_filled_at -> sdlc.design.plan_filled_at,
+        # design_anchor_source -> sdlc.design.anchor_source,
+        # spec_post_plan_edits -> sdlc.spec.post_plan_edits. Do NOT rename
+        # `sdlc.design.plan_filled_at` to `sdlc.plan.filled_at` - that reads as
+        # a Stage 1 field on a board (`sdlc.plan.*` names the Stage 1 *stage*;
+        # `plan.md` is a Stage 3 *artifact* measured here as part of Stage 2).
+        design_attrs: "dict[str, Any]" = {
+            "sdlc.feature": feature["feature"],
+            "sdlc.repo": report["repo"],
+            "sdlc.measurable": feature["design_measurable"],
+        }
+        if "spec_committed_at" in feature:
+            design_attrs["sdlc.spec.committed_at"] = feature["spec_committed_at"]
+        if "spec_t1_source" in feature:
+            design_attrs["sdlc.spec.t1_source"] = feature["spec_t1_source"]
+        if "spec_age_days" in feature:
+            design_attrs["sdlc.spec.age_days"] = feature["spec_age_days"]
+        if "design_lead_time_hours" in feature:
+            design_attrs["sdlc.design.lead_time_hours"] = feature["design_lead_time_hours"]
+        if "design_plan_filled_at" in feature:
+            design_attrs["sdlc.design.plan_filled_at"] = feature["design_plan_filled_at"]
+        # Always present - a reader must always be able to see why a design
+        # lead time / churn number is missing, never just that it is (mirrors
+        # sdlc.intent.t1_source's role on the Stage 1 span above).
+        design_attrs["sdlc.design.anchor_source"] = feature["design_anchor_source"]
+        if "spec_post_plan_edits" in feature:
+            design_attrs["sdlc.spec.post_plan_edits"] = feature["spec_post_plan_edits"]
+        specs.append({"name": "sdlc.design.snapshot", "attributes": design_attrs})
 
     rollup = report["rollup"]
     rollup_attrs: "dict[str, Any]" = {
@@ -1208,6 +1270,24 @@ def print_table(report: "dict[str, Any]") -> None:
                 f"outcome={outcome:<9} "
                 f"post_spec_edits={churn}"
             )
+            # Stage 2 (Design), on its own line - the Stage 1 line above is
+            # already close to the width worth keeping readable in a terminal,
+            # and design_anchor_source's values ("plan-filled"/"none") plus a
+            # second lead_time/churn pair would push it well past that. See
+            # issue #42's "print_table" scope note.
+            design_lead = (
+                f"{feature['design_lead_time_hours']:.2f}h"
+                if "design_lead_time_hours" in feature
+                else "n/a"
+            )
+            design_churn = feature.get("spec_post_plan_edits", "n/a")
+            print(
+                f"  {'':<40} "
+                f"design_measurable={str(feature['design_measurable']):<5} "
+                f"design_lead_time={design_lead:<9} "
+                f"design_anchor_source={feature['design_anchor_source']:<12} "
+                f"spec_post_plan_edits={design_churn}"
+            )
 
     print()
     rollup = report["rollup"]
@@ -1227,9 +1307,9 @@ def parse_args(argv: "list[str]") -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="plan_metrics.py",
         description=(
-            "Stage 1 (Plan) SDLC extractor: git + GitHub -> optional OTLP export "
-            "to Honeycomb. Default is compute-and-print; --emit is the only path "
-            "that ships spans."
+            "Stage 1 (Plan) and Stage 2 (Design) SDLC extractor: git (+ GitHub for "
+            "Stage 1 only) -> optional OTLP export to Honeycomb. Default is "
+            "compute-and-print; --emit is the only path that ships spans."
         ),
     )
     parser.add_argument(
@@ -1488,6 +1568,199 @@ TRIGGER = {
     "query": {
         "calculations": [{"op": "MAX", "column": "sdlc.intent.post_spec_edits"}],
         "filters": [{"column": "name", "op": "=", "value": "sdlc.plan.snapshot"}],
+        "breakdowns": ["sdlc.feature"],
+    },
+    "threshold": {"op": ">", "value": 0},
+}
+
+
+# ---------------------------------------------------------------------------
+# Board definition - Stage 2 (Design), issue #42
+# ---------------------------------------------------------------------------
+#
+# The "SDLC - Stage 2 Design" board, same convention as PANELS/BOARD_NAME/
+# TRIGGER above: spec-in-file next to the emitter, nothing in this file reads
+# it, created (when it is created) by pointing the Honeycomb MCP server at
+# this list.
+#
+# Do NOT create this board yet - but the reason splits by panel, and issue #42
+# understated that split, so it is corrected here rather than carried forward
+# stale. Both Stage 2 numbers are per-feature (see the module docstring's "Why
+# there is no `sdlc.design.rollup`" note), and today only one feature exists:
+#
+#   "Design lead time", "Recent designs only" and "Lead time by feature" all
+#   query `sdlc.design.lead_time_hours`, which is NEVER emitted while every
+#   feature is `design_measurable = false` - 001 is, by construction (its
+#   intent and spec share a bootstrap commit). Creating that column by hand to
+#   get these three panels to render reproduces #29's measured failure mode
+#   exactly: P50/MAX come back a fabricated `0` instead of "no data". These
+#   three wait for feature 002's spec to land.
+#
+#   "Post-plan spec churn" and "Build not started" query
+#   `sdlc.spec.post_plan_edits` and `sdlc.design.anchor_source`, and BOTH are
+#   real today: 001 emits `spec_post_plan_edits` (a real, positive count) and
+#   `anchor_source = "plan-filled"` right now (`npm run plan:metrics -- --json`
+#   proves it - see features/README.md's "Measuring stage 2" section for the
+#   current number). These two panels are safe to put on the board today; they
+#   are listed here rather than created early only to keep this board's rollout
+#   as one change instead of two.
+#
+# Column names below are exactly the attribute names `_build_specs` emits for
+# `sdlc.design.snapshot` - `npm run plan:metrics -- --json` prints the report
+# those are mapped from.
+#
+# Every query below MUST filter on `name = sdlc.design.snapshot`: `sdlc.measurable`
+# and `sdlc.feature` are emitted on the Stage 1 span too, with a different meaning
+# on each, so a panel that forgets this filter silently mixes Stage 1 and Stage 2
+# rows into one query rather than erroring. plan_metrics_test.py's
+# panel/emitter-consistency row enforces this for every entry in this list; a
+# panel hand-built in the Honeycomb UI later has no such guard, which is why it
+# is written down here too.
+
+BOARD_NAME_DESIGN = "SDLC · Stage 2 Design"
+
+BOARD_DESCRIPTION_DESIGN = (
+    "Stage 2 (Design) indicators from the AI-native SDLC playbook: leading = "
+    "elapsed time between a filled intent.md and a filled spec.md; lagging = "
+    "spec.md commits landing after plan.md first diverged from the template "
+    "(requirements rework after a build started). Pure git - no `gh` call, no "
+    f"label. Dataset {DATASET_NAME}, refreshed by the same daily snapshot as "
+    "the Stage 1 board, from .github/workflows/sdlc-metrics.yml."
+)
+
+PANELS_DESIGN: "list[dict[str, Any]]" = [
+    {
+        "name": "Design lead time",
+        "description": (
+            "Filled intent.md to filled spec.md, over the features whose "
+            "design lead time is defined. Empty until a measurable feature "
+            "exists - see the comment above this list."
+        ),
+        "chart_type": "line",
+        "time_range": "1d",
+        "query": {
+            "calculations": [
+                {"op": "HEATMAP", "column": "sdlc.design.lead_time_hours"},
+                {"op": "P50", "column": "sdlc.design.lead_time_hours"},
+                {"op": "P95", "column": "sdlc.design.lead_time_hours"},
+            ],
+            "filters": [
+                {"column": "name", "op": "=", "value": "sdlc.design.snapshot"},
+                {"column": "sdlc.measurable", "op": "=", "value": True},
+            ],
+        },
+    },
+    {
+        "name": "Recent designs only",
+        "description": (
+            "Same lead time, restricted to specs committed in the last 90 "
+            "days. sdlc.spec.age_days is what recovers a trend from spans "
+            "that are all stamped `now` - see the module docstring."
+        ),
+        "chart_type": "line",
+        "time_range": "1d",
+        "query": {
+            "calculations": [
+                {"op": "HEATMAP", "column": "sdlc.design.lead_time_hours"},
+                {"op": "P50", "column": "sdlc.design.lead_time_hours"},
+                {"op": "P95", "column": "sdlc.design.lead_time_hours"},
+            ],
+            "filters": [
+                {"column": "name", "op": "=", "value": "sdlc.design.snapshot"},
+                {"column": "sdlc.measurable", "op": "=", "value": True},
+                {"column": "sdlc.spec.age_days", "op": "<", "value": 90},
+            ],
+        },
+    },
+    {
+        "name": "Lead time by feature",
+        "description": (
+            "One row per feature. Features reporting design_measurable=false "
+            "are absent by construction: no design.lead_time_hours attribute "
+            "is emitted for them, so they cannot show as 0."
+        ),
+        "chart_type": "none",
+        "display_style": "table",
+        "time_range": "1d",
+        "query": {
+            "calculations": [{"op": "MAX", "column": "sdlc.design.lead_time_hours"}],
+            "filters": [
+                {"column": "name", "op": "=", "value": "sdlc.design.snapshot"},
+                {"column": "sdlc.measurable", "op": "=", "value": True},
+            ],
+            "breakdowns": ["sdlc.feature"],
+            "orders": [{"op": "MAX", "column": "sdlc.design.lead_time_hours",
+                        "order": "descending"}],
+        },
+    },
+    {
+        "name": "Post-plan spec churn",
+        "description": (
+            "spec.md commits landing after plan.md first diverged from the "
+            "template, per feature - real today, unlike the three lead-time "
+            "panels above: a feature needs no design_measurable=true to have "
+            "a plan-filled anchor and a churn count. A non-zero bar is "
+            "rework that a Stage 2 gate did not catch; per features/README.md "
+            "'when implementation reveals the spec was wrong, update spec.md "
+            "in the same pull request', a non-zero count here is not "
+            "automatically a process failure."
+        ),
+        "chart_type": "bar",
+        "display_style": "combo",
+        "time_range": "1d",
+        "query": {
+            "calculations": [{"op": "MAX", "column": "sdlc.spec.post_plan_edits"}],
+            "filters": [{"column": "name", "op": "=", "value": "sdlc.design.snapshot"}],
+            "breakdowns": ["sdlc.feature"],
+            "orders": [{"op": "MAX", "column": "sdlc.spec.post_plan_edits",
+                        "order": "descending"}],
+        },
+        "thresholds": [
+            {
+                "value": 0,
+                "operation": "gt",
+                "color": "red",
+                "line_style": "solid",
+                "label": "rework",
+            }
+        ],
+    },
+    {
+        "name": "Build not started",
+        "description": (
+            "Count of features by design_anchor_source. Real today, like the "
+            "churn panel above. Exists so an empty-looking churn panel reads "
+            "as 'no builds have started yet' (anchor_source=none) rather than "
+            "'no data' (a missing panel or a broken query) - the two look "
+            "identical without this."
+        ),
+        "chart_type": "bar",
+        "time_range": "1d",
+        "query": {
+            "calculations": [{"op": "COUNT"}],
+            "filters": [{"column": "name", "op": "=", "value": "sdlc.design.snapshot"}],
+            "breakdowns": ["sdlc.design.anchor_source"],
+        },
+    },
+]
+
+# Created separately from the board - same reason as TRIGGER above: a trigger
+# needs a recipient, an account-level choice this file has no business
+# guessing.
+TRIGGER_DESIGN = {
+    "name": "Spec edited after its plan started",
+    "description": (
+        "A spec.md commit landed after plan.md's first FILLED commit for the "
+        "same feature. That is the Stage 2 rework signal - implementation "
+        "revealed the spec was wrong after the build (plan.md) had already "
+        "started. Real today, unlike the Stage 2 lead-time trigger this board "
+        "does not yet have."
+    ),
+    "dataset": DATASET_NAME,
+    "frequency": 86400,
+    "query": {
+        "calculations": [{"op": "MAX", "column": "sdlc.spec.post_plan_edits"}],
+        "filters": [{"column": "name", "op": "=", "value": "sdlc.design.snapshot"}],
         "breakdowns": ["sdlc.feature"],
     },
     "threshold": {"op": ">", "value": 0},
