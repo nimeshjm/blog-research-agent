@@ -43,7 +43,11 @@ The failure mode this repo is most exposed to. Reject on:
 
 - CPU-heavy work inside a single step: parsing multiple feeds or articles in one
   `step.do`, large `JSON.parse` of aggregate payloads, regex over full article bodies in
-  a loop. The budget is 10 ms of CPU per step. (manual)
+  a loop. The budget is 10 ms of CPU per invocation, and a Workflow step is not a fresh
+  one — Workflows packs consecutive fast steps into one invocation, so this still means
+  one feed per step, one article per step. (manual)
+- The corrected CPU-per-invocation premise stays asserted everywhere in the tree, not the
+  belief this feature retired. (mechanical: `cpu-premise-is-per-invocation`)
 - More than a handful of subrequests in one step (cap is 50). (manual)
 - Inference that can exceed `NEURON_BUDGET_PER_RUN`, or a loop over articles with no
   cap on iterations. The daily allowance is 10,000 neurons total.

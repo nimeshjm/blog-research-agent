@@ -1,7 +1,20 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import { claimOldestQueuedTopic, claimTopicById, findOrProposeTopic, findSeenUrls, recordRunOutcome } from './lib/d1';
+import {
+  attachRunTopic,
+  claimOldestQueuedTopic,
+  claimTopicById,
+  findOrProposeTopic,
+  findSeenUrls,
+  pruneRunCandidates,
+  readRunCandidates,
+  reclaimStaleTopics,
+  recordRunOutcome,
+  startRun,
+  writeRunCandidates,
+} from './lib/d1';
 import { extractArticleText } from './lib/extract';
 import { applyGatherWindow, parseFeed } from './lib/feed';
+import type { ParseBound } from './lib/feed';
 import { loadFeeds } from './lib/feeds';
 import {
   createBranch,
@@ -15,7 +28,7 @@ import type { GithubConfig } from './lib/github';
 import { createLlm, neuronsFor } from './lib/llm';
 import { blogPostPath, renderMdx, validateAgainstContentConfig, validateDraft } from './lib/mdx';
 import { buildMapMessages, buildReduceMessages, parseMapResponse, parseReduceResponse } from './lib/prompts';
-import type { ArticleSummary, Candidate, Draft, Env, FeedItem, ResearchParams, RunOutcome, Source, Topic } from './lib/types';
+import type { ArticleSummary, Candidate, Draft, Env, ParsedItem, ResearchParams, RunOutcome, Source, Topic } from './lib/types';
 import {
   ATTR_NEURONS_BUDGET,
   ATTR_NEURONS_SPENT,
@@ -31,10 +44,15 @@ import {
  * The research pipeline.
  *
  * Structured as a Workflow rather than a plain cron handler because the free
- * plan gives 10 ms of CPU per *invocation* and 15 minutes of wall-clock for a
- * whole cron run, whereas a Workflow gets 10 ms of CPU per *step* with no
- * wall-clock cap. Parsing ~46 feeds and ~15 articles cannot fit in one 10 ms
- * budget, so each fetch-and-parse is its own step.
+ * plan caps `scheduled()` at 15 minutes of wall-clock for the whole run, and
+ * a Workflow step carries no such cap. The 10 ms CPU budget is charged per
+ * invocation, *not* reset at each `step.do` - Workflows packs consecutive
+ * fast steps into one invocation instead (measured 2026-08-27, #61: one feed
+ * parse in an invocation passes, two pass, three fail with Workers error
+ * `1102`). What a step boundary buys is a *chance* of a fresh invocation,
+ * never a guarantee - so parsing ~46 feeds and ~15 articles still has to
+ * stay one fetch-and-parse per step, on the chance that pays off, not on a
+ * promise the platform never made.
  *
  * Every step body must be idempotent: Workflows retry steps on failure.
  */
@@ -54,11 +72,18 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
     // persisted step results, so it must never be mutated outside a step result.
     let neuronsSpent = 0;
 
+    // 0. Written before anything that can fail, so a run that dies in
+    // select-topic (or later) still leaves a runs row (spec.md req. 10). It
+    // has to be its own step, ahead of select-topic, rather than folded into
+    // it: select-topic is already a step that can fail, and the row must
+    // exist before that can happen, not conditional on it succeeding.
+    await traceStep('start-run', {}, async () => startRun(this.env.DB, event.instanceId));
+
     // 1. Queue first; the agent proposes a topic only when the queue is empty.
     // `agent.topic.id` is only known once the call returns, so it is set on
     // the span handed to the body rather than passed in as an attr.
     const topic = await traceStep('select-topic', {}, async (span) => {
-      const result = await selectTopic(this.env, event.payload.topicId);
+      const result = await selectTopic(this.env, event.instanceId, event.payload.topicId);
       if (result !== null) span.setAttribute(ATTR_TOPIC_ID, result.id);
       return result;
     });
@@ -87,24 +112,35 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
     //    feeds, and unwindowed they put 4,742 candidates into `shortlist`,
     //    whose chunked seen_urls batch would then need 48 of D1's 50 queries
     //    per invocation. Windowed it is 678 candidates and 7 queries.
+    //
+    //    `gathered` stays an integer, not an array: `run()` re-executes from
+    //    the top on every replay, so anything it accumulates here is rebuilt
+    //    once per attempt, and replay cost grows with the number of
+    //    *completed* gathers (requirement 4). Each feed writes its own
+    //    candidates straight to D1 (`gatherCandidates`); this loop only
+    //    totals the counts.
     const sources = await traceStep('load-sources', {}, async () => loadSources(this.env));
 
-    const candidates: Candidate[] = [];
+    let gathered = 0;
     for (const source of sources) {
       // `agent.step` on this span is the `gather` prefix, not the full step
       // name - `tracedStep` strips after the first `:` so a per-feed span
       // never needs a source name judged sensitive enough to redact by hand.
-      const found = await traceStep(`gather:${source.name}`, {}, async (span) => {
-        const result = await gatherCandidates(source);
-        span.setAttribute(ATTR_SOURCES_GATHERED, result.length);
-        return result;
+      gathered += await traceStep(`gather:${source.name}`, {}, async (span) => {
+        const count = await gatherCandidates(this.env, event.instanceId, source);
+        span.setAttribute(ATTR_SOURCES_GATHERED, count);
+        return count;
       });
-      candidates.push(...found);
     }
 
-    // Batched dedupe against seen_urls happens here, in one query.
+    // Batched dedupe against seen_urls happens inside shortlistCandidates.
+    // `gathered` is not otherwise read downstream - it lands on this span
+    // alongside the shortlisted count, so acceptance criterion 5 ("all 46
+    // feeds gathered with no CPU failure") is readable from one span instead
+    // of summed by hand across 46 gather spans.
     const shortlist = await traceStep('shortlist', {}, async (span) => {
-      const result = await shortlistCandidates(this.env, candidates, topic);
+      const result = await shortlistCandidates(this.env, event.instanceId, topic);
+      span.setAttribute(ATTR_SOURCES_GATHERED, gathered);
       span.setAttribute(ATTR_SOURCES_SHORTLISTED, result.length);
       return result;
     });
@@ -267,6 +303,40 @@ const SYNTHESIS_MAX_TOKENS = 8192;
 export const GATHER_WINDOW_DAYS = 30;
 /** Backstop for items with no parseable date only. Zero such items today. */
 export const GATHER_UNDATED_MAX_PER_FEED = 20;
+/**
+ * How many consecutive dated, out-of-window items `parseFeed` reads before it
+ * cancels the response body rather than draining the rest of the archive
+ * (spec.md req. 1). The margin it rests on is the differential over all 46
+ * live feeds (acceptance criterion 2), not a derivation - it only has to
+ * absorb the local disorder of a feed that is mostly, not perfectly,
+ * newest-first.
+ */
+export const GATHER_STALE_RUN = 10;
+/**
+ * Requirement 3's backstop only: a wholly undated feed can never trip
+ * `GATHER_STALE_RUN`, so without a raw-item ceiling it would be unbounded.
+ * The margin is stated both ways it could be wrong: the largest raw item
+ * count in the allowlist is OpenAI's 1,155, and the largest legitimate
+ * *kept* count is arXiv cs.AI's 352-item announcement day (requirement 6
+ * forbids truncating that). 2,000 sits far enough above both that it can
+ * never truncate a real day - it is a safety net, not a tuning knob, and
+ * deliberately not sized anywhere near 352.
+ */
+export const GATHER_RAW_ITEM_MAX = 2000;
+/**
+ * `run_candidates` is per-run scratch, not a second cross-run dedupe key -
+ * `seen_urls` stays the only one. Pruned once per run, in `recordOutcome`,
+ * so no terminal path needs its own step.
+ */
+export const RUN_CANDIDATE_RETENTION_DAYS = 7;
+/**
+ * How long a claim survives its claimant (spec.md req. 9, which asks for the
+ * margin to be stated rather than implied). Six hours against a run bounded
+ * by 46 gather steps plus 15 article steps plus inference - minutes, not
+ * hours - and a 48-hour cron gap: too long to race a live run, too short to
+ * strand a topic across a cycle.
+ */
+export const TOPIC_CLAIM_TTL_HOURS = 6;
 /** Newest-first ceiling: 40 of D1's 50 queries, ten spare. */
 export const SHORTLIST_MAX_CANDIDATES = 4000;
 /**
@@ -294,15 +364,30 @@ export const DUPLICATE_TOKEN_THRESHOLD = 2;
 // the caller can enforce NEURON_BUDGET_PER_RUN between steps.
 // ---------------------------------------------------------------------------
 
-export async function selectTopic(env: Env, topicId: number | undefined): Promise<Topic | null> {
+export async function selectTopic(env: Env, instanceId: string, topicId: number | undefined): Promise<Topic | null> {
   // A manually-targeted run (event.payload.topicId set) claims that specific
   // row rather than draining the queue - see ResearchParams in lib/types.ts.
+  // This is already the manual recovery spec.md req. 8 describes (claimRow
+  // recovers an in_progress row for a run that names it), so it does not
+  // also reclaim - a hand-triggered run reclaiming *other* runs' stranded
+  // topics would widen its blast radius for no gain.
   if (topicId !== undefined) {
-    return claimTopicById(env.DB, topicId);
+    const named = await claimTopicById(env.DB, topicId);
+    if (named !== null) await attachRunTopic(env.DB, instanceId, named.id);
+    return named;
   }
 
+  // Scheduled path only: a topic left in_progress past TOPIC_CLAIM_TTL_HOURS
+  // is unattended by definition (spec.md req. 8), so reclaiming here, before
+  // draining the queue, is what makes it selectable again without a human
+  // passing its id.
+  await reclaimStaleTopics(env.DB, TOPIC_CLAIM_TTL_HOURS);
+
   const queued = await claimOldestQueuedTopic(env.DB);
-  if (queued !== null) return queued;
+  if (queued !== null) {
+    await attachRunTopic(env.DB, instanceId, queued.id);
+    return queued;
+  }
 
   // Only reached when the queue is empty (spec.md req. 2). Proposing a topic
   // needs BOTH a non-inference way to generate a candidate and a dedupe
@@ -318,7 +403,13 @@ export async function selectTopic(env: Env, topicId: number | undefined): Promis
   const proposal = await proposeTopic(env);
   if (proposal === null) return null;
 
-  return findOrProposeTopic(env.DB, proposal);
+  // attachRunTopic runs on all three success paths, not only this one: a run
+  // that dies later - in gather, not in select-topic - must still record
+  // which topic it stranded, which is what pairs req. 8's reclaim with req.
+  // 10's runs row (the runs row says which topic, the TTL brings it back).
+  const proposed = await findOrProposeTopic(env.DB, proposal);
+  await attachRunTopic(env.DB, instanceId, proposed.id);
+  return proposed;
 }
 
 async function loadSources(_env: Env): Promise<Source[]> {
@@ -375,45 +466,71 @@ export async function proposeTopic(env: Env): Promise<{ title: string; angle: st
   return null;
 }
 
-async function fetchFeedItems(feedUrl: string): Promise<FeedItem[]> {
+/**
+ * `bound`, when given, is threaded two places: as the `fetch`'s abort
+ * signal (so cancelling it actually stops the network read, not only the
+ * in-process parse) and into `parseFeed` (so it can decide when to stop
+ * reading and call `bound.abort.abort()` itself). `parseFeed` absorbs the
+ * rejection that abort causes in its own drain - see its module doc comment
+ * - so by the time control reaches this function's `catch`, an aborted
+ * bounded parse has already returned normally with whatever it read. This
+ * `catch` therefore only ever sees a genuine fetch/parse failure, never the
+ * bound firing; if that stopped being true, a bound tripping on every
+ * archive feed would look identical to a dead feed here, and every one of
+ * them would silently contribute zero candidates.
+ */
+async function fetchFeedItems(feedUrl: string, bound?: ParseBound): Promise<ParsedItem[]> {
   try {
-    const response = await fetch(feedUrl);
+    const response = await fetch(feedUrl, bound === undefined ? undefined : { signal: bound.abort.signal });
     if (!response.ok) return [];
-    return await parseFeed(response);
+    return await parseFeed(response, bound);
   } catch {
     return [];
   }
 }
 
 async function fetchFeedTitles(feedUrl: string): Promise<string[]> {
+  // No bound: the seed-feed read that backs proposeTopic wants the newest
+  // item regardless of the window (spec.md req. 12 - bounding it could
+  // change which topic gets proposed).
   const items = await fetchFeedItems(feedUrl);
   return items.map((i) => i.title);
 }
 
 /**
- * One fetch, streamed parse (src/lib/feed.ts), no D1. The 30-day window and
- * the undated-item cap are applied here, per feed, never in `shortlist` -
- * see GATHER_WINDOW_DAYS / GATHER_UNDATED_MAX_PER_FEED above and spec.md,
- * "The recency window in `gather`". A feed that cannot be fetched or fails
- * to parse contributes zero candidates rather than failing the step: one
- * dead feed must not fail the run (spec.md risk table), and a feed that
- * consistently returns nothing is a review finding against the allowlist,
- * visible via `agent.sources.gathered` on the step's own span.
+ * One fetch, streamed parse (src/lib/feed.ts), then one D1 write
+ * (`writeRunCandidates`). The 30-day window and the undated-item cap are
+ * applied here, per feed, never in `shortlist` - see GATHER_WINDOW_DAYS /
+ * GATHER_UNDATED_MAX_PER_FEED above and spec.md, "The recency window in
+ * `gather`". A feed that cannot be fetched or fails to parse contributes
+ * zero candidates rather than failing the step: `fetchFeedItems` already
+ * swallows that failure and returns `[]`, so one dead feed must not fail the
+ * run (spec.md risk table), and a feed that consistently returns nothing is
+ * a review finding against the allowlist, visible via `agent.sources.gathered`
+ * on the step's own span. A D1 write failure, though, does still fail the
+ * step, and should - that is not a dead feed, it is a dead database.
+ *
+ * `now` is computed once and shared between the bound's `cutoffMs` and
+ * `applyGatherWindow`'s own cutoff, so the parse-time stop and the
+ * post-parse filter agree on exactly the same window boundary rather than
+ * drifting apart across the (sub-millisecond) gap between two separate
+ * `Date.now()` reads.
  */
-export async function gatherCandidates(source: Source): Promise<Candidate[]> {
-  const items = await fetchFeedItems(source.feedUrl);
+export async function gatherCandidates(env: Env, runId: string, source: Source): Promise<number> {
+  const now = new Date();
+  const bound: ParseBound = {
+    abort: new AbortController(),
+    cutoffMs: now.getTime() - GATHER_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+    staleRun: GATHER_STALE_RUN,
+    rawMax: GATHER_RAW_ITEM_MAX,
+  };
+  const items = await fetchFeedItems(source.feedUrl, bound);
   const windowed = applyGatherWindow(items, {
     windowDays: GATHER_WINDOW_DAYS,
     undatedMax: GATHER_UNDATED_MAX_PER_FEED,
+    now,
   });
-  return windowed.map((item) => ({ ...item, sourceName: source.name }));
-}
-
-/** Sort key for "newest first": undated items sort last, so they are the first the SHORTLIST_MAX_CANDIDATES ceiling drops. */
-function dateKey(publishedAt: string | null): number {
-  if (publishedAt === null) return Number.NEGATIVE_INFINITY;
-  const parsed = Date.parse(publishedAt);
-  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+  return writeRunCandidates(env.DB, runId, source.name, windowed);
 }
 
 const STOPWORDS = new Set([
@@ -461,15 +578,17 @@ function relevanceScore(candidate: Candidate, topic: Topic): number {
 }
 
 /**
- * Newest-first cap at SHORTLIST_MAX_CANDIDATES *before* touching D1 (D1
- * caps a query at 100 bound params and an invocation at 50 queries), then
- * the batched `seen_urls` dedupe (`findSeenUrls`, chunked at 100 params -
- * `d1.ts` owns that chunking, not reimplemented here), then heuristic
- * ranking against `topic`, then a cap of SHORTLIST_TOP_N. See spec.md, "The
- * aggregate ceiling in `shortlist`".
+ * Reads the run's whole candidate set from D1, newest-first and capped at
+ * SHORTLIST_MAX_CANDIDATES in SQL (`readRunCandidates`'s `ORDER BY`, not a
+ * JS sort - see that function's doc comment for why undated items sort
+ * last) - so this does zero `Date.parse` calls where it used to do one per
+ * candidate. Then the batched `seen_urls` dedupe (`findSeenUrls`, chunked at
+ * 100 params - `d1.ts` owns that chunking, not reimplemented here), then
+ * heuristic ranking against `topic`, then a cap of SHORTLIST_TOP_N. See
+ * spec.md, "The aggregate ceiling in `shortlist`".
  */
-export async function shortlistCandidates(env: Env, candidates: Candidate[], topic: Topic): Promise<Candidate[]> {
-  const capped = [...candidates].sort((a, b) => dateKey(b.publishedAt) - dateKey(a.publishedAt)).slice(0, SHORTLIST_MAX_CANDIDATES);
+export async function shortlistCandidates(env: Env, runId: string, topic: Topic): Promise<Candidate[]> {
+  const capped = await readRunCandidates(env.DB, runId, SHORTLIST_MAX_CANDIDATES);
 
   const seen = await findSeenUrls(env.DB, capped.map((c) => c.url));
   const unseen = capped.filter((c) => !seen.has(c.url));
@@ -666,7 +785,7 @@ async function recordOutcome(
   // INSERT ... ON CONFLICT(instance_id) DO UPDATE, keyed on the Workflow
   // instance id: spec requirement 9 wants exactly one row per run whatever
   // the outcome, and every record-* step above is retried like any other.
-  return recordRunOutcome(env.DB, {
+  await recordRunOutcome(env.DB, {
     instanceId,
     topicId: outcome.topicId ?? null,
     status: outcome.status,
@@ -674,4 +793,17 @@ async function recordOutcome(
     sourcesUsed: outcome.sourcesUsed ?? 0,
     prUrl: outcome.prUrl ?? null,
   });
+
+  // `run_candidates` is per-run scratch, not a second cross-run dedupe key -
+  // `seen_urls` stays the only one. Every terminal path (record-no-topic,
+  // record-no-sources, record-no-summaries, record-success) routes through
+  // this function, so pruning here covers all of them without a new step.
+  //
+  // The order matters and no test covers it: retention runs *after* the
+  // outcome write, never before. Reversed, a prune that threw would fail the
+  // step before the row existed, and spec req. 10's "every run writes a runs
+  // row, including one that dies mid-step" would quietly become "unless the
+  // prune threw". This way the step retries with the row already written and
+  // `recordRunOutcome`'s ON CONFLICT rewrites it identically.
+  await pruneRunCandidates(env.DB, RUN_CANDIDATE_RETENTION_DAYS);
 }

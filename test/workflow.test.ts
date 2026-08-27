@@ -1,7 +1,6 @@
 import { env as testEnv } from 'cloudflare:test';
-import migrationSql from '../migrations/0001_init.sql?raw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SEEN_URLS_CHUNK_SIZE } from '../src/lib/d1';
+import { SEEN_URLS_CHUNK_SIZE, startRun, writeRunCandidates } from '../src/lib/d1';
 import { loadFeeds } from '../src/lib/feeds';
 import { InvalidDraftError } from '../src/lib/mdx';
 import type { ArticleSummary, Candidate, Draft, Env, Topic } from '../src/lib/types';
@@ -18,7 +17,9 @@ import {
   shortlistCandidates,
   summarizeArticle,
   synthesizeDraft,
+  TOPIC_CLAIM_TTL_HOURS,
 } from '../src/workflow';
+import { applySchema } from './schema';
 
 const rawEnv = testEnv as unknown as Env;
 const env: Env = {
@@ -34,25 +35,14 @@ afterEach(() => {
 });
 
 async function resetSchema(): Promise<void> {
-  for (const table of ['drafts', 'runs', 'seen_urls', 'topics']) {
+  for (const table of ['drafts', 'runs', 'run_candidates', 'seen_urls', 'topics']) {
     await env.DB.prepare(`DELETE FROM ${table}`).run();
   }
 }
 
-function statementsFrom(sql: string): string[] {
-  return sql
-    .split('\n')
-    .filter((line) => !line.trim().startsWith('--'))
-    .join('\n')
-    .split(';')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-}
-
+// Schema setup lives in ./schema.ts, shared with test/d1.test.ts.
 beforeEach(async () => {
-  for (const stmt of statementsFrom(migrationSql)) {
-    await env.DB.prepare(stmt).run();
-  }
+  await applySchema(env.DB);
   await resetSchema();
 });
 
@@ -79,6 +69,7 @@ function candidate(overrides: Partial<Candidate> = {}): Candidate {
     url: 'https://example.com/x',
     title: 'x',
     publishedAt: '2026-08-27T00:00:00Z',
+    publishedMs: null,
     sourceName: 'Test Source',
     ...overrides,
   };
@@ -97,7 +88,9 @@ function topic(overrides: Partial<Topic> = {}): Topic {
 }
 
 describe('gatherCandidates()', () => {
-  it('applies the recency window and attaches the source name', async () => {
+  const runId = 'run-gather';
+
+  it('applies the recency window, attaches the source name, and persists to run_candidates', async () => {
     const now = new Date();
     const inWindow = new Date(now.getTime() - 5 * 24 * 60 * 60 * 1000).toUTCString();
     const outOfWindow = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000).toUTCString();
@@ -113,11 +106,13 @@ describe('gatherCandidates()', () => {
       ),
     );
 
-    const result = await gatherCandidates({ name: 'Fixture', feedUrl: 'https://feed.test.example/x.xml' });
+    const count = await gatherCandidates(env, runId, { name: 'Fixture', feedUrl: 'https://feed.test.example/x.xml' });
 
-    expect(result).toHaveLength(1);
-    expect(result[0]?.title).toBe('Recent');
-    expect(result[0]?.sourceName).toBe('Fixture');
+    expect(count).toBe(1);
+    const rows = await env.DB.prepare(`SELECT url, title, source_name FROM run_candidates WHERE run_id = ?`)
+      .bind(runId)
+      .all<{ url: string; title: string; source_name: string }>();
+    expect(rows.results).toEqual([{ url: 'https://example.com/recent', title: 'Recent', source_name: 'Fixture' }]);
   });
 
   it('a full day of dated items is not truncated', async () => {
@@ -128,9 +123,9 @@ describe('gatherCandidates()', () => {
     }));
     vi.stubGlobal('fetch', vi.fn(async () => new Response(rssFeed(items))));
 
-    const result = await gatherCandidates({ name: 'arXiv cs.AI (fixture)', feedUrl: 'https://feed.test.example/arxiv.xml' });
+    const count = await gatherCandidates(env, runId, { name: 'arXiv cs.AI (fixture)', feedUrl: 'https://feed.test.example/arxiv.xml' });
 
-    expect(result).toHaveLength(352);
+    expect(count).toBe(352);
   });
 
   it(`caps undated items at ${GATHER_UNDATED_MAX_PER_FEED}`, async () => {
@@ -140,15 +135,15 @@ describe('gatherCandidates()', () => {
     }));
     vi.stubGlobal('fetch', vi.fn(async () => new Response(rssFeed(items))));
 
-    const result = await gatherCandidates({ name: 'Fixture', feedUrl: 'https://feed.test.example/undated.xml' });
+    const count = await gatherCandidates(env, runId, { name: 'Fixture', feedUrl: 'https://feed.test.example/undated.xml' });
 
-    expect(result).toHaveLength(GATHER_UNDATED_MAX_PER_FEED);
+    expect(count).toBe(GATHER_UNDATED_MAX_PER_FEED);
   });
 
   it('a dead feed (non-2xx) contributes zero candidates rather than failing the step', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
-    const result = await gatherCandidates({ name: 'Dead feed', feedUrl: 'https://feed.test.example/dead.xml' });
-    expect(result).toEqual([]);
+    const count = await gatherCandidates(env, runId, { name: 'Dead feed', feedUrl: 'https://feed.test.example/dead.xml' });
+    expect(count).toBe(0);
   });
 
   it('a network error contributes zero candidates rather than failing the step', async () => {
@@ -158,20 +153,47 @@ describe('gatherCandidates()', () => {
         throw new Error('network down');
       }),
     );
-    const result = await gatherCandidates({ name: 'Unreachable', feedUrl: 'https://feed.test.example/unreachable.xml' });
-    expect(result).toEqual([]);
+    const count = await gatherCandidates(env, runId, { name: 'Unreachable', feedUrl: 'https://feed.test.example/unreachable.xml' });
+    expect(count).toBe(0);
+  });
+
+  it('a re-run against the same run_id leaves the row count unchanged (acceptance criterion 8)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          rssFeed([
+            { title: 'A', url: 'https://example.com/repeat-a', pubDate: new Date().toUTCString() },
+            { title: 'B', url: 'https://example.com/repeat-b', pubDate: new Date().toUTCString() },
+          ]),
+        ),
+      ),
+    );
+    const source = { name: 'Repeatable', feedUrl: 'https://feed.test.example/repeatable.xml' };
+
+    // writeRunCandidates itself is proven idempotent at the row level in
+    // test/d1.test.ts; this proves the same property through gatherCandidates'
+    // own step body (fetch + parse + window + write), not just the write.
+    await gatherCandidates(env, runId, source);
+    await gatherCandidates(env, runId, source);
+
+    const rows = await env.DB.prepare(`SELECT COUNT(*) as n FROM run_candidates WHERE run_id = ? AND source_name = ?`)
+      .bind(runId, source.name)
+      .first<{ n: number }>();
+    expect(rows?.n).toBe(2);
   });
 });
 
 describe('shortlistCandidates()', () => {
-  it('caps at SHORTLIST_MAX_CANDIDATES before touching D1, and issues exactly the expected chunk count', async () => {
-    const candidates = Array.from({ length: 4742 }, (_, i) =>
-      candidate({
-        url: `https://example.com/article-${i}`,
-        title: `Article ${i}`,
-        publishedAt: new Date(Date.now() - i * 1000).toISOString(), // strictly newest-first
-      }),
-    );
+  it('caps at SHORTLIST_MAX_CANDIDATES in SQL, before the seen_urls dedupe', async () => {
+    const runId = 'run-shortlist-cap';
+    const items = Array.from({ length: SHORTLIST_MAX_CANDIDATES + 742 }, (_, i) => ({
+      url: `https://example.com/article-${i}`,
+      title: `Article ${i}`,
+      publishedAt: new Date(Date.now() - i * 1000).toISOString(), // strictly newest-first
+      publishedMs: Date.now() - i * 1000,
+    }));
+    await writeRunCandidates(env.DB, runId, 'Source', items);
 
     let queryCount = 0;
     const countingEnv: Env = {
@@ -184,46 +206,168 @@ describe('shortlistCandidates()', () => {
       } as D1Database,
     };
 
-    const result = await shortlistCandidates(countingEnv, candidates, topic());
+    const result = await shortlistCandidates(countingEnv, runId, topic());
 
-    // The cap runs *before* D1: ceil(SHORTLIST_MAX_CANDIDATES / chunk size),
-    // not ceil(4742 / chunk size) - proves ordering, not just that both stay
-    // under 50.
-    expect(queryCount).toBe(SHORTLIST_MAX_CANDIDATES / SEEN_URLS_CHUNK_SIZE);
+    // One query reads the capped, ordered set (readRunCandidates), then the
+    // chunked seen_urls dedupe runs over exactly SHORTLIST_MAX_CANDIDATES
+    // rows - not the 4,742 written - proving the cap is applied in SQL
+    // before the dedupe, not after.
+    expect(queryCount).toBe(1 + SHORTLIST_MAX_CANDIDATES / SEEN_URLS_CHUNK_SIZE);
     expect(result.length).toBeLessThanOrEqual(SHORTLIST_TOP_N);
   });
 
   it('excludes candidates already present in seen_urls', async () => {
     await env.DB.prepare(`INSERT INTO seen_urls (url, source) VALUES (?, 'test')`).bind('https://example.com/seen').run();
 
-    const result = await shortlistCandidates(
-      env,
-      [candidate({ url: 'https://example.com/seen', title: 'Seen' }), candidate({ url: 'https://example.com/new', title: 'New' })],
-      topic(),
-    );
+    const runId = 'run-shortlist-seen';
+    await writeRunCandidates(env.DB, runId, 'Source', [
+      candidate({ url: 'https://example.com/seen', title: 'Seen' }),
+      candidate({ url: 'https://example.com/new', title: 'New' }),
+    ]);
+
+    const result = await shortlistCandidates(env, runId, topic());
 
     expect(result.map((c) => c.url)).toEqual(['https://example.com/new']);
   });
 
   it('caps the final ranked list at SHORTLIST_TOP_N', async () => {
-    const candidates = Array.from({ length: SHORTLIST_TOP_N + 10 }, (_, i) =>
+    const runId = 'run-shortlist-topn';
+    const items = Array.from({ length: SHORTLIST_TOP_N + 10 }, (_, i) =>
       candidate({ url: `https://example.com/r-${i}`, title: `Agentic code review practice paper ${i}` }),
     );
-    const result = await shortlistCandidates(env, candidates, topic());
+    await writeRunCandidates(env.DB, runId, 'Source', items);
+
+    const result = await shortlistCandidates(env, runId, topic());
     expect(result).toHaveLength(SHORTLIST_TOP_N);
   });
 
   it('ranks a title carrying an attributable-practice signal above pure commentary with equal topic overlap', async () => {
     const t = topic({ title: 'agentic code review', angle: null });
-    const result = await shortlistCandidates(
-      env,
-      [
-        candidate({ url: 'https://example.com/commentary', title: 'Some thoughts on agentic code review' }),
-        candidate({ url: 'https://example.com/study', title: 'A study of agentic code review practice' }),
-      ],
-      t,
-    );
+    const runId = 'run-shortlist-rank';
+    await writeRunCandidates(env.DB, runId, 'Source', [
+      candidate({ url: 'https://example.com/commentary', title: 'Some thoughts on agentic code review' }),
+      candidate({ url: 'https://example.com/study', title: 'A study of agentic code review practice' }),
+    ]);
+
+    const result = await shortlistCandidates(env, runId, t);
     expect(result[0]?.url).toBe('https://example.com/study');
+  });
+
+  // ---------------------------------------------------------------------
+  // Acceptance criterion 7: "The shortlist produced from `run_candidates`
+  // is identical to the shortlist the in-memory array produces for the
+  // same inputs." The in-memory implementation this replaced is deleted
+  // from src/workflow.ts, so it is reconstructed here, deliberately as a
+  // standalone copy rather than a call into shortlistCandidates or any of
+  // its private helpers - the point of the criterion is that the D1-backed
+  // path and the old in-memory path agree, which a shared implementation
+  // could not prove.
+  // ---------------------------------------------------------------------
+  describe('shortlist parity (acceptance criterion 7)', () => {
+    const REF_STOPWORDS = new Set([
+      'the', 'a', 'an', 'of', 'in', 'on', 'for', 'to', 'and', 'or', 'is', 'are',
+      'with', 'how', 'why', 'what', 'this', 'that', 'from', 'at', 'by', 'as',
+      'it', 'its', 'be', 'we', 'you', 'your', 'new', 'v1', 'vs',
+    ]);
+    function refTokenize(text: string): string[] {
+      return text
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((w) => w.length > 2 && !REF_STOPWORDS.has(w));
+    }
+    const REF_PRACTICE_SIGNAL_RE =
+      /\b(paper|study|studies|research|benchmark|arxiv|survey|dataset|evaluation|evaluat\w*|results?|findings?|we (built|found|measured|shipped)|case study)\b/i;
+    const REF_COMMENTARY_SIGNAL_RE = /\b(opinion|thoughts on|roundup|newsletter|weekly|digest|why i think|announcing)\b/i;
+    function refRelevanceScore(c: Candidate, t: Topic): number {
+      const topicWords = new Set([...refTokenize(t.title), ...refTokenize(t.angle ?? '')]);
+      const candidateWords = refTokenize(c.title);
+      let overlap = 0;
+      for (const word of candidateWords) if (topicWords.has(word)) overlap++;
+      let score = overlap;
+      if (REF_PRACTICE_SIGNAL_RE.test(c.title)) score += 2;
+      if (REF_COMMENTARY_SIGNAL_RE.test(c.title)) score -= 1;
+      return score;
+    }
+    /** Undated items sort last - the same rule readRunCandidates's `ORDER BY published_ms IS NULL, published_ms DESC` now applies in SQL. */
+    function refDateKey(publishedAt: string | null): number {
+      if (publishedAt === null) return Number.NEGATIVE_INFINITY;
+      const parsed = Date.parse(publishedAt);
+      return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+    }
+    function referenceShortlist(candidates: Candidate[], seenUrls: Set<string>, t: Topic): Candidate[] {
+      const capped = [...candidates]
+        .sort((a, b) => refDateKey(b.publishedAt) - refDateKey(a.publishedAt))
+        .slice(0, SHORTLIST_MAX_CANDIDATES);
+      const unseen = capped.filter((c) => !seenUrls.has(c.url));
+      return unseen
+        .map((c) => ({ candidate: c, score: refRelevanceScore(c, t) }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, SHORTLIST_TOP_N)
+        .map((r) => r.candidate);
+    }
+
+    it('the D1-backed shortlist matches the reference in-memory shortlist over a mixed fixture', async () => {
+      const now = Date.now();
+      const minutesAgo = (n: number) => new Date(now - n * 60_000).toISOString();
+
+      const fixture: Candidate[] = [
+        candidate({
+          url: 'https://example.com/newest',
+          title: 'Agentic code review: a case study of catching bugs',
+          publishedAt: minutesAgo(0),
+          publishedMs: now,
+        }),
+        candidate({
+          url: 'https://example.com/seen-item',
+          title: 'Agentic code review benchmark results',
+          publishedAt: minutesAgo(1),
+          publishedMs: now - 1 * 60_000,
+        }),
+        candidate({
+          url: 'https://example.com/mid',
+          title: 'A study of agentic code review practice',
+          publishedAt: minutesAgo(2),
+          publishedMs: now - 2 * 60_000,
+        }),
+        // A deliberate score tie: neither shares a word with the topic nor
+        // carries a practice or commentary signal, so both score 0.
+        candidate({
+          url: 'https://example.com/tie-a',
+          title: 'Weekend cooking notes',
+          publishedAt: minutesAgo(3),
+          publishedMs: now - 3 * 60_000,
+        }),
+        candidate({
+          url: 'https://example.com/tie-b',
+          title: 'Garden maintenance log',
+          publishedAt: minutesAgo(4),
+          publishedMs: now - 4 * 60_000,
+        }),
+        candidate({
+          url: 'https://example.com/commentary',
+          title: 'Some thoughts on agentic code review',
+          publishedAt: minutesAgo(5),
+          publishedMs: now - 5 * 60_000,
+        }),
+        candidate({
+          url: 'https://example.com/undated',
+          title: 'A general benchmark discussion',
+          publishedAt: null,
+          publishedMs: null,
+        }),
+      ];
+
+      const runId = 'run-shortlist-parity';
+      await writeRunCandidates(env.DB, runId, 'Source', fixture);
+      await env.DB.prepare(`INSERT INTO seen_urls (url, source) VALUES (?, 'test')`).bind('https://example.com/seen-item').run();
+
+      const t = topic({ title: 'agentic code review', angle: 'catching bugs' });
+
+      const actual = await shortlistCandidates(env, runId, t);
+      const expected = referenceShortlist(fixture, new Set(['https://example.com/seen-item']), t);
+
+      expect(actual.map((c) => c.url)).toEqual(expected.map((c) => c.url));
+    });
   });
 });
 
@@ -232,14 +376,14 @@ describe('selectTopic()', () => {
     const insert = await env.DB.prepare(
       `INSERT INTO topics (title, angle, status, origin) VALUES ('targeted', NULL, 'queued', 'human') RETURNING id`,
     ).first<{ id: number }>();
-    const result = await selectTopic(env, insert?.id as number);
+    const result = await selectTopic(env, 'run-targeted', insert?.id as number);
     expect(result?.title).toBe('targeted');
     expect(result?.status).toBe('in_progress');
   });
 
   it('drains the queue before proposing', async () => {
     await env.DB.prepare(`INSERT INTO topics (title, angle, status, origin) VALUES ('queued one', NULL, 'queued', 'human')`).run();
-    const result = await selectTopic(env, undefined);
+    const result = await selectTopic(env, 'run-drain', undefined);
     expect(result?.title).toBe('queued one');
   });
 
@@ -262,13 +406,13 @@ describe('selectTopic()', () => {
       }),
     );
 
-    const first = await selectTopic(env, undefined);
+    const first = await selectTopic(env, 'run-replay', undefined);
     expect(first?.title).toBe('Brand New Unrelated Topic Nobody Has Written About');
     expect(first?.origin).toBe('agent');
     expect(first?.status).toBe('in_progress');
 
     // Replay: a retried select-topic step must recover the same row, not insert a second one.
-    const second = await selectTopic(env, undefined);
+    const second = await selectTopic(env, 'run-replay', undefined);
     expect(second?.id).toBe(first?.id);
 
     const rows = await env.DB.prepare(`SELECT COUNT(*) as n FROM topics WHERE origin = 'agent'`).first<{ n: number }>();
@@ -294,8 +438,106 @@ describe('selectTopic()', () => {
       }),
     );
 
-    const result = await selectTopic(env, undefined);
+    const result = await selectTopic(env, 'run-covered', undefined);
     expect(result).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // Acceptance criterion 10: a runs row exists after start-run, with a
+  // non-success status, and the queue-draining path sets topic_id on it.
+  // startRun's own replay safety is covered in test/d1.test.ts; this proves
+  // the wiring through selectTopic.
+  // -------------------------------------------------------------------------
+  it('a runs row started before selectTopic gets its topic_id attached on the queue-draining path (acceptance criterion 10)', async () => {
+    await env.DB.prepare(`INSERT INTO topics (title, angle, status, origin) VALUES ('queued one', NULL, 'queued', 'human')`).run();
+
+    await startRun(env.DB, 'run-attach');
+    const beforeSelect = await env.DB.prepare('SELECT status, topic_id FROM runs WHERE instance_id = ?').bind('run-attach').first<{
+      status: string;
+      topic_id: number | null;
+    }>();
+    expect(beforeSelect?.status).toBe('running'); // not a success status - acceptance criterion 10
+    expect(beforeSelect?.topic_id).toBeNull();
+
+    const result = await selectTopic(env, 'run-attach', undefined);
+
+    const afterSelect = await env.DB.prepare('SELECT topic_id FROM runs WHERE instance_id = ?').bind('run-attach').first<{
+      topic_id: number | null;
+    }>();
+    expect(afterSelect?.topic_id).toBe(result?.id);
+  });
+
+  // -------------------------------------------------------------------------
+  // Acceptance criterion 9: a stale in_progress topic is reachable again by
+  // the scheduled path, and a live one is not stolen from it.
+  //
+  // The two ages below are *fixed* hours that bracket TOPIC_CLAIM_TTL_HOURS
+  // (7 above it, 1 below), not `TOPIC_CLAIM_TTL_HOURS ± 1`. Written relatively,
+  // changing the constant moves both the fixture and the threshold together and
+  // the pair cannot see it - the constant's magnitude, which requirement 9 is
+  // specifically about, would be unpinned. Written this way, raising the TTL
+  // past 7 hours or dropping it below 1 fails a test.
+  // -------------------------------------------------------------------------
+  const STALE_AGE_HOURS = 7;
+  const LIVE_AGE_HOURS = 1;
+
+  it(`a topic left in_progress ${STALE_AGE_HOURS}h ago, past TOPIC_CLAIM_TTL_HOURS, is selectable again by a plain scheduled call`, async () => {
+    expect(TOPIC_CLAIM_TTL_HOURS).toBeLessThan(STALE_AGE_HOURS);
+    const insert = await env.DB
+      .prepare(
+        `INSERT INTO topics (title, angle, status, origin, claimed_at)
+         VALUES ('stranded', NULL, 'in_progress', 'human', datetime('now', '-' || ? || ' hours')) RETURNING id`,
+      )
+      .bind(STALE_AGE_HOURS)
+      .first<{ id: number }>();
+
+    const result = await selectTopic(env, 'run-reclaim', undefined);
+
+    expect(result?.id).toBe(insert?.id);
+    expect(result?.status).toBe('in_progress');
+  });
+
+  it(`a topic claimed ${LIVE_AGE_HOURS}h ago, within TOPIC_CLAIM_TTL_HOURS, is not returned to a second scheduled selectTopic (a live run is not stolen from)`, async () => {
+    expect(TOPIC_CLAIM_TTL_HOURS).toBeGreaterThan(LIVE_AGE_HOURS);
+    await env.DB
+      .prepare(
+        `INSERT INTO topics (title, angle, status, origin, claimed_at)
+         VALUES ('live-run-topic', NULL, 'in_progress', 'human', datetime('now', '-' || ? || ' hours'))`,
+      )
+      .bind(LIVE_AGE_HOURS)
+      .run();
+    // A second queued row so the second call has somewhere to land other
+    // than the live one, proving the live topic specifically was skipped.
+    await env.DB.prepare(`INSERT INTO topics (title, angle, status, origin) VALUES ('other queued', NULL, 'queued', 'human')`).run();
+
+    const result = await selectTopic(env, 'run-no-steal', undefined);
+
+    expect(result?.title).toBe('other queued');
+  });
+
+  // -------------------------------------------------------------------------
+  // The reclaim runs only on the scheduled path - a run naming a topicId
+  // must not widen its blast radius to other runs' stranded topics.
+  // -------------------------------------------------------------------------
+  it('a call naming a topicId does not reclaim another topic that is in_progress past its TTL', async () => {
+    const stranded = await env.DB
+      .prepare(
+        `INSERT INTO topics (title, angle, status, origin, claimed_at)
+         VALUES ('stranded-elsewhere', NULL, 'in_progress', 'human', datetime('now', '-' || ? || ' hours')) RETURNING id`,
+      )
+      .bind(STALE_AGE_HOURS)
+      .first<{ id: number }>();
+    const named = await env.DB.prepare(
+      `INSERT INTO topics (title, angle, status, origin) VALUES ('named', NULL, 'queued', 'human') RETURNING id`,
+    ).first<{ id: number }>();
+
+    const result = await selectTopic(env, 'run-named', named?.id as number);
+
+    expect(result?.id).toBe(named?.id);
+    const strandedRow = await env.DB.prepare('SELECT status FROM topics WHERE id = ?').bind(stranded?.id).first<{
+      status: string;
+    }>();
+    expect(strandedRow?.status).toBe('in_progress'); // untouched - reclaim did not run on this path
   });
 });
 

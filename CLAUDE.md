@@ -59,8 +59,12 @@ open pull request → record run.
 
 ## Platform rules (free tier — these are the ones that bite)
 
-- **10 ms CPU per step.** Never parse many feeds or articles in one step. One feed per
-  step, one article per step. I/O wait is free; parsing is not.
+- **10 ms CPU per invocation.** A Workflow step is not a fresh budget: Workflows packs
+  consecutive fast steps into one invocation, and only the wall-clock cap is scoped per
+  step. Measured 2026-08-27 (#61): one feed parse in an invocation passes, two pass,
+  three fail with Workers error `1102`. Never parse many feeds or articles in one step
+  regardless — one feed per step, one article per step is still what buys a *chance* of
+  a fresh invocation, which is the only lever there is. I/O wait is free; parsing is not.
 - **50 subrequests per step.** A single fetch per step leaves headroom for redirects.
 - **Cron wall-clock is 15 min**, Workflow steps have none. This is why orchestration is a
   Workflow, not a cron handler. Do not move logic back into `scheduled()`.
@@ -94,7 +98,8 @@ open pull request → record run.
 - Attributes are `agent.*` (ours) or `gen_ai.*` (model calls, matching AI Gateway).
 - No prompt, article, completion, URL or error message in an attribute. Constructor name
   only, via `error.type`.
-- Roughly eight attributes per span. Attributes are CPU against the 10 ms step budget.
+- Roughly eight attributes per span. Attributes are CPU against the 10 ms-per-invocation
+  budget a step's invocation may already be sharing with other steps.
 - **The `agent.*` / `gen_ai.*` attribute rule above governs the Worker service only.**
   CI-emitted SDLC telemetry (`scripts/plan_metrics.py`) uses the `sdlc.*` namespace and
   its own `service.name` (`blog-research-agent-sdlc`), a separate dataset.

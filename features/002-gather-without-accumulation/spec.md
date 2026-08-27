@@ -131,10 +131,54 @@ both now constraints on the implementation:
 - **No second `Date.parse` per item.** `applyGatherWindow` already parses every item's
   date. A staleness check that parses again doubles exactly the per-item work the bound
   exists to avoid; the parsed value has to be threaded through, not recomputed.
+  `applyGatherWindow` now returns the epoch-ms it parses on each item (`WindowedItem`,
+  `publishedMs`), so this requirement's mechanism already exists — a bounded parse
+  implementing requirement 1 has a value to read rather than one to add.
 - **The drain stays native.** `pipeTo(new WritableStream())` costs no per-chunk JS.
   Replacing it with a read loop costs more than the tokenizing an early stop skips.
   Stopping early has to come from cancelling the source (an `AbortController` on the
   fetch), not from JS deciding per chunk whether to continue.
+
+#### Corrected in PR 6 (per `REVIEW.md` pass 4): requirement 1 is implemented, not dropped
+
+`plan.md`'s "Measured 2026-08-27: it pays" section records the measurement that decided
+this, taken against a bench *copy* of the parser. Re-measured against the code this PR
+actually ships, same harness, nine repetitions per feed, all 46 feeds:
+
+| | unbounded | bounded | ratio |
+|---|---|---|---|
+| all 46 feeds, summed | 1,257 ms | 1,003 ms | **0.798** |
+| OpenAI (686 KB) — **1,155 raw items read, now 71** | 253 ms | 44 ms | **0.174** |
+| arXiv cs.AI (744 KB, 352 kept, nothing stale to skip) | 137 ms | 134 ms | 0.978 |
+
+The bound fires on **33 of the 46 feeds**, and all 46 produce a candidate set identical in
+both membership *and order* to the unbounded parse, through a **live `fetch` aborted
+mid-stream** — not merely through buffered bodies, which would prove the stopping logic
+without proving that aborting a real response preserves what was already collected. Exactly
+two feeds are 2 ms or more slower (DX 29 → 33 ms, Pinecone 27 → 32 ms) against 209 ms saved
+on OpenAI alone. Local `workerd` numbers, so a **ratio** and never an absolute; acceptance
+criterion 5 is still the check that decides.
+
+Two corrections to the design above, both shape rather than substance:
+
+- **`WindowedItem` is `ParsedItem`.** The design above has `applyGatherWindow` parsing
+  every item's date and returning the epoch-ms alongside it. That is no longer where the
+  parse happens: `parseFeed(response, bound?)` now parses `publishedAt` once, at the point
+  each item is emitted, and returns `ParsedItem[]` — every item it read, unfiltered — for
+  both the bounded and unbounded call shapes. `applyGatherWindow` reads `publishedMs` off
+  its input and calls `Date.parse` zero times; it stays the sole authority on what is
+  kept. A type produced *before* any window is applied could not keep the name
+  `WindowedItem` without misdescribing what it is — `src/lib/types.ts`, `src/lib/feed.ts`,
+  `src/lib/d1.ts`, `src/workflow.ts`, and every test that constructs one were updated
+  together.
+- **The bound lives on `ParseBound`, passed into `parseFeed`, not as two bare parameters.**
+  `{ abort, cutoffMs, staleRun, rawMax }` — one object rather than the parser closing over
+  free-standing constants — is what lets `gatherCandidates` compute `cutoffMs` once,
+  from the same `now` it hands `applyGatherWindow`, so the stop condition and the filter
+  never disagree about the window boundary.
+
+The two hard constraints ("What bounding must not cost", above) are unchanged and are
+exactly what the implementation is written against.
 
 A third variant doing both correctly was inconclusive: by then the harness's own variance
 was about one feed wide — the same size as the effect. **So this cannot be settled by
@@ -148,11 +192,13 @@ New table, migration `0002`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS run_candidates (
-  run_id       TEXT NOT NULL,
-  url          TEXT NOT NULL,
+  run_id       TEXT    NOT NULL,
+  url          TEXT    NOT NULL,
   title        TEXT,
   published_at TEXT,
-  source_name  TEXT NOT NULL,
+  published_ms INTEGER,
+  source_name  TEXT    NOT NULL,
+  created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (run_id, url)
 );
 ```
@@ -161,26 +207,46 @@ CREATE TABLE IF NOT EXISTS run_candidates (
 step re-inserts its own rows over themselves. `run_id` is the Workflow instance id, the
 same key `runs` uses, so a run's candidate set is addressable without a join.
 
-Flow, per feed: fetch → bounded parse → `applyGatherWindow` → attach `sourceName` →
-write chunked → return `count`. `run()` keeps only the running total.
+`published_ms` is the epoch-ms `applyGatherWindow` already parses per item, carried
+through rather than recomputed, so `shortlist` can order newest-first in SQL instead of
+re-parsing every candidate's date in JS. `created_at` is what makes pruning
+self-contained: it compares a timestamp rather than joining `runs`, so a run that died
+before ever writing a `runs` row still gets its scratch rows collected.
+
+Flow, per feed: fetch → bounded parse → `applyGatherWindow` → write in one statement →
+return `count`. `run()` keeps only the running total.
 
 `shortlist` reads `WHERE run_id = ?` — one query, no bound-parameter pressure, because the
 row count lives in the result set rather than in the statement. This is a straight
 improvement on today's chunked `seen_urls` batch, which stays as it is.
 
-**The query-budget question is open and must be settled by measurement, not by reading
-the limit.** Five columns at 100 bound parameters is 20 rows per statement, so arXiv
-cs.AI's 352 candidates needs 18 statements; three such steps sharing an invocation would
-exceed 50. Whether `db.batch()` amortises a batch to one query against that budget is
-**not** established here. If it does not, the fallback is a stated per-invocation
-statement ceiling with the remainder deferred to the next step, not a truncated arXiv day
-— requirement 6 forbids trading the day away.
+**The query-budget question was open and is now closed, by measurement rather than by
+reading the limit.** Five columns at 100 bound parameters would be 20 rows per statement,
+so arXiv cs.AI's 352 candidates would need 18 statements; three such steps sharing an
+invocation would exceed 50. That arithmetic assumed one bound parameter per column per
+row. D1 supports SQLite's `json1` extension instead: a whole feed's candidates are written
+by **one statement with three bound parameters**, whatever the row count, by unpacking a
+single JSON array parameter with `json_each` inside SQLite rather than binding a parameter
+per cell. Probed against the real `blog_research` database, 2026-08-27:
 
-Retention: a run deletes its own `run_id` rows before writing them (making the step
-idempotent under replay from an earlier attempt's partial write), and rows for runs older
-than `RUN_CANDIDATE_RETENTION_DAYS` are pruned in the same step that records the outcome.
-`seen_urls` remains the cross-run dedupe key; `run_candidates` is per-run scratch and must
-not become a second one.
+```
+npx wrangler d1 execute blog_research --remote \
+  --command "SELECT json_extract(value,'\$.url') AS url FROM json_each('[{\"url\":\"a\"},{\"url\":\"b\"}]')"
+→ [{"url":"a"},{"url":"b"}]   success: true, rows_read: 2
+```
+
+So a gather step costs exactly two of the invocation's 50 queries (one `DELETE`, one
+`INSERT ... SELECT ... FROM json_each`) whatever the feed's size — three gather steps
+sharing an invocation cost 6 of 50, not 57. arXiv cs.AI's 352-candidate day is written
+whole in that one statement, which is what requirement 6 forbids trading away.
+
+Retention: a run deletes its own `(run_id, source_name)` rows before writing them —
+scoped to the feed the step is writing, not to `run_id` alone, because a `run_id`-wide
+delete inside a per-feed step would wipe every earlier feed's rows written by the same
+run. This is what makes the step idempotent under replay without being destructive to
+sibling feeds. Rows for runs older than `RUN_CANDIDATE_RETENTION_DAYS` are pruned in the
+same step that records the outcome. `seen_urls` remains the cross-run dedupe key;
+`run_candidates` is per-run scratch and must not become a second one.
 
 ### Reclaiming a stranded topic
 
@@ -269,12 +335,12 @@ an unimplemented `selectTopic` in the then-deployed version — which is the poi
 |---|---|
 | A feed is not newest-first and the bound drops articles | The whole point of acceptance criterion 2 — differential over all 46 feeds, against live responses. `GATHER_STALE_RUN` tolerance absorbs local disorder; a feed that genuinely interleaves fails the test and is a finding against the allowlist, not a reason to loosen the bound |
 | A feed reorders *later*, after the test passed | The differential test is cheap and feed-only. It belongs on the same review cadence as the allowlist audit feature 001 already asks for. Consequence is bounded: a dropped article is a missed candidate, never a wrong draft |
-| `db.batch()` does not amortise against the 50-query budget | Named as open in the design; the fallback (a per-invocation statement ceiling, remainder deferred) is stated so implementation cannot quietly choose truncation instead |
+| `db.batch()` does not amortise against the 50-query budget | Resolved: D1's `json1` support means the write never needed per-row amortisation in the first place — one statement with three bound parameters (`json_each` unpacking a single JSON array) handles any row count, so the stated fallback (a per-invocation statement ceiling, remainder deferred) was never needed |
 | Bounding the parse costs more than it saves | Measured for two implementations, and it did (#61). The two causes are named as implementation constraints under "What bounding must not cost", and requirement 1 is explicitly droppable if per-request CPU measurement does not support it. The feature does not depend on it: requirement 4 removes the growth term independently |
 | Bounding the parse is not enough on its own | It attacks the dominant measured cost, and requirement 4 attacks the growth term independently. If a full 46-feed run still fails, the remaining lever is forcing an invocation boundary per gather step, which is why acceptance criterion 5 is a real run rather than a bench |
 | `run_candidates` becomes a second cross-run dedupe key | It is per-run scratch, pruned, and `shortlist` reads it scoped to `run_id`. `seen_urls` stays the only cross-run key |
 | Reclaim races a live run | `TOPIC_CLAIM_TTL` of 6 hours against a minutes-long run and a 48-hour cron gap; both margins stated in the design rather than left to be inferred |
-| `shortlist`'s scoped read relocates the problem rather than removing it | Requirement 5 materializes the whole candidate set for the run in one step — 678 candidates by feature 001's measurement, against a bench that failed at 393 accumulated plus three parses. Taking the array out of `run()` does not by itself prove it fits in `shortlist`. Acceptance criterion 5 is the check, and the fallback is a `LIMIT`-ordered read plus chunked ranking rather than one materialized set. Named here because a stage-2 approver should not have to derive it |
+| `shortlist`'s scoped read relocates the problem rather than removing it | Substantially reduced, not eliminated. The cap and ordering moved into SQL via `published_ms` (`readRunCandidates`'s `LIMIT`/`ORDER BY`), so `shortlist` does zero `Date.parse` calls where it did up to 678 before. It still materializes the capped set — up to `SHORTLIST_MAX_CANDIDATES` candidates — in one step and ranks it in JS, so the risk is not gone: acceptance criterion 5, a real run, is still the check that decides whether that remaining JS work fits |
 | The prose is corrected and the skill is not | The skill is what an author loads before writing a step, so a stale premise there survives every correction elsewhere and is re-derived on the next feature. Requirement 11 names it explicitly and acceptance criterion 11 greps for the stale phrasing rather than checking the three files by hand |
 | The corrected CPU rule is itself wrong | It is measured and the measurement is recorded with it. The failure mode being avoided is an *unmeasured* number derived from documentation, which is what produced this feature |
 
