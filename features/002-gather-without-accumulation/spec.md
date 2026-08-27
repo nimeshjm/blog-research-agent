@@ -59,9 +59,13 @@ The OpenAI row is the shape of the waste: **1,154 items parsed to keep 62** — 
    truncated (feature 001 `spec.md`, "The recency window in `gather`").
 7. **Candidate persistence is idempotent.** A retried gather step leaves the same rows,
    not duplicates.
-8. **A claimed topic is reclaimable.** A topic left `in_progress` by a dead instance
-   becomes selectable again after `TOPIC_CLAIM_TTL`, without a webhook, a second
-   schedule, or manual SQL.
+8. **A claimed topic is reclaimable by an unattended run.** A topic left `in_progress` by
+   a dead instance becomes selectable again after `TOPIC_CLAIM_TTL`, without a webhook, a
+   second schedule, or manual SQL. "Unattended" is the precise scope: `claimRow`
+   (`src/lib/d1.ts:44`) *does* already recover an `in_progress` row — but only for a run
+   that names it via `ResearchParams.topicId` (`src/workflow.ts:299`), i.e. one triggered
+   by hand. The scheduled path reaches only `queued` rows, so today a stranded topic waits
+   for a human who knows to pass its id.
 9. **Reclaim cannot steal a live run's topic.** `TOPIC_CLAIM_TTL` exceeds the longest
    legitimate run by a margin that is stated, not implied.
 10. **Every run writes a `runs` row, including one that dies mid-step.** The row is
@@ -203,6 +207,22 @@ row is instead created in the run's first step with status `running` (`INSERT OR
 on the `instance_id` primary key, so replay is safe) and updated by `recordOutcome`. A
 `running` row with an old `started_at` is then the durable signal that a run died — the
 same signal `TOPIC_CLAIM_TTL` acts on, from the other side.
+
+**Measured, and worse than "a run that dies writes nothing" suggests:** `SELECT count(*)
+FROM runs` on the remote database returns **0**, and `wrangler workflows instances list`
+shows **two** instances, both failed:
+
+| instance | trigger | outcome |
+|---|---|---|
+| `8808602a` (27/08 06:00 UTC) | cron | `NotImplemented: selectTopic`, 6 attempts |
+| `956de9f8` (27/08 16:11 UTC) | api | `Worker exceeded CPU time limit` in `gather:GitHub`, 5 attempts |
+
+So feature 001 requirement 9 ("every run writes exactly one row to `runs`, whatever the
+outcome") has **never once held**, and the reason it went unnoticed is exactly the reason
+this requirement exists: with no row, a failed run is invisible unless someone thinks to
+list Workflow instances. The two failures are also unrelated to each other — the first was
+an unimplemented `selectTopic` in the then-deployed version — which is the point: the
+`runs` table is meant to be where that distinction is legible after the fact.
 
 ## Platform constraints applied
 
