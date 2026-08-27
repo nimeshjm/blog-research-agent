@@ -21,7 +21,7 @@ unmodified and streaming the live `Response` into `parseFeed`, as `fetchFeedItem
 |---|---|---|---|
 | arXiv cs.SE | 22 KB | 41 | 41 |
 | arXiv cs.AI | 743 KB | 352 | 352 |
-| OpenAI | 702 KB | 1154 | ~5 |
+| OpenAI | 702 KB | 1154 | 62 |
 | Cloudflare | 296 KB | 20 | 20 |
 | GitHub | 173 KB | 10 | 10 |
 
@@ -30,13 +30,16 @@ one feed ✅, two feeds ✅ (393 candidates accumulated), **three feeds ❌ `err
 1102`** — the Workers CPU-limit error. Production reached six steps before failing, so a
 step boundary buys *something*; it does not buy a fresh 10 ms per step.
 
-The OpenAI row is the shape of the waste: **1,154 items parsed to keep about five.**
+The OpenAI row is the shape of the waste: **1,154 items parsed to keep 62** — 19x.
 
 ## Requirements
 
 1. **The parse is bounded by the window.** `gather` stops reading a feed once the feed
    has demonstrably passed out of `GATHER_WINDOW_DAYS`, and cancels the response body
-   rather than draining it.
+   rather than draining it. **That this pays for itself is not yet established** — see
+   "What bounding must not cost" below. If measurement says it does not, requirement 4 and
+   the deferred invocation-boundary lever carry the feature and this requirement is
+   dropped rather than implemented on faith.
 2. **Bounding must not change the result.** For every feed in `config/feeds.json`, the
    bounded parse yields a byte-identical candidate set to the unbounded parse. This is
    the load-bearing requirement: the bound is an optimisation, and an optimisation that
@@ -102,6 +105,28 @@ tokenizing saves nothing, because tokenizing is the cost.
 `GATHER_STALE_RUN` and `GATHER_RAW_ITEM_MAX` are named constants in `src/workflow.ts`
 alongside `GATHER_WINDOW_DAYS`, passed into the parser. `src/lib/feed.ts` defines neither,
 consistent with how it already treats the window constants.
+
+#### What bounding must not cost
+
+Two implementations were measured against a patched copy of `src/lib/feed.ts` under
+`wrangler dev --remote` (issue #61, comment of 2026-08-27) and **both were worse than no
+bound at all**: bookkeeping alone dropped the loop from two feeds to one, and adding a JS
+`getReader()` loop dropped it to failing on the first feed. Two causes, both avoidable and
+both now constraints on the implementation:
+
+- **No second `Date.parse` per item.** `applyGatherWindow` already parses every item's
+  date. A staleness check that parses again doubles exactly the per-item work the bound
+  exists to avoid; the parsed value has to be threaded through, not recomputed.
+- **The drain stays native.** `pipeTo(new WritableStream())` costs no per-chunk JS.
+  Replacing it with a read loop costs more than the tokenizing an early stop skips.
+  Stopping early has to come from cancelling the source (an `AbortController` on the
+  fetch), not from JS deciding per chunk whether to continue.
+
+A third variant doing both correctly was inconclusive: by then the harness's own variance
+was about one feed wide — the same size as the effect. **So this cannot be settled by
+pass/fail against the CPU limit.** It needs per-request CPU numbers; `wrangler dev`'s local
+observability API (`POST /cdn-cgi/local/explorer/api/local/observability/query`, `spans`
+table) is the instrument, read as a bounded-vs-unbounded ratio rather than as an absolute.
 
 ### Candidates in D1, not in `run()`
 
@@ -213,6 +238,7 @@ same signal `TOPIC_CLAIM_TTL` acts on, from the other side.
 | A feed is not newest-first and the bound drops articles | The whole point of acceptance criterion 2 — differential over all 46 feeds, against live responses. `GATHER_STALE_RUN` tolerance absorbs local disorder; a feed that genuinely interleaves fails the test and is a finding against the allowlist, not a reason to loosen the bound |
 | A feed reorders *later*, after the test passed | The differential test is cheap and feed-only. It belongs on the same review cadence as the allowlist audit feature 001 already asks for. Consequence is bounded: a dropped article is a missed candidate, never a wrong draft |
 | `db.batch()` does not amortise against the 50-query budget | Named as open in the design; the fallback (a per-invocation statement ceiling, remainder deferred) is stated so implementation cannot quietly choose truncation instead |
+| Bounding the parse costs more than it saves | Measured for two implementations, and it did (#61). The two causes are named as implementation constraints under "What bounding must not cost", and requirement 1 is explicitly droppable if per-request CPU measurement does not support it. The feature does not depend on it: requirement 4 removes the growth term independently |
 | Bounding the parse is not enough on its own | It attacks the dominant measured cost, and requirement 4 attacks the growth term independently. If a full 46-feed run still fails, the remaining lever is forcing an invocation boundary per gather step, which is why acceptance criterion 5 is a real run rather than a bench |
 | `run_candidates` becomes a second cross-run dedupe key | It is per-run scratch, pruned, and `shortlist` reads it scoped to `run_id`. `seen_urls` stays the only cross-run key |
 | Reclaim races a live run | `TOPIC_CLAIM_TTL` of 6 hours against a minutes-long run and a 48-hour cron gap; both margins stated in the design rather than left to be inferred |
@@ -222,8 +248,10 @@ same signal `TOPIC_CLAIM_TTL` acts on, from the other side.
 ## Deferred
 
 - **Forcing an invocation boundary per gather step** (e.g. `step.sleep`) — the heavier
-  lever. Not adopted pre-emptively: it costs wall-clock on every run and acceptance
-  criterion 5 will say whether it is needed.
+  lever, and **more likely to be load-bearing than this spec first assumed**, now that
+  bounding the parse has failed twice in measurement. Still deferred rather than adopted:
+  it costs wall-clock on every run, and acceptance criterion 5 is what decides. If
+  requirement 1 is dropped, this is what replaces it.
 - **Curating the allowlist down** — would hide the shape rather than fix it
   (`intent.md`, non-goals).
 - **A conditional-request cache** (`ETag` / `If-Modified-Since` per feed) — would cut
