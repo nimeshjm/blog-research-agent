@@ -9,7 +9,7 @@ spec.md landed in one bootstrap commit, and its issues postdate that commit).
 A checker that always reports "unmeasurable, no lead time, no churn" would
 pass against HEAD whether or not any of its guards actually work. So every row
 below copies the whole repo tree (including .git - real history is what
-resolve_creation()/git_path_history() walk) into a fresh temp directory and
+resolve_filled()/git_path_history() walk) into a fresh temp directory and
 either mutates its git history directly (new commits, a git mv, a stubbed `gh`
 on PATH) or, for row 0, changes nothing at all. Row 0 exists specifically to
 prove the harness itself is not vacuously green before any other row's PASS is
@@ -44,6 +44,7 @@ Why `git commit -am` never appears here
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -61,8 +62,23 @@ from typing import Any, Callable
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # The script under test, invoked as a subprocess (never imported) so that this
-# harness exercises the exact same CLI surface CI does.
+# harness exercises the exact same CLI surface CI does. Every row EXCEPT the
+# _build_specs/PANELS_DESIGN consistency rows (22, 23) below uses this path -
+# see plan_metrics's own import, immediately after, for why those two need the
+# module instead.
 PLAN_METRICS = os.path.join(REPO_ROOT, "scripts", "plan_metrics.py")
+
+# `_build_specs()`, `PANELS`, `PANELS_DESIGN`, `TRIGGER` and `TRIGGER_DESIGN`
+# are Python data this file's own assertions need to inspect directly (a
+# `dict`, not stdout text), so rows 22-23 import plan_metrics as a module
+# rather than shelling out to PLAN_METRICS like every other row. Importing it
+# runs its own `sys.version_info < (3, 14)` guard (module-level, not gated on
+# `__name__`) at import time - safe here because `test:plan-metrics` itself is
+# always invoked as `python3.14 scripts/plan_metrics_test.py` (see
+# package.json / CLAUDE.md), the same interpreter floor plan_metrics.py
+# requires.
+sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
+import plan_metrics  # noqa: E402
 
 # Directories copy_tree() prunes entirely rather than descending into. Matched
 # at the exact relative path shown (not by substring), the same rule
@@ -129,6 +145,38 @@ def env_without_git_vars() -> "dict[str, str]":
     as a family: enumerating the ones that matter today is a list that rots.
     """
     return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
+@contextlib.contextmanager
+def hermetic_environ() -> "Any":
+    """Temporarily replace the real `os.environ` with `env_without_git_vars()`'s
+    output, for a row that calls INTO plan_metrics (`build_report()`,
+    `_build_specs()`) in-process rather than through `run_metrics()`'s
+    subprocess.
+
+    Every other row is hermetic because `run_metrics()`/`git()` build an
+    explicit, GIT_*-free `env` dict and pass it to `subprocess.run(..., env=...)`
+    - the child never sees the ambient environment at all. An in-process call
+    has no such seam: `plan_metrics.run_git()` does
+    `subprocess.run(["git", ...], cwd=root)` with no `env=`, which inherits
+    `os.environ` directly. Under `hooks:install`'s pre-push hook (which runs
+    `npm run test:plan-metrics`), that ambient environment carries GIT_DIR /
+    GIT_WORK_TREE pointed at the real repository - see
+    `env_without_git_vars()`'s own docstring - so without this, an in-process
+    row would silently walk the real repo instead of its own sandbox and fail
+    for a reason that has nothing to do with what it tests.
+
+    Restores the real `os.environ` unconditionally on the way out, success or
+    exception.
+    """
+    saved = dict(os.environ)
+    try:
+        os.environ.clear()
+        os.environ.update(env_without_git_vars())
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
 
 
 def git_path(root: str, flag: str) -> "str | None":
@@ -263,21 +311,47 @@ def commit(root: str, message: str, when: str) -> None:
     followed by a commit whose AUTHOR and COMMITTER dates are both pinned to
     `when` (an ISO8601 string like "2026-02-01T00:00:00Z"). Pinning both
     matters: plan_metrics.py reads t1/spec_committed_at off the author date
-    and post_spec_edits off the committer date (see its module docstring's
-    "Why post_spec_edits mixes an author date and a committer date"), so
+    and count_edits_after off the committer date (see its module docstring's
+    "Why count_edits_after mixes an author date and a committer date"), so
     leaving either one on the wall clock would make timing assertions
     (row 1's `== 24.0`) flaky instead of exact.
     """
+    commit_with_dates(root, message, author_when=when, committer_when=when)
+
+
+def commit_with_dates(root: str, message: str, author_when: str, committer_when: str) -> None:
+    """Like `commit()`, but pins the AUTHOR and COMMITTER dates independently.
+    `commit()` is the common case and stays as-is; this is the variant the
+    anchor-self-count row needs to simulate a rebase - a commit whose
+    COMMITTER date lands strictly after its own AUTHOR date, the exact shape
+    of `ae1e86c` in the real repo (see plan_metrics.py's module docstring's
+    "Why count_edits_after excludes the anchor commit by sha")."""
     git(root, ["add", "-A"])
     git(
         root,
         ["commit", "-q", "-m", message],
         extra_env={
-            "GIT_AUTHOR_DATE": when,
-            "GIT_COMMITTER_DATE": when,
+            "GIT_AUTHOR_DATE": author_when,
+            "GIT_COMMITTER_DATE": committer_when,
             **GIT_TEST_IDENTITY,
         },
     )
+
+
+def copy_template_artifacts(
+    root: str, feature_rel: str, names: "tuple[str, ...]" = ("intent.md", "spec.md", "plan.md")
+) -> None:
+    """Copy `features/_template/{names}` into `<root>/features/<feature_rel>/`
+    via `shutil.copyfile`, so a fixture's "copied verbatim" commit is
+    byte-identical to the real template by construction - never by a pasted
+    string literal, which would silently rot the moment anyone edits
+    `features/_template/` (a trailing-newline difference alone would break the
+    blob-sha match every synthetic row here depends on)."""
+    src_dir = os.path.join(root, "features", "_template")
+    dest_dir = os.path.join(root, "features", feature_rel)
+    os.makedirs(dest_dir, exist_ok=True)
+    for name in names:
+        shutil.copyfile(os.path.join(src_dir, name), os.path.join(dest_dir, name))
 
 
 def write_gh_stub(
@@ -1005,6 +1079,821 @@ def row_10(root: str) -> "tuple[bool, list[str]]":
     return ok, notes
 
 
+# ---------------------------------------------------------------------------
+# Stage 2 (Design) rows - issue #42
+# ---------------------------------------------------------------------------
+
+
+def row_11(root: str) -> "tuple[bool, list[str]]":
+    """The row that pins the whole Stage 2 design. features/002-synth: the real
+    features/_template/{intent,spec}.md are copied byte-for-byte (via
+    copy_template_artifacts - see its docstring on why not a pasted literal)
+    and committed @2026-03-01, intent.md is FILLED (edited away from the
+    template) @2026-03-02, spec.md is FILLED @2026-03-04.
+
+    Under a first-add anchor, intent and spec both read as "created" at the
+    2026-03-01 copy commit and design_lead_time_hours comes out 0.0. Under an
+    abbreviated-sha comparison (missing --no-abbrev), the same thing happens
+    for a different reason: the raw blob shas never match the 40-char
+    template shas, every artifact reads as filled at first commit, and the
+    answer is again 0.0. Only the combination of the historical-blob-set
+    comparison AND --no-abbrev produces the correct 48.0.
+    """
+    notes: "list[str]" = []
+    copy_template_artifacts(root, "002-synth", names=("intent.md", "spec.md"))
+    commit(root, "copy template verbatim", "2026-03-01T00:00:00Z")
+    write_file(root, "features/002-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
+    commit(root, "fill intent", "2026-03-02T00:00:00Z")
+    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in.\n")
+    commit(root, "fill spec", "2026-03-04T00:00:00Z")
+
+    report = run_metrics(root, extra_args=("--no-github",))
+    feature = find(report, "002")
+    if feature is None:
+        notes.append("FAIL: feature 002 not found in report")
+        return False, notes
+
+    ok = True
+    ok = (
+        expect_eq(
+            notes, "002.design_lead_time_hours", feature.get("design_lead_time_hours"), 48.0
+        )
+        and ok
+    )
+    ok = expect_eq(notes, "002.design_measurable", feature.get("design_measurable"), True) and ok
+    return ok, notes
+
+
+def row_12(root: str) -> "tuple[bool, list[str]]":
+    """Same base as row 11, extended: plan.md is FILLED @2026-10-05 (diverged
+    from the template), then spec.md is edited again @2026-10-06 - one real
+    commit strictly after the plan-filled anchor. spec_post_plan_edits must be
+    exactly 1, and design_anchor_source must name where that anchor came
+    from.
+
+    Dates deliberately land in October, after every commit already in this
+    repo's real history (which copy_tree() brings along in full - see the
+    module docstring): `--follow -M25%` on a freshly-copied, still-template
+    spec.md detects it as a *copy* of the still-present
+    `features/_template/spec.md` and walks on into the template's OWN real
+    history, including its real 2026-08-25 bootstrap commit. Anchoring this
+    row's dates any earlier than that would let that real, unrelated commit's
+    committer date spuriously read as "after" a synthetic anchor and inflate
+    the count - a fixture-dating trap, not an extractor bug, and exactly why
+    this note exists here rather than being rediscovered the hard way.
+
+    That makes these dates perishable: real history keeps growing, and once it
+    passes October 2026 the same trap returns. This row going red is what that
+    looks like - move every date in it (and in its siblings that copy the
+    template verbatim) forward past the newest real commit, rather than
+    weakening the assertion."""
+    notes: "list[str]" = []
+    copy_template_artifacts(root, "002-synth")
+    commit(root, "copy template verbatim", "2026-10-01T00:00:00Z")
+    write_file(root, "features/002-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
+    commit(root, "fill intent", "2026-10-02T00:00:00Z")
+    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in.\n")
+    commit(root, "fill spec", "2026-10-04T00:00:00Z")
+    write_file(root, "features/002-synth/plan.md", "# Plan: synth\n\nfilled in.\n")
+    commit(root, "fill plan", "2026-10-05T00:00:00Z")
+    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in, revised.\n")
+    commit(root, "edit spec after plan started", "2026-10-06T00:00:00Z")
+
+    report = run_metrics(root, extra_args=("--no-github",))
+    feature = find(report, "002")
+    if feature is None:
+        notes.append("FAIL: feature 002 not found in report")
+        return False, notes
+
+    ok = True
+    ok = expect_eq(notes, "002.spec_post_plan_edits", feature.get("spec_post_plan_edits"), 1) and ok
+    ok = (
+        expect_eq(
+            notes, "002.design_anchor_source", feature.get("design_anchor_source"), "plan-filled"
+        )
+        and ok
+    )
+    return ok, notes
+
+
+def row_13(root: str) -> "tuple[bool, list[str]]":
+    """The false-rework row. plan.md is left as the verbatim template copy -
+    never filled - while spec.md IS filled after the copy commit. A naive
+    reading of plan.md's own first-add commit as "the build started" would
+    count the spec edit as post-plan rework against a Stage 3 build that does
+    not exist. spec_post_plan_edits must be ABSENT (not 0 - 0 would still
+    claim the anchor is defined), and design_anchor_source must say "none"."""
+    notes: "list[str]" = []
+    copy_template_artifacts(root, "002-synth")
+    commit(root, "copy template verbatim", "2026-03-01T00:00:00Z")
+    write_file(root, "features/002-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
+    commit(root, "fill intent", "2026-03-02T00:00:00Z")
+    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in.\n")
+    commit(root, "fill spec", "2026-03-04T00:00:00Z")
+    # plan.md is never touched again - it stays byte-identical to the template.
+
+    report = run_metrics(root, extra_args=("--no-github",))
+    feature = find(report, "002")
+    if feature is None:
+        notes.append("FAIL: feature 002 not found in report")
+        return False, notes
+
+    ok = True
+    ok = (
+        expect_absent(notes, "002.spec_post_plan_edits", feature, "spec_post_plan_edits")
+        and ok
+    )
+    ok = (
+        expect_eq(notes, "002.design_anchor_source", feature.get("design_anchor_source"), "none")
+        and ok
+    )
+    return ok, notes
+
+
+def row_14(root: str) -> "tuple[bool, list[str]]":
+    """The anchor self-count row. ONE commit fills plan.md AND edits spec.md
+    together, with its COMMITTER date pinned strictly LATER than its own
+    AUTHOR date (commit_with_dates - simulating the exact rebase shape of the
+    real repo's ae1e86c, whose author date is 2026-08-26T20:28:30Z and
+    committer date 2026-08-26T20:30:14Z). No further spec commits follow.
+
+    Without the anchor-sha exclusion, count_edits_after would see this
+    commit's own committer date (after its own author date, which is the
+    anchor) and count it as rework against itself: spec_post_plan_edits would
+    read 1. With the exclusion, it is 0 - a real, defined zero (the anchor
+    exists, so the count is defined), not a fabricated one.
+
+    Dates land in October 2026, after every commit already in this repo's real
+    history - see row_12's docstring for why an earlier synthetic date would
+    let `--follow -M25%`'s copy-detection through the still-template spec.md
+    walk into the template's own real (and, relative to an earlier synthetic
+    date, spuriously "later") history and inflate this count for an unrelated
+    reason."""
+    notes: "list[str]" = []
+    copy_template_artifacts(root, "002-synth")
+    commit(root, "copy template verbatim", "2026-10-01T00:00:00Z")
+    write_file(root, "features/002-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
+    commit(root, "fill intent", "2026-10-02T00:00:00Z")
+    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in.\n")
+    commit(root, "fill spec", "2026-10-04T00:00:00Z")
+    write_file(root, "features/002-synth/plan.md", "# Plan: synth\n\nfilled in.\n")
+    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in, revised in the same commit as plan.\n")
+    commit_with_dates(
+        root,
+        "fill plan and revise spec together (rebased)",
+        author_when="2026-10-05T00:00:00Z",
+        committer_when="2026-10-05T00:10:00Z",
+    )
+
+    report = run_metrics(root, extra_args=("--no-github",))
+    feature = find(report, "002")
+    if feature is None:
+        notes.append("FAIL: feature 002 not found in report")
+        return False, notes
+
+    ok = True
+    ok = expect_eq(notes, "002.spec_post_plan_edits", feature.get("spec_post_plan_edits"), 0) and ok
+    return ok, notes
+
+
+def row_15(root: str) -> "tuple[bool, list[str]]":
+    """Proves the historical-blob-SET, not point-in-time, comparison - cannot
+    be exercised against the live repo, since every template artifact there
+    has exactly one historical blob today (see the module docstring's "Why
+    `t1` is template divergence" note in plan_metrics.py). intent.md is
+    filled normally so the feature record exists (a still-template intent.md
+    would make the feature absent entirely and this row would prove nothing -
+    see row_18 for that case). spec.md is copied from the template and then
+    NEVER touched again; features/_template/spec.md itself is edited
+    afterwards. A point-in-time "compare to the current template" reading
+    would see 002/spec.md differ from the now-edited template and misreport
+    it "filled"; the historical-set reading still recognises 002/spec.md's
+    blob as one the template has HAD, so it correctly stays unfilled."""
+    notes: "list[str]" = []
+    copy_template_artifacts(root, "002-synth", names=("intent.md", "spec.md"))
+    commit(root, "copy template verbatim", "2026-04-01T00:00:00Z")
+    write_file(root, "features/002-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
+    commit(root, "fill intent", "2026-04-02T00:00:00Z")
+    write_file(root, "features/_template/spec.md", "# Spec: <feature name>\n\nEDITED TEMPLATE.\n")
+    commit(root, "edit the template itself", "2026-04-03T00:00:00Z")
+    # features/002-synth/spec.md is left untouched - still the ORIGINAL
+    # template blob, which the historical set still remembers.
+
+    report = run_metrics(root, extra_args=("--no-github",))
+    feature = find(report, "002")
+    if feature is None:
+        notes.append("FAIL: feature 002 not found in report (intent.md was filled - it should exist)")
+        return False, notes
+
+    ok = True
+    ok = expect_absent(notes, "002.spec_committed_at", feature, "spec_committed_at") and ok
+    ok = expect_eq(notes, "002.design_measurable", feature.get("design_measurable"), False) and ok
+    return ok, notes
+
+
+def row_16(root: str) -> "tuple[bool, list[str]]":
+    """spec.md filled BEFORE intent.md - possible when intent.md is copied as
+    a template and filled later than the spec (e.g. a spec drafted from an
+    older intent, then intent.md itself catches up). design_lead_time_hours
+    would be negative if computed naively; the guard must withhold it
+    entirely rather than emit a negative number anywhere in the report."""
+    notes: "list[str]" = []
+    copy_template_artifacts(root, "002-synth", names=("intent.md", "spec.md"))
+    commit(root, "copy template verbatim", "2026-05-01T00:00:00Z")
+    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in first.\n")
+    commit(root, "fill spec", "2026-05-02T00:00:00Z")
+    write_file(root, "features/002-synth/intent.md", "# Intent: synth\n\nfilled in later.\n")
+    commit(root, "fill intent", "2026-05-04T00:00:00Z")
+
+    report = run_metrics(root, extra_args=("--no-github",))
+    feature = find(report, "002")
+    if feature is None:
+        notes.append("FAIL: feature 002 not found in report")
+        return False, notes
+
+    ok = True
+    ok = expect_eq(notes, "002.design_measurable", feature.get("design_measurable"), False) and ok
+    ok = (
+        expect_true(
+            notes,
+            "no negative number anywhere in the report",
+            not _contains_negative_number(report),
+        )
+        and ok
+    )
+    return ok, notes
+
+
+def row_17(root: str) -> "tuple[bool, list[str]]":
+    """features/002-old -> features/002-new, renumbered AFTER spec.md was
+    filled: intent.md and spec.md (40 lines, distinct from the template from
+    their first commit) are added and filled outright, then the directory is
+    renumbered and 26/40 (65%) of spec.md's lines are rewritten in that same
+    rename commit - the same validated partial-rewrite fraction row_4b uses
+    for intent.md, exercised here against spec.md instead. Proves
+    `resolve_filled()`'s `--follow -M25%` walk covers spec.md, not just
+    intent.md: at git's default 50% threshold the rename fails to pair and
+    design_lead_time_hours would come out wrong (spec would read as first
+    filled at the rename); at -M25% it must stay exactly 48.0."""
+    notes: "list[str]" = []
+    write_file(root, "features/002-old/intent.md", "intent v1, already filled\n")
+    commit(root, "add intent", "2026-06-01T00:00:00Z")
+
+    original_lines = [
+        f"spec line {i} about the design" for i in range(RENAME_FIXTURE_TOTAL_LINES)
+    ]
+    write_file(root, "features/002-old/spec.md", "\n".join(original_lines) + "\n")
+    commit(root, "add spec", "2026-06-03T00:00:00Z")  # 48h after intent
+
+    git(root, ["mv", "features/002-old", "features/002-new"])
+    rewritten_lines = list(original_lines)
+    for i in range(RENAME_FIXTURE_REWRITE_FRACTIONS["partial"]):
+        rewritten_lines[i] = f"TOTALLY different design row {i}"
+    write_file(root, "features/002-new/spec.md", "\n".join(rewritten_lines) + "\n")
+    commit(root, "renumber, rewriting most of spec.md", "2026-08-01T00:00:00Z")
+
+    report = run_metrics(root, extra_args=("--no-github",))
+    feature = find(report, "002")
+    if feature is None:
+        notes.append("FAIL: feature 002 not found in report")
+        return False, notes
+
+    ok = True
+    ok = (
+        expect_eq(
+            notes,
+            "002.design_lead_time_hours (unchanged by the renumbering)",
+            feature.get("design_lead_time_hours"),
+            48.0,
+        )
+        and ok
+    )
+    ok = expect_eq(notes, "002.design_measurable", feature.get("design_measurable"), True) and ok
+    return ok, notes
+
+
+def row_18(root: str) -> "tuple[bool, list[str]]":
+    """A feature whose intent.md is committed but still the verbatim template
+    copy - never filled. discover_features() only requires intent.md to exist
+    on disk, so without the filled_at guard this directory would otherwise be
+    picked up; compute_git_facts() must return None for it and the feature
+    must be entirely absent from report["features"], not present with
+    everything omitted."""
+    notes: "list[str]" = []
+    copy_template_artifacts(root, "002-synth", names=("intent.md",))
+    commit(root, "copy template intent.md, never filled", "2026-07-01T00:00:00Z")
+
+    report = run_metrics(root, extra_args=("--no-github",))
+    ok = expect_eq(notes, "002 absent (intent.md never filled)", find(report, "002"), None)
+    return ok, notes
+
+
+def row_19(root: str) -> "tuple[bool, list[str]]":
+    """001's Stage 1 AND Stage 2 output against the live repo, read exactly -
+    the anchor-switch regression row. Stage 1's numbers must be byte-identical
+    to what they were before the anchor moved from first-add to filled_at
+    (001's intent.md and spec.md happen to be filled at the same commit they
+    were first added at, so this is provable exactly, not just with
+    inequalities). Stage 2 exercises 001's real, previously-undocumented case:
+    intent and spec filled together (design unmeasurable) but plan.md
+    genuinely diverged from the template a day later, so the churn anchor is
+    real and spec_post_plan_edits must be a positive, present number - not
+    absent and not a guess at an exact count, since the next commit to
+    spec.md would otherwise turn an exact assertion red (see row_0's
+    precedent)."""
+    notes: "list[str]" = []
+    report = run_metrics(root, extra_args=("--no-github",))
+    feature = find(report, "001")
+    if feature is None:
+        notes.append("FAIL: feature 001 not found in report")
+        return False, notes
+
+    ok = True
+    # Stage 1, exact - both artifacts filled in the bootstrap commit 7c14ea0.
+    ok = expect_eq(notes, "001.measurable", feature.get("measurable"), False) and ok
+    ok = (
+        expect_eq(
+            notes,
+            "001.intent_committed_at",
+            feature.get("intent_committed_at"),
+            "2026-08-25T17:04:47Z",
+        )
+        and ok
+    )
+    ok = (
+        expect_eq(
+            notes,
+            "001.spec_committed_at",
+            feature.get("spec_committed_at"),
+            "2026-08-25T17:04:47Z",
+        )
+        and ok
+    )
+    ok = expect_eq(notes, "001.intent_t1_source", feature.get("intent_t1_source"), "follow") and ok
+    churn = feature.get("intent_post_spec_edits")
+    ok = (
+        expect_true(
+            notes,
+            f"001.intent_post_spec_edits present and >= 1 (got {churn!r}) - unchanged by "
+            "the anchor switch",
+            isinstance(churn, int) and not isinstance(churn, bool) and churn >= 1,
+        )
+        and ok
+    )
+
+    # Stage 2 - 001's real case: unmeasurable design (shared fill commit), but
+    # a genuine plan-filled anchor and real post-plan spec churn.
+    ok = expect_eq(notes, "001.design_measurable", feature.get("design_measurable"), False) and ok
+    ok = (
+        expect_eq(
+            notes,
+            "001.design_anchor_source",
+            feature.get("design_anchor_source"),
+            "plan-filled",
+        )
+        and ok
+    )
+    spec_churn = feature.get("spec_post_plan_edits")
+    ok = (
+        expect_true(
+            notes,
+            f"001.spec_post_plan_edits present and >= 1 (got {spec_churn!r})",
+            isinstance(spec_churn, int) and not isinstance(spec_churn, bool) and spec_churn >= 1,
+        )
+        and ok
+    )
+    ok = (
+        expect_absent(notes, "001.design_lead_time_hours", feature, "design_lead_time_hours")
+        and ok
+    )
+    return ok, notes
+
+
+def row_20(root: str) -> "tuple[bool, list[str]]":
+    """`--no-github` completeness. With a fully measurable synthetic 002
+    (intent, spec AND plan all filled) in the tree, EVERY Stage 2 field must
+    be present under `--no-github` - Stage 2 is pure git, per issue #42's "No
+    GitHub" section. Only Stage 1's t0/outcome may degrade. This row exists so
+    a future reader does not "fix" Stage 2 by adding a `gh` call: there is
+    nothing broken to fix."""
+    notes: "list[str]" = []
+    copy_template_artifacts(root, "002-synth")
+    commit(root, "copy template verbatim", "2026-09-01T00:00:00Z")
+    write_file(root, "features/002-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
+    commit(root, "fill intent", "2026-09-02T00:00:00Z")
+    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in.\n")
+    commit(root, "fill spec", "2026-09-04T00:00:00Z")
+    write_file(root, "features/002-synth/plan.md", "# Plan: synth\n\nfilled in.\n")
+    commit(root, "fill plan", "2026-09-05T00:00:00Z")
+
+    report = run_metrics(root, extra_args=("--no-github",))
+    feature = find(report, "002")
+    if feature is None:
+        notes.append("FAIL: feature 002 not found in report")
+        return False, notes
+
+    ok = True
+    ok = expect_eq(notes, "002.design_measurable", feature.get("design_measurable"), True) and ok
+    ok = expect_present(notes, "002.spec_committed_at", feature, "spec_committed_at") and ok
+    ok = expect_present(notes, "002.spec_t1_source", feature, "spec_t1_source") and ok
+    ok = expect_present(notes, "002.spec_age_days", feature, "spec_age_days") and ok
+    ok = expect_present(notes, "002.design_lead_time_hours", feature, "design_lead_time_hours") and ok
+    ok = expect_present(notes, "002.design_plan_filled_at", feature, "design_plan_filled_at") and ok
+    ok = (
+        expect_eq(
+            notes, "002.design_anchor_source", feature.get("design_anchor_source"), "plan-filled"
+        )
+        and ok
+    )
+    ok = expect_present(notes, "002.spec_post_plan_edits", feature, "spec_post_plan_edits") and ok
+
+    # Only Stage 1's t0/outcome degrade under --no-github.
+    ok = expect_absent(notes, "002.t0", feature, "t0") and ok
+    ok = expect_eq(notes, "002.t0_source", feature.get("t0_source"), "none") and ok
+    ok = expect_absent(notes, "002.intent_outcome", feature, "intent_outcome") and ok
+    return ok, notes
+
+
+def row_21(root: str) -> "tuple[bool, list[str]]":
+    """plan.md IS filled (diverged from the template), but spec.md is left as
+    the verbatim template copy - never filled. This is the mirror image of
+    row_15 (plan unfilled, "the false-rework row") and closes a gap row_15
+    doesn't cover: with a real plan-filled anchor but no spec.md to have been
+    reworked, `spec_post_plan_edits` must stay ABSENT, not a `0` - a `0` would
+    read as "the spec exists and had no post-plan edits", which is a claim
+    about a spec that was never written. This mirrors the existing Stage 1
+    reasoning for why `intent_post_spec_edits` stays absent (never `0`) when
+    there is no spec.md at all (see row_7) - the same "no baseline to measure
+    from" logic, applied to Stage 2's spec/plan pair instead of Stage 1's
+    intent/spec pair. `design_anchor_source` still correctly reads
+    "plan-filled": that field names what plan.md itself is doing, independent
+    of spec.md's state (see row_12's docstring on why plan.md is resolved
+    unconditionally)."""
+    notes: "list[str]" = []
+    copy_template_artifacts(root, "002-synth")
+    commit(root, "copy template verbatim", "2026-11-01T00:00:00Z")
+    write_file(root, "features/002-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
+    commit(root, "fill intent", "2026-11-02T00:00:00Z")
+    write_file(root, "features/002-synth/plan.md", "# Plan: synth\n\nfilled in.\n")
+    commit(root, "fill plan", "2026-11-03T00:00:00Z")
+    # features/002-synth/spec.md is left untouched - still the verbatim template.
+
+    report = run_metrics(root, extra_args=("--no-github",))
+    feature = find(report, "002")
+    if feature is None:
+        notes.append("FAIL: feature 002 not found in report")
+        return False, notes
+
+    ok = True
+    ok = (
+        expect_absent(notes, "002.spec_post_plan_edits", feature, "spec_post_plan_edits")
+        and ok
+    )
+    ok = (
+        expect_eq(
+            notes, "002.design_anchor_source", feature.get("design_anchor_source"), "plan-filled"
+        )
+        and ok
+    )
+    ok = expect_absent(notes, "002.spec_committed_at", feature, "spec_committed_at") and ok
+    ok = expect_eq(notes, "002.design_measurable", feature.get("design_measurable"), False) and ok
+    return ok, notes
+
+
+# ---------------------------------------------------------------------------
+# _build_specs / board-spec consistency rows - issue #42, pass 2
+# ---------------------------------------------------------------------------
+
+
+def row_22(root: str) -> "tuple[bool, list[str]]":
+    """Span-shape row for `_build_specs`'s new `sdlc.design.snapshot` span.
+    Builds a tree with a fully-filled, measurable synthetic 002 (template
+    copied, intent/spec/plan all filled, then spec.md edited once more after
+    the plan fill - row_12/row_14's dated-in-October fixture, so the churn
+    count is not inflated by `--follow -M25%` walking into the template's own
+    real 2026-08-25 history) alongside the real 001, then calls
+    `plan_metrics.build_report()` and `plan_metrics._build_specs()` directly
+    (see the module-level `plan_metrics` import and `hermetic_environ()` for
+    why an in-process call needs its own GIT_*-scrubbing).
+
+    Asserts: exactly one `sdlc.design.snapshot` span per feature, alongside
+    the existing per-feature `sdlc.plan.snapshot` and the single
+    `sdlc.plan.rollup` (2 + 2 + 1 = 5 specs for a 2-feature report); 002's
+    design span - fully filled, so every mapped attribute is present - carries
+    EXACTLY the attribute-name set issue #42's mapping table specifies, no
+    more and no less (this is what catches a typo'd name AND a stray extra
+    one, e.g. the `sdlc.design.plan_filled_at` vs `sdlc.plan.filled_at`
+    trap); `sdlc.measurable` and `sdlc.design.anchor_source` are present on
+    BOTH features' design spans, including 001's unmeasurable one;
+    `sdlc.design.lead_time_hours` is present for 002 and absent for 001 (its
+    design is unmeasurable); no attribute value is `None` anywhere; and no
+    `sdlc.design.rollup` span exists at all - see plan_metrics.py's module
+    docstring for why that span is deliberately absent.
+
+    Deliberately does NOT assert "no negative number" here: these dates are
+    pinned in October 2026 for the reason above, which makes
+    `spec_age_days`/`intent_age_days` negative relative to "now" by
+    construction - rows 12/14/20/21 already live with the same fixture-dating
+    trade-off. The no-negative guarantee is checked in `--json` against the
+    live repo, not against a future-dated synthetic fixture.
+    """
+    notes: "list[str]" = []
+    copy_template_artifacts(root, "002-synth")
+    commit(root, "copy template verbatim", "2026-10-01T00:00:00Z")
+    write_file(root, "features/002-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
+    commit(root, "fill intent", "2026-10-02T00:00:00Z")
+    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in.\n")
+    commit(root, "fill spec", "2026-10-04T00:00:00Z")
+    write_file(root, "features/002-synth/plan.md", "# Plan: synth\n\nfilled in.\n")
+    commit(root, "fill plan", "2026-10-05T00:00:00Z")
+    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in, revised.\n")
+    commit(root, "edit spec after plan started", "2026-10-06T00:00:00Z")
+
+    with hermetic_environ():
+        report = plan_metrics.build_report(root, use_github=False, apply_session_t0=False)
+    specs = plan_metrics._build_specs(report)
+
+    ok = True
+    feature_count = len(report["features"])
+    # >= 2, not == 2: 002-synth plus the real, currently-sole 001. This must
+    # keep passing the day a real features/002-* lands in this repo (the
+    # board this row is proving out exists precisely so that can happen) -
+    # the per-span counts below key off feature_count so they still catch a
+    # missing/duplicated span regardless of how many real features exist.
+    ok = expect_true(notes, f"feature count >= 2 (got {feature_count})", feature_count >= 2) and ok
+    ok = (
+        expect_eq(
+            notes,
+            "total spec count (2 spans/feature + 1 rollup)",
+            len(specs),
+            2 * feature_count + 1,
+        )
+        and ok
+    )
+
+    design_spans = [s for s in specs if s["name"] == "sdlc.design.snapshot"]
+    plan_spans = [s for s in specs if s["name"] == "sdlc.plan.snapshot"]
+    rollup_spans = [s for s in specs if s["name"] == "sdlc.plan.rollup"]
+    design_rollup_spans = [s for s in specs if s["name"] == "sdlc.design.rollup"]
+
+    ok = expect_eq(notes, "count of sdlc.design.snapshot spans", len(design_spans), feature_count) and ok
+    ok = expect_eq(notes, "count of sdlc.plan.snapshot spans", len(plan_spans), feature_count) and ok
+    ok = expect_eq(notes, "count of sdlc.plan.rollup spans", len(rollup_spans), 1) and ok
+    ok = (
+        expect_eq(
+            notes,
+            "count of sdlc.design.rollup spans (must be 0 - deliberately absent)",
+            len(design_rollup_spans),
+            0,
+        )
+        and ok
+    )
+
+    def find_design(feature_prefix: str) -> "dict[str, Any] | None":
+        for span in design_spans:
+            if span["attributes"].get("sdlc.feature", "").startswith(feature_prefix):
+                return span
+        return None
+
+    span_002 = find_design("002")
+    span_001 = find_design("001")
+    if span_002 is None or span_001 is None:
+        notes.append(
+            "FAIL: expected a sdlc.design.snapshot span for both 001 and 002, got "
+            f"features {[s['attributes'].get('sdlc.feature') for s in design_spans]!r}"
+        )
+        return False, notes
+
+    for label, span in (("002 (fully filled)", span_002), ("001 (real, design-unmeasurable)", span_001)):
+        attrs = span["attributes"]
+        ok = expect_true(notes, f"{label}: sdlc.measurable present", "sdlc.measurable" in attrs) and ok
+        ok = (
+            expect_true(
+                notes, f"{label}: sdlc.design.anchor_source present", "sdlc.design.anchor_source" in attrs
+            )
+            and ok
+        )
+        ok = (
+            expect_true(
+                notes,
+                f"{label}: no attribute value is None ({attrs!r})",
+                all(v is not None for v in attrs.values()),
+            )
+            and ok
+        )
+
+    # 002 is fully filled: EVERY mapped attribute is present, and nothing else.
+    expected_002_keys = {
+        "sdlc.feature",
+        "sdlc.repo",
+        "sdlc.measurable",
+        "sdlc.spec.committed_at",
+        "sdlc.spec.t1_source",
+        "sdlc.spec.age_days",
+        "sdlc.design.lead_time_hours",
+        "sdlc.design.plan_filled_at",
+        "sdlc.design.anchor_source",
+        "sdlc.spec.post_plan_edits",
+    }
+    ok = (
+        expect_eq(
+            notes,
+            "002 sdlc.design.snapshot attribute key set (exact - issue #42's mapping table)",
+            set(span_002["attributes"].keys()),
+            expected_002_keys,
+        )
+        and ok
+    )
+    ok = expect_eq(notes, "002 sdlc.feature", span_002["attributes"].get("sdlc.feature"), "002-synth") and ok
+    ok = expect_eq(notes, "002 sdlc.repo", span_002["attributes"].get("sdlc.repo"), report["repo"]) and ok
+    ok = expect_eq(notes, "002 sdlc.measurable", span_002["attributes"].get("sdlc.measurable"), True) and ok
+    ok = (
+        expect_eq(
+            notes,
+            "002 sdlc.design.lead_time_hours",
+            span_002["attributes"].get("sdlc.design.lead_time_hours"),
+            48.0,
+        )
+        and ok
+    )
+    ok = (
+        expect_eq(
+            notes,
+            "002 sdlc.design.anchor_source",
+            span_002["attributes"].get("sdlc.design.anchor_source"),
+            "plan-filled",
+        )
+        and ok
+    )
+    ok = (
+        expect_eq(
+            notes,
+            "002 sdlc.spec.post_plan_edits",
+            span_002["attributes"].get("sdlc.spec.post_plan_edits"),
+            1,
+        )
+        and ok
+    )
+
+    # 001's real, live case: design unmeasurable (intent+spec share the
+    # bootstrap commit), but a real plan-filled anchor and real churn.
+    attrs_001 = span_001["attributes"]
+    ok = expect_eq(notes, "001 sdlc.measurable", attrs_001.get("sdlc.measurable"), False) and ok
+    ok = (
+        expect_eq(
+            notes, "001 sdlc.design.anchor_source", attrs_001.get("sdlc.design.anchor_source"), "plan-filled"
+        )
+        and ok
+    )
+    ok = (
+        expect_true(notes, "001 sdlc.design.plan_filled_at present", "sdlc.design.plan_filled_at" in attrs_001)
+        and ok
+    )
+    ok = (
+        expect_true(notes, "001 sdlc.spec.post_plan_edits present", "sdlc.spec.post_plan_edits" in attrs_001)
+        and ok
+    )
+    ok = (
+        expect_true(
+            notes,
+            "001 sdlc.design.lead_time_hours absent (design unmeasurable)",
+            "sdlc.design.lead_time_hours" not in attrs_001,
+        )
+        and ok
+    )
+    return ok, notes
+
+
+def row_23(root: str) -> "tuple[bool, list[str]]":
+    """Panel/emitter consistency row - the row that catches an `sdlc.*` column
+    named in `PANELS`/`PANELS_DESIGN`/`TRIGGER`/`TRIGGER_DESIGN` that
+    `_build_specs` never actually emits (the `sdlc.design.plan_filled_at` vs
+    `sdlc.plan.filled_at` trap issue #42 calls out by name), and the narrower,
+    easier-to-miss mistake of a panel whose `name` filter names the wrong span
+    - which would silently mix Stage 1 and Stage 2 rows into one query, since
+    `sdlc.measurable` and `sdlc.feature` are emitted on BOTH span names.
+
+    Builds one hand-constructed "maximal" report record - every optional key
+    `build_feature()` can ever produce, set at once - rather than deriving one
+    from git history: this row's job is to check the panel spec against
+    `_build_specs`'s mapping, not to re-prove `build_feature()` (rows 0-21
+    already do that job against real and synthetic history). Wired over BOTH
+    boards (`PANELS`/`TRIGGER` for Stage 1, `PANELS_DESIGN`/`TRIGGER_DESIGN`
+    for Stage 2) since a single walk over all four costs nothing extra, and
+    issue #42 explicitly asked for that.
+    """
+    notes: "list[str]" = []
+
+    maximal_feature: "dict[str, Any]" = {
+        "feature": "002-synth",
+        "issue": 999,
+        "measurable": True,
+        "t0": "2026-01-01T00:00:00Z",
+        "t0_source": "issue",
+        "intent_author": "T",
+        "intent_committed_at": "2026-01-02T00:00:00Z",
+        "intent_age_days": 1.0,
+        "intent_t1_source": "follow",
+        "lead_time_hours": 24.0,
+        "spec_committed_at": "2026-01-03T00:00:00Z",
+        "spec_t1_source": "follow",
+        "spec_age_days": 0.5,
+        "intent_outcome": "accepted",
+        "intent_post_spec_edits": 1,
+        "design_measurable": True,
+        "design_lead_time_hours": 24.0,
+        "design_anchor_source": "plan-filled",
+        "design_plan_filled_at": "2026-01-05T00:00:00Z",
+        "spec_post_plan_edits": 1,
+    }
+    report: "dict[str, Any]" = {
+        "repo": "nimeshjm/blog-research-agent",
+        "dataset": "blog-research-agent-sdlc",
+        "generated_at": "2026-01-01T00:00:00Z",
+        "features": [maximal_feature],
+        "rollup": {
+            "accepted_count": 1,
+            "rejected_count": 0,
+            "open_count": 0,
+            "survival_rate": 1.0,
+        },
+    }
+
+    specs = plan_metrics._build_specs(report)
+    emitted_names = {spec["name"] for spec in specs}
+    emitted_attrs: "set[str]" = set()
+    for spec in specs:
+        emitted_attrs.update(spec["attributes"].keys())
+    notes.append(f"emitted span names: {sorted(emitted_names)!r}")
+    notes.append(f"emitted attribute names (union across spans): {sorted(emitted_attrs)!r}")
+
+    ok = True
+
+    def query_columns(query: "dict[str, Any]") -> "list[str]":
+        columns: "list[str]" = []
+        for calc in query.get("calculations", []):
+            if "column" in calc:
+                columns.append(calc["column"])
+        for filt in query.get("filters", []):
+            columns.append(filt["column"])
+        for breakdown in query.get("breakdowns", []):
+            columns.append(breakdown)
+        for order in query.get("orders", []):
+            if "column" in order:
+                columns.append(order["column"])
+        return columns
+
+    def check_panel(source_label: str, query: "dict[str, Any]") -> None:
+        nonlocal ok
+        # Every sdlc.* column referenced must be an attribute _build_specs can
+        # actually emit (or "name", the span-name meta-field, never itself an
+        # emitted attribute - see the exemption check below).
+        for column in query_columns(query):
+            if not column.startswith("sdlc."):
+                continue
+            ok = (
+                expect_true(
+                    notes,
+                    f"{source_label}: column {column!r} is an attribute _build_specs can emit",
+                    column in emitted_attrs,
+                )
+                and ok
+            )
+
+        # Every panel/trigger must filter on `name` naming an actual emitted
+        # span name - not just SOME panel somewhere, but THIS one. Without
+        # this, a design panel that forgets `name = sdlc.design.snapshot`
+        # would silently mix Stage 1 and Stage 2 rows (sdlc.measurable and
+        # sdlc.feature are emitted on both spans) and still pass the
+        # column-membership check above.
+        name_filters = [f["value"] for f in query.get("filters", []) if f.get("column") == "name"]
+        ok = (
+            expect_true(
+                notes,
+                f"{source_label}: has a 'name' filter",
+                len(name_filters) == 1,
+            )
+            and ok
+        )
+        if name_filters:
+            ok = (
+                expect_true(
+                    notes,
+                    f"{source_label}: 'name' filter value {name_filters[0]!r} is an emitted span name",
+                    name_filters[0] in emitted_names,
+                )
+                and ok
+            )
+
+    for board_label, panels in (("PANELS", plan_metrics.PANELS), ("PANELS_DESIGN", plan_metrics.PANELS_DESIGN)):
+        for panel in panels:
+            check_panel(f"{board_label}/{panel['name']}", panel["query"])
+    for trigger_label, trigger in (("TRIGGER", plan_metrics.TRIGGER), ("TRIGGER_DESIGN", plan_metrics.TRIGGER_DESIGN)):
+        check_panel(trigger_label, trigger["query"])
+
+    return ok, notes
+
+
 ROWS: "list[tuple[str, Callable[[str], tuple[bool, list[str]]]]]" = [
     ("baseline (no mutation) - proves the harness itself is not vacuously green", row_0),
     (
@@ -1042,6 +1931,73 @@ ROWS: "list[tuple[str, Callable[[str], tuple[bool, list[str]]]]]" = [
         "copy_tree gives a linked worktree a sandbox that owns its gitdir "
         "(issue #31, this file's copy of it)",
         row_10,
+    ),
+    (
+        "Stage 2: template copied verbatim, intent filled, spec filled - pins "
+        "design_lead_time_hours exactly and design_measurable True",
+        row_11,
+    ),
+    (
+        "Stage 2: plan.md filled, then spec.md edited after - spec_post_plan_edits "
+        "== 1, anchor_source == plan-filled",
+        row_12,
+    ),
+    (
+        "Stage 2: plan.md left as the verbatim template, spec.md filled after the "
+        "copy - the false-rework row (post_plan_edits absent, anchor_source none)",
+        row_13,
+    ),
+    (
+        "Stage 2: one rebased commit fills plan.md and edits spec.md together - "
+        "the anchor self-count row (spec_post_plan_edits == 0)",
+        row_14,
+    ),
+    (
+        "Stage 2: features/_template/spec.md edited after 002 copied it, 002's own "
+        "spec.md untouched - proves the historical-blob-SET comparison",
+        row_15,
+    ),
+    (
+        "Stage 2: spec.md filled BEFORE intent.md - design_measurable False, no "
+        "negative number anywhere",
+        row_16,
+    ),
+    (
+        "Stage 2: features/002-old -> 002-new renumbered after spec.md was filled, "
+        "with a 65%-rewritten spec.md in the rename commit - proves --follow -M25% "
+        "covers spec.md",
+        row_17,
+    ),
+    (
+        "Stage 2: intent.md committed but still the verbatim template - the feature "
+        "is absent from the report entirely",
+        row_18,
+    ),
+    (
+        "Stage 1 + Stage 2 regression against the live repo (001): exact values, "
+        "unchanged by the anchor switch",
+        row_19,
+    ),
+    (
+        "Stage 2: --no-github completeness - every Stage 2 field present for a "
+        "measurable synthetic feature; only Stage 1's t0/outcome degrade",
+        row_20,
+    ),
+    (
+        "Stage 2: plan.md filled but spec.md left as the verbatim template - "
+        "spec_post_plan_edits absent (no spec exists to have been reworked)",
+        row_21,
+    ),
+    (
+        "_build_specs span shape: exactly one sdlc.design.snapshot per feature, "
+        "exact attribute key set for a fully-filled feature, no sdlc.design.rollup",
+        row_22,
+    ),
+    (
+        "Panel/emitter consistency: every sdlc.* column in PANELS/PANELS_DESIGN/"
+        "TRIGGER/TRIGGER_DESIGN is an attribute _build_specs actually emits, and "
+        "every panel's 'name' filter names an emitted span",
+        row_23,
     ),
 ]
 

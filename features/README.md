@@ -64,6 +64,38 @@ understate lead time. If it still cannot pair the two, it reports
 than emitting a wrong one. So renumber freely; just avoid rewriting `intent.md` wholesale
 in the same commit.
 
+**The clock starts at template divergence, not at first commit.** "Copy `_template/` to
+start a feature" (above) means an artifact's first commit is usually still the unfilled
+template, not the moment work began — so `t1` for both stages is the author date of the
+first commit whose content actually differs from every version `_template/<artifact>.md`
+has ever had, not the artifact's first-add commit. Anchoring on first-add instead would
+make every feature's lead time 0 by construction, since the copy and the creation commit
+are the same commit.
+
+## Measuring stage 2
+
+`scripts/plan_metrics.py` also reports Stage 2 (Design) against the playbook's two
+indicators: leading — elapsed time between `intent.md` being filled and `spec.md` being
+filled, for the same feature — and lagging — `spec.md` commits landing after `plan.md`
+first diverged from the template (requirements rework after a build started).
+
+Both come from **git alone**. No `gh` call, no label, no issue state — `--no-github`
+yields complete Stage 2 output; only Stage 1's `t0` and `intent_outcome` degrade without
+GitHub.
+
+**Feature 001 has no design lead time.** Its `intent.md` and `spec.md` are both filled in
+the same bootstrap commit, so — same rule as Stage 1's lead time — it reports
+`design_measurable: false`, never a 0-hour design.
+
+Its **post-plan spec churn** IS reported, and is real: three edits at the time of writing
+(`npm run plan:metrics -- --json` shows the current number). `plan.md` diverged from the
+template a day after the bootstrap commit, and `spec.md` was edited three times after
+that — the step 3/4/5 build revising `spec.md` as implementation proceeded. That is
+exactly what this file's own rule above — "when implementation reveals the spec was
+wrong, update `spec.md` in the same pull request" — asks for, so a non-zero number here
+is not automatically a process failure. Read it as the metric doing its job: surfacing
+rework, not judging it.
+
 ## Index
 
 | # | Feature | Stage |
