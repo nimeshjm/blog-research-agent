@@ -85,6 +85,42 @@ export async function claimTopicById(db: D1Database, id: number): Promise<Topic 
   return claimRow(db, row);
 }
 
+/**
+ * Finds or inserts the agent's proposed topic (spec.md req. 2/3;
+ * plan.md step 4's reassignment of the propose-when-empty path), keyed by
+ * an exact title match rather than a DB constraint - `topics` has none, and
+ * adding one is a schema migration out of scope for this PR. This is what
+ * makes a retried `select-topic` step idempotent on this path the same way
+ * `claimRow` makes the queue-draining path idempotent: an earlier attempt's
+ * INSERT is recovered by title, not duplicated, on the assumption (true
+ * within a step's retry window) that the same run's proposal is
+ * deterministic. Inserted directly as `in_progress` rather than `queued`
+ * then claimed - this run is about to use the row immediately, and nothing
+ * else can have raced ahead of it, unlike the shared `queued` state that
+ * `claimOldestQueuedTopic` drains.
+ */
+export async function findOrProposeTopic(
+  db: D1Database,
+  proposal: { title: string; angle: string | null },
+): Promise<Topic> {
+  const existing = await db
+    .prepare(`SELECT ${TOPIC_COLUMNS} FROM topics WHERE title = ? AND origin = 'agent' ORDER BY created_at DESC LIMIT 1`)
+    .bind(proposal.title)
+    .first<TopicRow>();
+  if (existing !== null) return toTopic(existing);
+
+  const inserted = await db
+    .prepare(
+      `INSERT INTO topics (title, angle, status, origin) VALUES (?, ?, 'in_progress', 'agent') RETURNING ${TOPIC_COLUMNS}`,
+    )
+    .bind(proposal.title, proposal.angle)
+    .first<TopicRow>();
+  if (inserted === null) {
+    throw new Error('findOrProposeTopic: INSERT ... RETURNING produced no row');
+  }
+  return toTopic(inserted);
+}
+
 /** Bound parameters per query and queries per invocation, both D1 free-plan limits. */
 export const SEEN_URLS_CHUNK_SIZE = 100;
 export const SEEN_URLS_MAX_QUERIES = 50;

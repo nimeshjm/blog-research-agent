@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createBranch, GithubError, openPullRequest, putFile, readBaseRefSha } from '../src/lib/github';
+import { createBranch, GithubError, listBlogPostSlugs, openPullRequest, putFile, readBaseRefSha } from '../src/lib/github';
 import type { GithubConfig } from '../src/lib/github';
 
 const config: GithubConfig = {
@@ -93,6 +93,44 @@ describe('putFile()', () => {
       message: 'add draft',
       branch: 'research/2026-08-27-x',
     });
+  });
+});
+
+describe('listBlogPostSlugs()', () => {
+  it('lists directory entries under src/content/blog, without a ref (defaults to the default branch)', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      expect(String(input)).toBe('https://api.test.example/repos/nimeshjm/nimeshjm.com/contents/src/content/blog');
+      return jsonResponse(200, [
+        { name: 'agentic-code-review', type: 'dir' },
+        { name: 'ai-observability', type: 'dir' },
+        { name: 'README.md', type: 'file' },
+      ]);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const slugs = await listBlogPostSlugs(config);
+
+    expect(slugs).toEqual(['agentic-code-review', 'ai-observability']);
+  });
+
+  it('never mentions BLOG_BASE_BRANCH or passes a ref query param', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      expect(String(input)).not.toContain('ref=');
+      return jsonResponse(200, []);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await listBlogPostSlugs(config);
+  });
+
+  it('returns an empty list when the directory does not exist (404)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    expect(await listBlogPostSlugs(config)).toEqual([]);
+  });
+
+  it('throws GithubError on any other failure status', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
+    await expect(listBlogPostSlugs(config)).rejects.toThrow(GithubError);
   });
 });
 

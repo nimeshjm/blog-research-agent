@@ -112,6 +112,31 @@ export async function putFile(config: GithubConfig, params: PutFileParams): Prom
   if (!res.ok) throw new GithubError(res.status, 'putFile');
 }
 
+/**
+ * Lists post slugs under `src/content/blog/` at the repo's default branch -
+ * used only for the propose-topic dedupe (spec.md req. 3: a proposal must
+ * not duplicate a `draft: true` post, which is absent from BLOG_FEED_URL).
+ * The directory name *is* the slug (`Draft.slug`, `blogPostPath()` in
+ * mdx.ts), so this needs no per-post file read: spec.md's own measured fact
+ * ("the repo holds 33 posts and the feed 30 - the 3 missing are all
+ * unpublished drafts") means repo slugs minus feed slugs already *is* the
+ * drafted set, without ever reading an `index.mdx`'s frontmatter.
+ *
+ * `ref` is deliberately omitted - GitHub's Contents API defaults to the
+ * repo's default branch when it is - rather than passed `BLOG_BASE_BRANCH`.
+ * That keeps this function, like every other one in this file, out of
+ * `base-branch-not-a-write-target`'s way: it flags any `src/` file that
+ * mentions that identifier *and* contains `refs/heads` or PUTs to
+ * `/contents/`, which this file already does for the write path.
+ */
+export async function listBlogPostSlugs(config: GithubConfig): Promise<string[]> {
+  const res = await githubFetch(config, `/repos/${config.repo}/contents/src/content/blog`);
+  if (res.status === 404) return [];
+  if (!res.ok) throw new GithubError(res.status, 'listBlogPostSlugs');
+  const entries = (await res.json()) as Array<{ name: string; type: string }>;
+  return entries.filter((e) => e.type === 'dir').map((e) => e.name);
+}
+
 export interface OpenPullRequestParams {
   title: string;
   body: string;

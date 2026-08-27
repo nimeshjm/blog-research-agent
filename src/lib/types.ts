@@ -36,6 +36,19 @@ export interface Source {
   feedUrl: string;
 }
 
+/**
+ * One item as parsed from a raw RSS or Atom feed (src/lib/feed.ts), before
+ * the source name is attached and the recency window applied - both of
+ * which `gatherCandidates` (src/workflow.ts) does to turn this into a
+ * `Candidate`.
+ */
+export interface FeedItem {
+  url: string;
+  title: string;
+  /** Raw date text from the feed (RFC 822 `pubDate` or RFC 3339 `published`/`updated`), or null if absent/unparseable. */
+  publishedAt: string | null;
+}
+
 /** A candidate article discovered in a feed, before it has been read. */
 export interface Candidate {
   url: string;

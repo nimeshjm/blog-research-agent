@@ -113,12 +113,12 @@ neuron estimate that is measured rather than assumed.
 `config/feeds.json`, `src/lib/feeds.ts`, `src/lib/d1.ts`, `src/lib/github.ts`,
 `src/lib/mdx.ts`, plus the three step bodies that need no inference and no feed parsing:
 
-- `selectTopic` — oldest `queued` row first; only when the queue is empty does it propose,
-  and a proposal is checked against **both** `BLOG_FEED_URL` and `draft: true` posts in
-  the blog repo (`spec.md` req. 3 — drafts are absent from the feed, so a feed-only check
-  proposes what is already half-written). Idempotent: the `queued` → `in_progress`
-  transition must be safe to replay, so it is conditional on current status rather than a
-  blind `UPDATE`.
+- `selectTopic` — oldest `queued` row first; the `queued` → `in_progress` transition is
+  conditional on current status rather than a blind `UPDATE`, so it is safe to replay. **The
+  propose-when-empty half of this body (spec.md req. 3) moved to step 4**: it needs to read
+  both `BLOG_FEED_URL` and the blog repo's `draft: true` posts, and neither read seam existed
+  yet in this step — `feeds.ts` here is the allowlist *loader* only, and `github.ts` here is
+  scoped to the branch/commit/PR write path, not a repo-content reader.
 - `loadSources` — reads the allowlist through `feeds.ts`.
 - `recordOutcome` — `INSERT … ON CONFLICT(instance_id) DO UPDATE`, keyed on the instance
   id. `spec.md` req. 9 wants exactly one row per run whatever the outcome, and steps
@@ -132,7 +132,12 @@ that writes to another repository.
 
 ### 4. Discovery (`#3`, part 2 of 3)
 
-`src/lib/feed.ts` and two bodies:
+`src/lib/feed.ts`, two bodies, and `selectTopic`'s propose-when-empty path reassigned from
+step 3: it needs `feed.ts` (new here) to read `BLOG_FEED_URL` and a new `listBlogPostSlugs`
+read added to `github.ts` (which now exists, from step 3) to read the blog repo's `draft:
+true` posts — both seams `selectTopic`'s propose path needs are only available starting
+this step. Candidate generation itself is non-inference, per spec.md's "inference happens
+in exactly two places": the newest still-uncovered item from the first allowlisted feed.
 
 - `gatherCandidates` — one fetch, streamed parse, RSS and Atom. The 30-day window is
   applied **here**, per feed, never in `shortlist`. Dated items are filtered by date and

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   claimOldestQueuedTopic,
   claimTopicById,
+  findOrProposeTopic,
   findSeenUrls,
   recordRunOutcome,
   SEEN_URLS_CHUNK_SIZE,
@@ -206,6 +207,45 @@ describe('findSeenUrls()', () => {
   it('throws rather than truncating when the input needs more than 50 chunks', async () => {
     const urls = Array.from({ length: SEEN_URLS_CHUNK_SIZE * 51 }, (_, i) => `https://example.com/x-${i}`);
     await expect(findSeenUrls(env.DB, urls)).rejects.toThrow(/50-query/);
+  });
+});
+
+describe('findOrProposeTopic()', () => {
+  it('inserts a new agent-origin row, already in_progress', async () => {
+    const topic = await findOrProposeTopic(env.DB, { title: 'Proposed title', angle: 'An angle' });
+
+    expect(topic.title).toBe('Proposed title');
+    expect(topic.origin).toBe('agent');
+    expect(topic.status).toBe('in_progress');
+
+    const row = await env.DB.prepare(`SELECT status, origin FROM topics WHERE title = ?`).bind('Proposed title').first<{
+      status: string;
+      origin: string;
+    }>();
+    expect(row?.status).toBe('in_progress');
+    expect(row?.origin).toBe('agent');
+  });
+
+  it('called twice with the same title recovers the same row instead of inserting a second one (idempotent replay)', async () => {
+    const first = await findOrProposeTopic(env.DB, { title: 'Retried proposal', angle: null });
+    const second = await findOrProposeTopic(env.DB, { title: 'Retried proposal', angle: null });
+
+    expect(second.id).toBe(first.id);
+
+    const rows = await env.DB.prepare(`SELECT COUNT(*) as n FROM topics WHERE title = ?`).bind('Retried proposal').first<{
+      n: number;
+    }>();
+    expect(rows?.n).toBe(1);
+  });
+
+  it('a human-origin topic with the same title does not shadow the agent proposal', async () => {
+    await env.DB.prepare(`INSERT INTO topics (title, angle, status, origin) VALUES ('Same title', NULL, 'queued', 'human')`).run();
+
+    const proposed = await findOrProposeTopic(env.DB, { title: 'Same title', angle: null });
+
+    expect(proposed.origin).toBe('agent');
+    const rows = await env.DB.prepare(`SELECT COUNT(*) as n FROM topics WHERE title = 'Same title'`).first<{ n: number }>();
+    expect(rows?.n).toBe(2);
   });
 });
 
