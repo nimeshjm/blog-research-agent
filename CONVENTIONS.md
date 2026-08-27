@@ -93,6 +93,16 @@ intermediate PR's body, never put a closing keyword (`close`/`closes`/`closed`,
 reference, in any casing. Write "is the PR that closes the tracking issue" instead, and
 grep the body before posting it.
 
+`gh stack submit --auto` (the `github/gh-stack` extension) is a reasonable way to push a
+stack and open its PRs, with one thing to know: it has no flag for a PR body. For a
+single-commit branch it seeds the body from the commit message, otherwise from the
+humanised branch name — so **CI starts against a body that has not been written yet**, and
+`pr-body-not-empty` fails on any PR whose commit message does not happen to contain the
+exact marker. Set the real bodies with `gh pr edit <n> --body-file <path>` immediately
+after submitting, then re-run the failed job. `--body-file -` is still forbidden — see
+`CLAUDE.md`'s "Repeated mistakes". Note also that `gh pr merge` does not work on a stack;
+it is `gh stack merge --yes`, which merges bottom-to-top atomically.
+
 `pr-body-not-empty` (`scripts/review-checks.mjs`, documented in `REVIEW.md`) enforces
 this mechanically.
 
