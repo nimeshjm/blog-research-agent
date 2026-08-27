@@ -16,14 +16,18 @@
     "lint:ts": "eslint",
     "lint:ast": "ast-grep scan",
     "test:ast": "ast-grep test",
+    "test": "vitest run",
     "hooks:install": "git config core.hooksPath .githooks"
   },
   "devDependencies": {
     "@ast-grep/cli": "^0.45.2",
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
     "@cloudflare/workers-types": "^5.20260820.1",
+    "@types/node": "^24.13.3",
     "eslint": "^10.9.1",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.68.0",
+    "vitest": "^4.1.11",
     "wrangler": "^4.125.0"
   }
 }

@@ -27,6 +27,14 @@ import {
 /** Default completion length. Shared by the request and the `gen_ai.request.max_tokens` attribute. */
 const DEFAULT_MAX_TOKENS = 2048;
 
+/**
+ * Floor under any caller-supplied `maxTokens`, caller default included.
+ * `@cf/openai/gpt-oss-120b` is a reasoning model: issue #18's probe spent an
+ * entire 32-token budget on reasoning and returned `content: null`. A request
+ * for less than this gets bumped up rather than silently starved.
+ */
+const MIN_MAX_TOKENS = 1024;
+
 export interface Message {
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -42,6 +50,13 @@ export interface CompleteResult {
   /** Token counts as reported by the provider; used for neuron accounting. */
   inputTokens: number;
   outputTokens: number;
+  /**
+   * The provider's own `finish_reason` ('stop', 'length', ...), when the
+   * envelope carried one. `'length'` means the completion was cut off before
+   * the model was done - distinct from a `finish_reason` that is present but
+   * short, which means the model chose to stop.
+   */
+  finishReason: string | undefined;
 }
 
 export interface Llm {
@@ -63,29 +78,51 @@ export function neuronsFor(result: CompleteResult): number {
  * Workers AI returns `{ response, usage }` for text generation, but the exact
  * envelope varies across model families. Normalise defensively rather than
  * indexing into a shape we have not observed in production yet.
+ *
+ * `@cf/openai/gpt-oss-120b` is a reasoning model (#18): its message carries
+ * `reasoning` / `reasoning_content` alongside `content`, and a completion cut
+ * off mid-thought comes back with `content: null` and only reasoning text
+ * populated. Falling back to that text is better than losing the call: the
+ * reasoning trace *is* the model's output when nothing else was produced, and
+ * `complete()` below still throws when there is truly nothing to fall back to.
  */
 function normalise(raw: unknown): CompleteResult {
   const obj = (raw ?? {}) as Record<string, unknown>;
 
   let text = '';
+  let finishReason: string | undefined;
   if (typeof obj.response === 'string') {
     text = obj.response;
   } else if (Array.isArray(obj.choices)) {
-    const first = obj.choices[0] as { message?: { content?: unknown } } | undefined;
-    if (typeof first?.message?.content === 'string') text = first.message.content;
+    const first = obj.choices[0] as
+      | {
+          message?: { content?: unknown; reasoning?: unknown; reasoning_content?: unknown };
+          finish_reason?: unknown;
+        }
+      | undefined;
+    if (typeof first?.finish_reason === 'string') finishReason = first.finish_reason;
+
+    const message = first?.message;
+    if (typeof message?.content === 'string' && message.content !== '') {
+      text = message.content;
+    } else if (typeof message?.reasoning === 'string' && message.reasoning !== '') {
+      text = message.reasoning;
+    } else if (typeof message?.reasoning_content === 'string' && message.reasoning_content !== '') {
+      text = message.reasoning_content;
+    }
   }
 
   const usage = (obj.usage ?? {}) as Record<string, unknown>;
   const inputTokens = typeof usage.prompt_tokens === 'number' ? usage.prompt_tokens : 0;
   const outputTokens = typeof usage.completion_tokens === 'number' ? usage.completion_tokens : 0;
 
-  return { text, inputTokens, outputTokens };
+  return { text, inputTokens, outputTokens, finishReason };
 }
 
 export function createLlm(env: Env): Llm {
   return {
     async complete(req: CompleteRequest): Promise<CompleteResult> {
-      const maxTokens = req.maxTokens ?? DEFAULT_MAX_TOKENS;
+      const maxTokens = Math.max(req.maxTokens ?? DEFAULT_MAX_TOKENS, MIN_MAX_TOKENS);
 
       return traced(
         'chat',
@@ -107,7 +144,17 @@ export function createLlm(env: Env): Llm {
 
           const result = normalise(raw);
           if (result.text === '') {
-            throw new Error(`Empty completion from ${env.LLM_MODEL}`);
+            // 'length' means the token budget ran out before the model produced
+            // anything usable (reasoning included) - a maxTokens problem, not a
+            // provider outage, and not transient: a retried step throws the
+            // same way every time until maxTokens goes up. Anything else with
+            // no text (missing/short-circuited response, content filter, ...)
+            // is a distinct failure and is named as such rather than folded in.
+            const cause =
+              result.finishReason === 'length'
+                ? `truncated at maxTokens=${maxTokens} before producing any content or reasoning text`
+                : `produced no content or reasoning text (finish_reason: ${result.finishReason ?? 'unknown'})`;
+            throw new Error(`Empty completion from ${env.LLM_MODEL}: ${cause}`);
           }
 
           // Result-derived: only known once the call returns, so they are set

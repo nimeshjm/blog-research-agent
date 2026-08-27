@@ -47,6 +47,15 @@ jobs:
         with:
           python-version: '3.14'
       - run: npm run test:plan-metrics
+      # vitest + @cloudflare/vitest-pool-workers, pointed at wrangler.toml for real
+      # bindings - runs fully local under Miniflare. vitest.config.ts strips the
+      # [ai] binding out of the config the pool reads (it forces an authenticated
+      # remote connection unconditionally if declared - see that file), so this
+      # needs no Cloudflare account or secret and stays true to the comment below
+      # about this workflow holding no repository secrets. A test suite not wired
+      # into both CI and the pre-push hook is a test suite that stops running
+      # (plan.md).
+      - run: npm test
       # Validates wrangler.toml and every binding without contacting Cloudflare.
       # Verified to need no credentials, so this workflow holds no repository secrets -
       # only the automatic, read-only-on-fork-PRs github.token above. On a fork PR that

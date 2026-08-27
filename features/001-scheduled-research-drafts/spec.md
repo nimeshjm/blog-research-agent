@@ -294,13 +294,43 @@ Map-reduce rather than one long-context call. The model holds 128k, so this is n
 context workaround: it keeps each step's parse inside 10 ms of CPU, bounds spend per
 article rather than per run, and lets a single failed article retry on its own.
 
-Estimated cost per run at 31,818 neurons/M input and 68,182/M output:
+Estimated cost per run at 31,818 neurons/M input and 68,182/M output. The summary row is
+now **measured**, not assumed: [#18](https://github.com/nimeshjm/blog-research-agent/issues/18)
+found `@cf/openai/gpt-oss-120b` is a reasoning model whose thinking is billed inside
+`completion_tokens` alongside `content`, so the original table (below, historical) assumed
+*produced-text* length rather than the true completion cost. `plan.md` step 2 closed that
+gap with two real `complete()` calls, through `createLlm()` and AI Gateway, at production
+prompt size, deliberately spanning easy and hard: an off-topic legacy-modernization article
+(Martin Fowler's "Patterns of Legacy Displacement," a first-party allowlist feed — the model
+scored it `relevance: 0.2`) and a squarely on-topic one (Anthropic's "How we built our
+multi-agent research system" — `relevance: 0.93`), both summarized with the step-5 map
+prompt's shape. Reasoning tracks task difficulty, not article length, so a single easy
+sample would not have been evidence for the fifteen the pipeline actually runs; both raw
+envelopes are recorded in the body of the pull request that closed #18.
+
+| Article | Input tokens | Output tokens (content + reasoning) | Neurons | `finish_reason` |
+|---|---|---|---|---|
+| Fowler, "Legacy Displacement" (relevance 0.2) | 5,987 | 464 | 223 | `stop` |
+| Anthropic, "Multi-agent research system" (relevance 0.93) | 4,946 | 669 | 203 | `stop` |
+
+The on-topic article produced 44% more completion tokens than the off-topic one — reasoning
+did scale with difficulty, as #18 predicted — but its neuron cost still came in *lower*,
+because its input was shorter and input tokens outweigh the difference at these ratios.
+Both land comfortably inside the `SUMMARY_NEURON_ESTIMATE = 300` the budget gate in
+`src/workflow.ts` already used, so that constant is unchanged. Neither call was truncated.
 
 | Stage | Tokens | Neurons |
 |---|---|---|
-| 15 article summaries | 90k in, 9k out | ~3,500 |
-| 1 synthesis | 12k in, 6k out | ~800 |
-| **Total** | | **~4,300 of 10,000/day** |
+| 15 article summaries | 89.8k in, 7.0k out (× the higher-cost of the two measured articles, 5,987 in / 464 out) | ~3,332 |
+| 1 synthesis | 12k in, 6k out (still assumed — step 5 measures this) | ~800 |
+| **Total** | | **~4,132 of 10,000/day** |
+
+The projection uses the higher-neuron measurement of the two (Fowler, 223/article) rather
+than an average, to stay conservative. Two samples are still not fifteen, but they now
+bracket both ends of the relevance range the grounding gate cares about, and the fact that
+the harder sample cost *less* (shorter input outweighed longer reasoning) is itself evidence
+against "harder article always costs more." The projected total, synthesis estimate
+included, leaves ~1,868 of headroom under `NEURON_BUDGET_PER_RUN` (6,000).
 
 **Growing the allowlist from 13 feeds to 46 does not move this number.** Inference happens
 in exactly two places — `summarizeArticle`, capped at 15 by `shortlist`, and one
@@ -313,7 +343,7 @@ What the extra 34 feeds do move is everything measured in steps, bytes and CPU:
 
 | Per run | 13 feeds (before) | 46 feeds (after) | Headroom |
 |---|---|---|---|
-| Neurons | ~4,300 | ~4,300 | 10,000/day |
+| Neurons | ~4,132 | ~4,132 | 10,000/day |
 | `gather` steps | 13 | 46 | — |
 | Steps total | ~34 | ~67 | 1,024 per instance |
 | Feed bytes fetched | 9.50 MiB | **4.99 MiB** | wall-clock is uncapped |
@@ -402,7 +432,7 @@ research brief; the committed file is the draft.
 | 1,024 steps per instance | 46 feeds + 15 articles + 6 fixed = ~67 steps, 7% of the cap |
 | D1: 100 bound params/query, 50 queries/invocation | The 30-day window in `gather` takes 4,742 raw items to 678 candidates (7 chunked queries, measured); `shortlist`'s 4,000 ceiling bounds the pathological case at 40 |
 | Cron 15 min wall-clock | Cron only creates the instance; steps have no wall-clock cap |
-| 10,000 neurons/day | ~4,300 per run, hard-stopped at `NEURON_BUDGET_PER_RUN` |
+| 10,000 neurons/day | ~4,132 per run (measured, #18), hard-stopped at `NEURON_BUDGET_PER_RUN` |
 | Steps are retried | Every step body must be idempotent (enforced by `REVIEW.md` pass 3) |
 | 5 cron triggers | One used |
 | No paid search | Feeds only |
@@ -425,7 +455,7 @@ research brief; the committed file is the draft.
    exceeds `NEURON_BUDGET_PER_RUN` by no more than the cost of a single article call.
 8. Each run stays inside a single day's free allocation. `*/2` is day-of-month, so the
    31st and the 1st are consecutive; both must still succeed, which they do because the
-   allowance resets daily and one run costs ~4,300 of 10,000.
+   allowance resets daily and one run costs ~4,132 of 10,000 (measured, #18).
 9. Every feed in the allowlist returns 200 and parses. `gather` emits no *dated* item
    published more than 30 days ago, and no more than 20 *undated* items from any one
    feed; it does not truncate a feed's dated items, so a full arXiv day survives intact.
