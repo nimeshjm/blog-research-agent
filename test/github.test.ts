@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createBranch, GithubError, listBlogPostSlugs, openPullRequest, putFile, readBaseRefSha } from '../src/lib/github';
+import { createBranch, GithubError, listBlogPostSlugs, openPullRequest, putFile, readBaseRefSha, readRepoFile } from '../src/lib/github';
 import type { GithubConfig } from '../src/lib/github';
 
 const config: GithubConfig = {
@@ -131,6 +131,34 @@ describe('listBlogPostSlugs()', () => {
   it('throws GithubError on any other failure status', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
     await expect(listBlogPostSlugs(config)).rejects.toThrow(GithubError);
+  });
+});
+
+describe('readRepoFile()', () => {
+  it('decodes base64 content at the default branch, without a ref query param', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      expect(String(input)).toBe('https://api.test.example/repos/nimeshjm/nimeshjm.com/contents/src/content.config.ts');
+      expect(String(input)).not.toContain('ref=');
+      return jsonResponse(200, { content: btoa('export const x = 1'), encoding: 'base64' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(await readRepoFile(config, 'src/content.config.ts')).toBe('export const x = 1');
+  });
+
+  it('returns null on a 404', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    expect(await readRepoFile(config, 'missing.ts')).toBeNull();
+  });
+
+  it('throws GithubError on any other failure status', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
+    await expect(readRepoFile(config, 'x.ts')).rejects.toThrow(GithubError);
+  });
+
+  it('throws on a non-base64 encoding rather than silently misreading it', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, { content: 'raw text', encoding: 'utf-8' })));
+    await expect(readRepoFile(config, 'x.ts')).rejects.toThrow(/encoding/);
   });
 });
 

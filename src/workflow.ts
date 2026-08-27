@@ -1,8 +1,20 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { claimOldestQueuedTopic, claimTopicById, findOrProposeTopic, findSeenUrls, recordRunOutcome } from './lib/d1';
+import { extractArticleText } from './lib/extract';
 import { applyGatherWindow, parseFeed } from './lib/feed';
 import { loadFeeds } from './lib/feeds';
-import { listBlogPostSlugs } from './lib/github';
+import {
+  createBranch,
+  listBlogPostSlugs,
+  openPullRequest as githubOpenPullRequest,
+  putFile,
+  readBaseRefSha,
+  readRepoFile,
+} from './lib/github';
+import type { GithubConfig } from './lib/github';
+import { createLlm, neuronsFor } from './lib/llm';
+import { blogPostPath, renderMdx, validateAgainstContentConfig, validateDraft } from './lib/mdx';
+import { buildMapMessages, buildReduceMessages, parseMapResponse, parseReduceResponse } from './lib/prompts';
 import type { ArticleSummary, Candidate, Draft, Env, FeedItem, ResearchParams, RunOutcome, Source, Topic } from './lib/types';
 import {
   ATTR_NEURONS_BUDGET,
@@ -196,14 +208,46 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
 const MIN_SOURCES = 2;
 const MIN_PRACTICES = 1;
 
-function isGrounded(summaries: ArticleSummary[]): boolean {
+export function isGrounded(summaries: ArticleSummary[]): boolean {
   const practices = summaries.filter((s) => s.attributablePractice !== null);
   return summaries.length >= MIN_SOURCES && practices.length >= MIN_PRACTICES;
 }
 
-/** Conservative per-article and synthesis estimates used for the budget gate. */
+/** Conservative per-article estimate used for the budget gate - see spec.md's cost table (measured, #18). */
 const SUMMARY_NEURON_ESTIMATE = 300;
-const SYNTHESIS_NEURON_RESERVE = 1000;
+/**
+ * Headroom the budget gate reserves for the synthesis call, so it is never
+ * the call `run()` skips (spec.md req. 6). This PR measured a real
+ * synthesis call - through `createLlm()`, the real `buildReduceMessages()`,
+ * 15 production-shaped summaries, `SYNTHESIS_MAX_TOKENS` as the ceiling - at
+ * **222 neurons** (2,576 input / 2,045 output tokens, `finish_reason:
+ * "stop"`, well short of the 8,192-token ceiling; raw envelope in this PR's
+ * body). 500 keeps roughly 2x margin over that single measurement rather
+ * than matching it exactly - one sample, and a harder topic could reason
+ * longer. This replaces the previous, pre-measurement value of 1,000.
+ */
+const SYNTHESIS_NEURON_RESERVE = 500;
+
+/**
+ * `maxTokens` for the map call. Matches what `plan.md` step 2's probe used
+ * (4,096) - the 203/223-neuron measurements in spec.md's cost table were
+ * taken at this ceiling, so raising it materially would need remeasuring.
+ */
+const MAP_MAX_TOKENS = 4096;
+/**
+ * `maxTokens` for the synthesis call. `@cf/openai/gpt-oss-120b` spends
+ * reasoning tokens before content ones (issue #18), and the reduce prompt
+ * asks for a full MDX post body (blog-voice: 1,000-2,800 words, roughly
+ * 1,300-3,700 content tokens) on top of that reasoning - `llm.ts`'s
+ * `DEFAULT_MAX_TOKENS` (2,048) is nowhere near enough and would truncate the
+ * draft body into the model's reasoning trace via `normalise()`'s fallback.
+ * The measured call (see `SYNTHESIS_NEURON_RESERVE`) used 2,045 of this
+ * 8,192 ceiling and returned `finish_reason: "stop"` - comfortable margin,
+ * not a near-miss. `synthesizeDraft` below still treats
+ * `finishReason === 'length'` as a hard failure rather than silently
+ * committing a truncated draft, in case a harder topic ever reaches it.
+ */
+const SYNTHESIS_MAX_TOKENS = 8192;
 
 /**
  * Discovery bounds. They exist because D1 allows 100 bound parameters per query
@@ -244,16 +288,11 @@ export const SHORTLIST_TOP_N = 15;
 export const DUPLICATE_TOKEN_THRESHOLD = 2;
 
 // ---------------------------------------------------------------------------
-// Step bodies. Implemented in feature 001's build stage; see
-// features/001-scheduled-research-drafts/plan.md.
+// Step bodies.
 //
 // Each inference-bearing step returns its neuron cost alongside its result so
 // the caller can enforce NEURON_BUDGET_PER_RUN between steps.
 // ---------------------------------------------------------------------------
-
-function notImplemented(what: string): never {
-  throw new Error(`NotImplemented: ${what}`);
-}
 
 export async function selectTopic(env: Env, topicId: number | undefined): Promise<Topic | null> {
   // A manually-targeted run (event.payload.topicId set) claims that specific
@@ -442,27 +481,175 @@ export async function shortlistCandidates(env: Env, candidates: Candidate[], top
     .map((r) => r.candidate);
 }
 
-async function summarizeArticle(
-  _env: Env,
-  _candidate: Candidate,
-  _topic: Topic,
+/**
+ * One fetch, streamed extraction (`src/lib/extract.ts`), one `Llm` call.
+ * Returns `summary: null` - never throws for anything short of the `Llm`
+ * call itself failing - so one bad article (unfetchable, unextractable, or a
+ * response that doesn't parse as the expected JSON) cannot fail the run
+ * (spec.md risk table). `neurons` is still reported on every path that
+ * actually spent them, so the budget gate in `run()` stays accurate even
+ * when the article was a bust.
+ */
+export async function summarizeArticle(
+  env: Env,
+  candidate: Candidate,
+  topic: Topic,
 ): Promise<{ summary: ArticleSummary | null; neurons: number }> {
-  return notImplemented('summarizeArticle - fetch, extract text, one LLM call, report neurons');
+  let response: Response;
+  try {
+    response = await fetch(candidate.url);
+  } catch {
+    return { summary: null, neurons: 0 };
+  }
+  if (!response.ok) return { summary: null, neurons: 0 };
+
+  const articleText = await extractArticleText(response);
+  if (articleText === '') return { summary: null, neurons: 0 };
+
+  const llm = createLlm(env);
+  const result = await llm.complete({
+    messages: buildMapMessages(topic, candidate, articleText),
+    maxTokens: MAP_MAX_TOKENS,
+  });
+  const neurons = neuronsFor(result);
+
+  // A truncated completion's text (if any survived) is not trustworthy JSON
+  // - skip parsing it rather than risk parseMapResponse accepting a
+  // partial/malformed object by accident.
+  if (result.finishReason === 'length') return { summary: null, neurons };
+
+  const parsed = parseMapResponse(result.text);
+  if (parsed === null) return { summary: null, neurons };
+
+  return {
+    summary: { url: candidate.url, title: candidate.title, ...parsed },
+    neurons,
+  };
 }
 
-async function synthesizeDraft(
-  _env: Env,
-  _topic: Topic,
-  _summaries: ArticleSummary[],
+/** kebab-case, ASCII-only, matching mdx.ts's `SLUG_RE`. Falls back to a topic-id-based slug if a title yields nothing usable. */
+function slugify(title: string, fallbackId: number): string {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80)
+    .replace(/-+$/, '');
+  return slug === '' ? `research-topic-${fallbackId}` : slug;
+}
+
+/**
+ * One `Llm` call producing the draft's model-authored fields (title,
+ * description, tags, body), applying the `blog-voice` rules embedded in
+ * `src/lib/prompts.ts` - including the `<!-- OPENING INCIDENT: needs a real
+ * example -->` marker instruction. Never invents a war story: that
+ * instruction is the single most important rule in the skill, and nothing
+ * here gives the model room to originate one - see prompts.ts's
+ * REDUCE_SYSTEM_PROMPT.
+ *
+ * `slug`, `date`, `authors`, `draft` and the source list are computed here
+ * in TypeScript, never asked of the model: this is also what makes
+ * `openPullRequest`'s branch name deterministic across a retry (see its own
+ * comment) - `date` is fixed once, at the point `synthesizeDraft`'s
+ * `step.do` result is first cached, and never recomputed afterwards.
+ */
+export async function synthesizeDraft(
+  env: Env,
+  topic: Topic,
+  summaries: ArticleSummary[],
 ): Promise<{ draft: Draft; neurons: number }> {
-  return notImplemented('synthesizeDraft - brief + draft, applying the blog-voice skill');
+  const llm = createLlm(env);
+  const result = await llm.complete({
+    messages: buildReduceMessages(topic, summaries),
+    maxTokens: SYNTHESIS_MAX_TOKENS,
+  });
+  const neurons = neuronsFor(result);
+
+  if (result.finishReason === 'length') {
+    throw new Error(`synthesizeDraft: completion truncated at maxTokens=${SYNTHESIS_MAX_TOKENS} before the draft finished`);
+  }
+
+  const parsed = parseReduceResponse(result.text);
+  if (parsed === null) {
+    throw new Error('synthesizeDraft: model response was not valid JSON in the expected shape');
+  }
+
+  const draft: Draft = {
+    slug: slugify(parsed.title, topic.id),
+    title: parsed.title,
+    description: parsed.description,
+    date: new Date().toISOString().slice(0, 10),
+    authors: ['nimeshjm'],
+    tags: parsed.tags,
+    draft: true,
+    brief: renderBrief(topic, summaries),
+    body: parsed.body,
+    sources: summaries.map((s) => s.url),
+  };
+
+  return { draft, neurons };
 }
 
-async function openPullRequest(_env: Env, _draft: Draft): Promise<string> {
-  // Writes src/content/blog/<slug>/index.mdx on a research/* branch. Validate
-  // frontmatter against src/content.config.ts first; never emit an `image` key
-  // (the Astro image() helper needs a real file, so it would break the build).
-  return notImplemented('openPullRequest - validate vs content.config.ts, branch-only');
+/** The pull request body: deterministic, never model-authored, so a source link can never be hallucinated (spec.md req. 7). */
+function renderBrief(topic: Topic, summaries: ArticleSummary[]): string {
+  const lines = [`# Research brief: ${topic.title}`, ''];
+  if (topic.angle !== null) lines.push(`**Angle:** ${topic.angle}`, '');
+  lines.push('## Sources', '');
+  for (const s of summaries) {
+    const practice = s.attributablePractice ?? 'commentary';
+    lines.push(`- [${s.title}](${s.url}) — ${practice}`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Validates frontmatter (statically, then against the blog's live
+ * `content.config.ts`), creates `research/<yyyy-mm-dd>-<slug>`, commits
+ * `src/content/blog/<slug>/index.mdx`, opens the PR with the brief as its
+ * body. Idempotent on retry - see the module-level comment below for the
+ * mechanism-by-mechanism breakdown; every write here delegates to
+ * `src/lib/github.ts`'s own idempotent primitives, none of it reimplemented.
+ *
+ * The agent never pushes to `BLOG_BASE_BRANCH`: `prParams.base` below is the
+ * only read of it, inline inside a `base:` property so
+ * `base-branch-not-a-write-target` can prove that structurally, and it is
+ * only ever passed to `readBaseRefSha` (a GET) and as the PR's `base` field
+ * - never to `createBranch` or `putFile`, which are what could write to it.
+ */
+export async function openPullRequest(env: Env, draft: Draft): Promise<string> {
+  validateDraft(draft);
+
+  const config: GithubConfig = { apiBase: env.GITHUB_API_BASE, token: env.GITHUB_TOKEN, repo: env.BLOG_REPO };
+
+  // Dynamic check against the live schema - spec.md: "the PR step reads it
+  // ... rather than trusting the copy above, so a schema change upstream
+  // surfaces as a failed step instead of a broken build." A missing schema
+  // file is itself surfaced the same way (readRepoFile returns null here
+  // only on 404; any other failure already threw inside it).
+  const schemaSource = await readRepoFile(config, 'src/content.config.ts');
+  if (schemaSource === null) {
+    throw new Error('openPullRequest: src/content.config.ts not found in the blog repo - cannot validate frontmatter');
+  }
+  validateAgainstContentConfig(schemaSource);
+
+  const prParams = {
+    title: draft.title,
+    body: draft.brief,
+    head: `research/${draft.date}-${draft.slug}`,
+    base: env.BLOG_BASE_BRANCH,
+  };
+
+  const baseSha = await readBaseRefSha(config, prParams.base);
+  await createBranch(config, prParams.head, baseSha); // idempotent: 422 (already exists) is success
+
+  await putFile(config, {
+    path: blogPostPath(draft.slug),
+    content: renderMdx(draft),
+    message: `Add research draft: ${draft.title}`,
+    branch: prParams.head,
+  }); // idempotent: reads the file's current sha on that branch first
+
+  return githubOpenPullRequest(config, prParams); // idempotent: reuses an existing open PR for this head
 }
 
 async function recordOutcome(

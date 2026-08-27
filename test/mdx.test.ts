@@ -1,6 +1,50 @@
 import { describe, expect, it } from 'vitest';
-import { blogPostPath, InvalidDraftError, renderMdx, validateDraft } from '../src/lib/mdx';
+import {
+  blogPostPath,
+  ContentConfigMismatchError,
+  InvalidDraftError,
+  parseBlogSchemaFields,
+  renderMdx,
+  validateAgainstContentConfig,
+  validateDraft,
+} from '../src/lib/mdx';
 import type { Draft } from '../src/lib/types';
+
+/**
+ * A trimmed copy of the real `src/content.config.ts` fetched from
+ * nimeshjm/nimeshjm.com while writing this PR (see the PR body for the
+ * fetch). Carries a second `defineCollection` after `blog` on purpose, to
+ * prove the paren-matching in `parseBlogSchemaFields` stops at `blog`'s own
+ * closing paren rather than reading into `authors`'s fields.
+ */
+const REAL_CONTENT_CONFIG = `import { glob } from 'astro/loaders'
+import { defineCollection, z } from 'astro:content'
+
+const blog = defineCollection({
+  loader: glob({ pattern: '**/*.{md,mdx}', base: './src/content/blog' }),
+  schema: ({ image }) =>
+    z.object({
+      title: z.string(),
+      description: z.string(),
+      date: z.coerce.date(),
+      order: z.number().optional(),
+      image: image().optional(),
+      tags: z.array(z.string()).optional(),
+      authors: z.array(z.string()).optional(),
+      draft: z.boolean().optional(),
+    }),
+})
+
+const authors = defineCollection({
+  loader: glob({ pattern: '**/*.{md,mdx}', base: './src/content/authors' }),
+  schema: z.object({
+    name: z.string(),
+    bio: z.string().optional(),
+  }),
+})
+
+export const collections = { blog, authors }
+`;
 
 function draft(overrides: Partial<Draft> = {}): Draft {
   return {
@@ -68,5 +112,60 @@ describe('blogPostPath()', () => {
     expect(blogPostPath('agentic-code-review-practices')).toBe(
       'src/content/blog/agentic-code-review-practices/index.mdx',
     );
+  });
+});
+
+describe('parseBlogSchemaFields()', () => {
+  it('extracts required vs optional fields from the real blog collection schema, not authors', () => {
+    const fields = parseBlogSchemaFields(REAL_CONTENT_CONFIG);
+    const byName = new Map(fields.map((f) => [f.name, f.required]));
+
+    expect(byName.get('title')).toBe(true);
+    expect(byName.get('description')).toBe(true);
+    expect(byName.get('date')).toBe(true);
+    expect(byName.get('order')).toBe(false);
+    expect(byName.get('image')).toBe(false);
+    expect(byName.get('tags')).toBe(false);
+    expect(byName.get('authors')).toBe(false);
+    expect(byName.get('draft')).toBe(false);
+    // authors collection's `name`/`bio` must not leak in - proves the
+    // paren-matcher stopped at blog's own closing paren.
+    expect(byName.has('name')).toBe(false);
+    expect(byName.has('bio')).toBe(false);
+  });
+
+  it('throws when no `blog` collection is found', () => {
+    expect(() => parseBlogSchemaFields('export const collections = {}')).toThrow(ContentConfigMismatchError);
+  });
+});
+
+describe('validateAgainstContentConfig()', () => {
+  it('accepts the real, current schema (title/description/date required, everything renderMdx emits covers it)', () => {
+    expect(() => validateAgainstContentConfig(REAL_CONTENT_CONFIG)).not.toThrow();
+  });
+
+  it('throws when `image` becomes required upstream - renderMdx deliberately never emits it', () => {
+    const mutated = REAL_CONTENT_CONFIG.replace('image: image().optional(),', 'image: image(),');
+    expect(() => validateAgainstContentConfig(mutated)).toThrow(ContentConfigMismatchError);
+    expect(() => validateAgainstContentConfig(mutated)).toThrow(/image/);
+  });
+
+  it('throws when a new required field appears that renderMdx does not emit', () => {
+    const mutated = REAL_CONTENT_CONFIG.replace(
+      'title: z.string(),',
+      'title: z.string(),\n      subtitle: z.string(),',
+    );
+    expect(() => validateAgainstContentConfig(mutated)).toThrow(ContentConfigMismatchError);
+    expect(() => validateAgainstContentConfig(mutated)).toThrow(/subtitle/);
+  });
+
+  it('does not throw when a currently-optional field becomes required if renderMdx already emits it', () => {
+    // authors is optional today but renderMdx always emits it - tightening
+    // it to required upstream is not a break for this pipeline.
+    const mutated = REAL_CONTENT_CONFIG.replace(
+      'authors: z.array(z.string()).optional(),',
+      'authors: z.array(z.string()),',
+    );
+    expect(() => validateAgainstContentConfig(mutated)).not.toThrow();
   });
 });

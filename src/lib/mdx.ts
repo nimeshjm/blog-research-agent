@@ -84,3 +84,117 @@ export function renderMdx(draft: Draft): string {
 export function blogPostPath(slug: string): string {
   return `src/content/blog/${slug}/index.mdx`;
 }
+
+// ---------------------------------------------------------------------------
+// Dynamic validation against the blog's real src/content.config.ts.
+//
+// `renderMdx`/`validateDraft` above check the *static* shape every `Draft`
+// must satisfy regardless of what the schema currently says. This section
+// checks the shape actually declared in the live file (openPullRequest reads
+// it via `readRepoFile`, per spec.md: "the PR step reads it ... rather than
+// trusting the copy above, so a schema change upstream surfaces as a failed
+// step instead of a broken build").
+// ---------------------------------------------------------------------------
+
+export class ContentConfigMismatchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ContentConfigMismatchError';
+  }
+}
+
+/** Finds the index just past the `)` matching the `(` at `openParenIndex`, ignoring quoted strings. */
+function matchingParenEnd(text: string, openParenIndex: number): number | null {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = openParenIndex; i < text.length; i++) {
+    const ch = text[i];
+    if (quote !== null) {
+      if (ch === '\\') i++; // skip an escaped char inside the string
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+    } else if (ch === '(') {
+      depth++;
+    } else if (ch === ')') {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return null;
+}
+
+/**
+ * Extracts `{ name, required }` for each top-level field of the `blog`
+ * collection's zod schema in a `content.config.ts` source. A light regex
+ * scan, not a TS/zod parser - proportionate to the one thing this exists to
+ * catch: a field that became required and that `renderMdx` does not emit,
+ * or `image` no longer being optional. Throws if the `blog` collection or
+ * its `z.object(` call cannot be found at all, rather than silently
+ * validating nothing.
+ */
+export function parseBlogSchemaFields(contentConfigSource: string): Array<{ name: string; required: boolean }> {
+  const blogStart = /const\s+blog\s*=\s*defineCollection\(/.exec(contentConfigSource);
+  if (blogStart === null) {
+    throw new ContentConfigMismatchError('parseBlogSchemaFields: no `const blog = defineCollection(` found');
+  }
+  const openParen = blogStart.index + (blogStart[0] ?? '').length - 1;
+  const blockEnd = matchingParenEnd(contentConfigSource, openParen);
+  if (blockEnd === null) {
+    throw new ContentConfigMismatchError('parseBlogSchemaFields: unbalanced parens in `blog` collection block');
+  }
+  const block = contentConfigSource.slice(openParen, blockEnd);
+
+  const objectStart = /z\.object\(/.exec(block);
+  if (objectStart === null) {
+    throw new ContentConfigMismatchError('parseBlogSchemaFields: no `z.object(` found in the `blog` collection');
+  }
+  const objectOpenParen = objectStart.index + (objectStart[0] ?? '').length - 1;
+  const objectEnd = matchingParenEnd(block, objectOpenParen);
+  if (objectEnd === null) {
+    throw new ContentConfigMismatchError('parseBlogSchemaFields: unbalanced parens in `z.object(...)`');
+  }
+  const schemaBlock = block.slice(objectOpenParen, objectEnd);
+
+  const fields: Array<{ name: string; required: boolean }> = [];
+  const fieldRe = /^\s*(\w+):\s*(.+?),?\s*$/gm;
+  for (const m of schemaBlock.matchAll(fieldRe)) {
+    const name = m[1];
+    const valueExpr = m[2];
+    if (name === undefined || valueExpr === undefined) continue;
+    fields.push({ name, required: !valueExpr.includes('.optional()') });
+  }
+  return fields;
+}
+
+/** Field names `renderMdx` actually emits (see the frontmatter list above) - never `image`, never `order`. */
+const EMITTED_FIELDS = new Set(['title', 'description', 'date', 'authors', 'tags', 'draft']);
+
+/**
+ * Validates `draft`'s shape against the live schema fields (see
+ * `parseBlogSchemaFields`). Two failure modes, both meaning the same thing -
+ * the schema changed upstream in a way this pipeline's fixed frontmatter
+ * shape no longer satisfies:
+ *
+ *  1. A field is now required that `renderMdx` never emits.
+ *  2. `image` is now required - `renderMdx` deliberately omits it always
+ *     (the Astro `image()` helper needs a real committed file).
+ */
+export function validateAgainstContentConfig(contentConfigSource: string): void {
+  const fields = parseBlogSchemaFields(contentConfigSource);
+  for (const field of fields) {
+    if (!field.required) continue;
+    if (field.name === 'image') {
+      throw new ContentConfigMismatchError(
+        "content.config.ts now requires 'image' - renderMdx deliberately omits it (blog-voice SKILL.md)",
+      );
+    }
+    if (!EMITTED_FIELDS.has(field.name)) {
+      throw new ContentConfigMismatchError(
+        `content.config.ts requires '${field.name}', which renderMdx never emits - the schema has changed upstream`,
+      );
+    }
+  }
+}

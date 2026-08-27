@@ -51,6 +51,11 @@ function base64Encode(text: string): string {
   return btoa(unescape(encodeURIComponent(text)));
 }
 
+function base64Decode(encoded: string): string {
+  // GitHub's Contents API wraps base64 content at 60 columns.
+  return decodeURIComponent(escape(atob(encoded.replace(/\n/g, ''))));
+}
+
 /** Reads the tip commit SHA of `baseBranch` - a plain string, supplied by the caller. */
 export async function readBaseRefSha(config: GithubConfig, baseBranch: string): Promise<string> {
   const res = await githubFetch(config, `/repos/${config.repo}/git/ref/heads/${encodeURIComponent(baseBranch)}`);
@@ -135,6 +140,30 @@ export async function listBlogPostSlugs(config: GithubConfig): Promise<string[]>
   if (!res.ok) throw new GithubError(res.status, 'listBlogPostSlugs');
   const entries = (await res.json()) as Array<{ name: string; type: string }>;
   return entries.filter((e) => e.type === 'dir').map((e) => e.name);
+}
+
+/**
+ * Reads a text file's raw content at the repo's default branch - used only
+ * for the dynamic `content.config.ts` schema check (`openPullRequest` in
+ * `src/workflow.ts`: spec.md -> "Target repo and post format" wants the
+ * live schema read, not the copy transcribed into spec.md). `ref` is
+ * deliberately omitted, the same choice `listBlogPostSlugs` makes and for
+ * the same reason: this is a read, and omitting it keeps this file out of
+ * `base-branch-not-a-write-target`'s way rather than passing
+ * `BLOG_BASE_BRANCH` through a second read path.
+ *
+ * Returns `null` on a 404 (file moved or renamed) rather than throwing -
+ * the caller decides whether a missing schema file is fatal.
+ */
+export async function readRepoFile(config: GithubConfig, path: string): Promise<string | null> {
+  const res = await githubFetch(config, `/repos/${config.repo}/contents/${path}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new GithubError(res.status, 'readRepoFile');
+  const body = (await res.json()) as { content: string; encoding: string };
+  if (body.encoding !== 'base64') {
+    throw new Error(`readRepoFile: unexpected encoding '${body.encoding}' for ${path}`);
+  }
+  return base64Decode(body.content);
 }
 
 export interface OpenPullRequestParams {

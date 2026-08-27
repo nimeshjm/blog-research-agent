@@ -3,16 +3,21 @@ import migrationSql from '../migrations/0001_init.sql?raw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SEEN_URLS_CHUNK_SIZE } from '../src/lib/d1';
 import { loadFeeds } from '../src/lib/feeds';
-import type { Candidate, Env, Topic } from '../src/lib/types';
+import { InvalidDraftError } from '../src/lib/mdx';
+import type { ArticleSummary, Candidate, Draft, Env, Topic } from '../src/lib/types';
 import {
   DUPLICATE_TOKEN_THRESHOLD,
   gatherCandidates,
   GATHER_UNDATED_MAX_PER_FEED,
+  isGrounded,
+  openPullRequest,
   proposeTopic,
   selectTopic,
   SHORTLIST_MAX_CANDIDATES,
   SHORTLIST_TOP_N,
   shortlistCandidates,
+  summarizeArticle,
+  synthesizeDraft,
 } from '../src/workflow';
 
 const rawEnv = testEnv as unknown as Env;
@@ -355,5 +360,348 @@ describe('proposeTopic()', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
     const result = await proposeTopic(env);
     expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// summarizeArticle() / synthesizeDraft() / isGrounded() / openPullRequest()
+// ---------------------------------------------------------------------------
+
+/**
+ * `env.AI` with a stub `run` - the same approach `test/llm.test.ts` uses.
+ * `[ai]` is stripped from the pool's wrangler config (see vitest.config.ts's
+ * comment), so `env.AI` is otherwise undefined; `createLlm()` never calls
+ * `env.AI.run` outside `src/lib/llm.ts`, so stubbing it here still leaves
+ * `ai-run-only-in-llm` meaning something.
+ */
+function envWithAi(fixture: unknown): Env {
+  return {
+    ...env,
+    AI: { run: async () => fixture } as unknown as Env['AI'],
+  };
+}
+
+function chatFixture(content: string, finishReason = 'stop'): unknown {
+  return {
+    choices: [{ message: { content }, finish_reason: finishReason }],
+    usage: { prompt_tokens: 100, completion_tokens: 50 },
+  };
+}
+
+function articleResponse(bodyHtml: string): Response {
+  return new Response(`<html><body>${bodyHtml}</body></html>`, { headers: { 'content-type': 'text/html' } });
+}
+
+/** Trimmed copy of the real src/content.config.ts - see test/mdx.test.ts's copy for provenance. */
+const REAL_CONTENT_CONFIG = `const blog = defineCollection({
+  loader: glob({ pattern: '**/*.{md,mdx}', base: './src/content/blog' }),
+  schema: ({ image }) =>
+    z.object({
+      title: z.string(),
+      description: z.string(),
+      date: z.coerce.date(),
+      order: z.number().optional(),
+      image: image().optional(),
+      tags: z.array(z.string()).optional(),
+      authors: z.array(z.string()).optional(),
+      draft: z.boolean().optional(),
+    }),
+})`;
+
+function summary(overrides: Partial<ArticleSummary> = {}): ArticleSummary {
+  return {
+    url: 'https://example.com/a',
+    title: 'Article A',
+    summary: 'A summary.',
+    relevance: 0.8,
+    claims: ['claim one'],
+    attributablePractice: 'Some practice',
+    ...overrides,
+  };
+}
+
+describe('summarizeArticle()', () => {
+  it('fetches, extracts, and parses a well-formed map response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => articleResponse('<p>Real article prose about agentic code review.</p>')),
+    );
+    const aiEnv = envWithAi(
+      chatFixture(JSON.stringify({ summary: 'It works.', relevance: 0.7, claims: ['c1'], attributablePractice: 'Practice X' })),
+    );
+
+    const result = await summarizeArticle(aiEnv, candidate({ url: 'https://example.com/a', title: 'Article A' }), topic());
+
+    expect(result.summary).toEqual({
+      url: 'https://example.com/a',
+      title: 'Article A',
+      summary: 'It works.',
+      relevance: 0.7,
+      claims: ['c1'],
+      attributablePractice: 'Practice X',
+    });
+    expect(result.neurons).toBeGreaterThan(0);
+  });
+
+  it('returns summary: null without failing when the article cannot be fetched', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('network down');
+      }),
+    );
+    const result = await summarizeArticle(envWithAi(chatFixture('{}')), candidate(), topic());
+    expect(result).toEqual({ summary: null, neurons: 0 });
+  });
+
+  it('returns summary: null without failing on a non-2xx fetch', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 404 })));
+    const result = await summarizeArticle(envWithAi(chatFixture('{}')), candidate(), topic());
+    expect(result).toEqual({ summary: null, neurons: 0 });
+  });
+
+  it('returns summary: null without failing when the article body extracts to nothing', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => articleResponse('<script>only script content</script>')));
+    const result = await summarizeArticle(envWithAi(chatFixture('{}')), candidate(), topic());
+    expect(result).toEqual({ summary: null, neurons: 0 });
+  });
+
+  it('returns summary: null (but still reports spent neurons) when the model response is not parseable JSON', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => articleResponse('<p>Article prose.</p>')));
+    const aiEnv = envWithAi(chatFixture('I think the article is about... (reasoning-fallback prose, not JSON)'));
+
+    const result = await summarizeArticle(aiEnv, candidate(), topic());
+
+    expect(result.summary).toBeNull();
+    expect(result.neurons).toBeGreaterThan(0);
+  });
+
+  it('returns summary: null when the completion was truncated (finish_reason: length)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => articleResponse('<p>Article prose.</p>')));
+    const aiEnv = envWithAi(chatFixture('{"summary": "cut off h', 'length'));
+
+    const result = await summarizeArticle(aiEnv, candidate(), topic());
+    expect(result.summary).toBeNull();
+  });
+});
+
+describe('synthesizeDraft()', () => {
+  const summaries = [summary({ url: 'https://example.com/a' }), summary({ url: 'https://example.com/b', title: 'Article B' })];
+
+  it('builds a Draft from a well-formed reduce response, computing slug/date/authors/draft itself', async () => {
+    const aiEnv = envWithAi(
+      chatFixture(
+        JSON.stringify({
+          title: 'Why Agentic Review Catches More Bugs',
+          description: 'A tension worth stating.',
+          tags: ['ai', 'engineering-leadership'],
+          body: '## The practice\n\nSome prose citing [Article A](https://example.com/a).',
+        }),
+      ),
+    );
+
+    const { draft, neurons } = await synthesizeDraft(aiEnv, topic(), summaries);
+
+    expect(draft.slug).toBe('why-agentic-review-catches-more-bugs');
+    expect(draft.title).toBe('Why Agentic Review Catches More Bugs');
+    expect(draft.description).toBe('A tension worth stating.');
+    expect(draft.tags).toEqual(['ai', 'engineering-leadership']);
+    expect(draft.body).toContain('Some prose citing');
+    expect(draft.draft).toBe(true);
+    expect(draft.authors).toEqual(['nimeshjm']);
+    expect(draft.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(draft.sources).toEqual(['https://example.com/a', 'https://example.com/b']);
+    expect(neurons).toBeGreaterThan(0);
+  });
+
+  it('the brief links every source, never trusting the model to compose the source list', async () => {
+    const aiEnv = envWithAi(
+      chatFixture(JSON.stringify({ title: 'A Title', description: 'd', tags: [], body: 'body' })),
+    );
+
+    const { draft } = await synthesizeDraft(aiEnv, topic(), summaries);
+
+    expect(draft.brief).toContain('https://example.com/a');
+    expect(draft.brief).toContain('https://example.com/b');
+    expect(draft.brief).toContain('Article A');
+    expect(draft.brief).toContain('Article B');
+  });
+
+  it('falls back to a topic-id slug when the title has no usable characters', async () => {
+    const aiEnv = envWithAi(chatFixture(JSON.stringify({ title: '!!!', description: 'd', tags: [], body: 'b' })));
+    const { draft } = await synthesizeDraft(aiEnv, topic({ id: 42 }), summaries);
+    expect(draft.slug).toBe('research-topic-42');
+  });
+
+  it('throws when the completion was truncated (finish_reason: length) rather than committing a truncated draft', async () => {
+    const aiEnv = envWithAi(chatFixture('{"title": "cut off h', 'length'));
+    await expect(synthesizeDraft(aiEnv, topic(), summaries)).rejects.toThrow(/truncat/i);
+  });
+
+  it('throws when the model response is not valid JSON in the expected shape', async () => {
+    const aiEnv = envWithAi(chatFixture('not json at all'));
+    await expect(synthesizeDraft(aiEnv, topic(), summaries)).rejects.toThrow();
+  });
+});
+
+describe('isGrounded()', () => {
+  it('requires at least MIN_SOURCES summaries with at least one attributable practice', () => {
+    expect(isGrounded([summary({ attributablePractice: 'X' }), summary({ attributablePractice: null })])).toBe(true);
+  });
+
+  it('rejects a single source even if it carries an attributable practice (spec.md criterion 6)', () => {
+    expect(isGrounded([summary({ attributablePractice: 'X' })])).toBe(false);
+  });
+
+  it('rejects two or more sources when none carries an attributable practice', () => {
+    expect(isGrounded([summary({ attributablePractice: null }), summary({ attributablePractice: null })])).toBe(false);
+  });
+});
+
+describe('openPullRequest()', () => {
+  /**
+   * A stateful fake of the whole GitHub surface `openPullRequest` touches -
+   * `test/github.test.ts` already proves each primitive (`createBranch`,
+   * `putFile`, `openPullRequest`) in isolation; this proves the
+   * *composition* stays idempotent end to end, per plan.md's step-5
+   * verification row: "openPullRequest run twice against a fixture produces
+   * one PR."
+   */
+  function fakeGithub(schemaSource: string) {
+    const repo = env.BLOG_REPO;
+    const branches = new Set<string>();
+    const files = new Map<string, { content: string; sha: string }>();
+    let openPrUrl: string | null = null;
+    let prPostCount = 0;
+    let branchPostCount = 0;
+    let fileShaCounter = 0;
+    const putBranches: string[] = [];
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? 'GET';
+      const path = url.pathname;
+      const contentsPrefix = `/repos/${repo}/contents/`;
+
+      if (path === `${contentsPrefix}src/content.config.ts` && method === 'GET') {
+        return jsonResponse(200, { content: btoa(schemaSource), encoding: 'base64' });
+      }
+      if (path === `/repos/${repo}/git/ref/heads/main` && method === 'GET') {
+        return jsonResponse(200, { object: { sha: 'base-sha' } });
+      }
+      if (path === `/repos/${repo}/git/refs` && method === 'POST') {
+        branchPostCount++;
+        const body = JSON.parse(String(init?.body)) as { ref: string };
+        const branch = body.ref.replace('refs/heads/', '');
+        if (branches.has(branch)) return new Response('exists', { status: 422 });
+        branches.add(branch);
+        return jsonResponse(201, {});
+      }
+      if (path.startsWith(contentsPrefix) && path !== `${contentsPrefix}src/content.config.ts` && method === 'GET') {
+        const filePath = path.slice(contentsPrefix.length);
+        const branch = url.searchParams.get('ref') ?? '';
+        const existing = files.get(`${branch}:${filePath}`);
+        if (existing === undefined) return new Response('not found', { status: 404 });
+        return jsonResponse(200, { sha: existing.sha });
+      }
+      if (path.startsWith(contentsPrefix) && method === 'PUT') {
+        const filePath = path.slice(contentsPrefix.length);
+        const body = JSON.parse(String(init?.body)) as { content: string; branch: string };
+        fileShaCounter++;
+        putBranches.push(body.branch);
+        files.set(`${body.branch}:${filePath}`, { content: body.content, sha: `sha-${fileShaCounter}` });
+        return jsonResponse(200, {});
+      }
+      if (path === `/repos/${repo}/pulls` && method === 'GET') {
+        return jsonResponse(200, openPrUrl === null ? [] : [{ html_url: openPrUrl }]);
+      }
+      if (path === `/repos/${repo}/pulls` && method === 'POST') {
+        prPostCount++;
+        openPrUrl = `https://github.com/${repo}/pull/1`;
+        return jsonResponse(201, { html_url: openPrUrl });
+      }
+      throw new Error(`fakeGithub: unhandled ${method} ${path}`);
+    });
+
+    return {
+      fetchMock,
+      branches,
+      files,
+      putBranches,
+      prPostCount: () => prPostCount,
+      branchPostCount: () => branchPostCount,
+    };
+  }
+
+  function draft(overrides: Partial<Draft> = {}): Draft {
+    return {
+      slug: 'agentic-code-review',
+      title: 'Why agentic code review catches more bugs',
+      description: 'A tension worth stating.',
+      date: '2026-08-27',
+      authors: ['nimeshjm'],
+      tags: ['ai'],
+      draft: true,
+      brief: '# Research brief\n\n- [Article A](https://example.com/a)',
+      body: '## Heading\n\nProse.',
+      sources: ['https://example.com/a'],
+      ...overrides,
+    };
+  }
+
+  it('run twice against the same draft produces exactly one PR, one branch, one file version', async () => {
+    const fake = fakeGithub(REAL_CONTENT_CONFIG);
+    vi.stubGlobal('fetch', fake.fetchMock);
+
+    const d = draft();
+    const url1 = await openPullRequest(env, d);
+    const url2 = await openPullRequest(env, d);
+
+    expect(url1).toBe(url2);
+    expect(fake.prPostCount()).toBe(1); // mechanism: existing-open-PR-by-head reuse (github.ts's findOpenPullRequest)
+    expect(fake.branchPostCount()).toBe(2); // both attempts POST; the second's 422 is treated as success (mechanism: existing-branch reuse)
+    expect(fake.branches.size).toBe(1);
+    expect(fake.putBranches).toEqual(['research/2026-08-27-agentic-code-review', 'research/2026-08-27-agentic-code-review']); // mechanism: existing-file-sha reuse on the retry PUT
+  });
+
+  it('never writes to BLOG_BASE_BRANCH - only ever reads its ref, and only research/* branches receive commits', async () => {
+    const fake = fakeGithub(REAL_CONTENT_CONFIG);
+    vi.stubGlobal('fetch', fake.fetchMock);
+
+    await openPullRequest(env, draft());
+
+    expect(fake.branches.has(env.BLOG_BASE_BRANCH)).toBe(false);
+    for (const b of fake.putBranches) expect(b).not.toBe(env.BLOG_BASE_BRANCH);
+  });
+
+  it('the committed frontmatter carries draft: true and no image key', async () => {
+    const fake = fakeGithub(REAL_CONTENT_CONFIG);
+    vi.stubGlobal('fetch', fake.fetchMock);
+
+    await openPullRequest(env, draft());
+
+    const [key] = [...fake.files.keys()];
+    const content = key !== undefined ? fake.files.get(key)?.content : undefined;
+    const decoded = content !== undefined ? atob(content) : '';
+    expect(decoded).toMatch(/^draft: true$/m);
+    expect(decoded).not.toMatch(/^image:/m);
+  });
+
+  it('rejects a statically-invalid draft before making any GitHub call', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(openPullRequest(env, draft({ slug: 'has a space' }))).rejects.toThrow(InvalidDraftError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('throws, and opens no PR, when the live schema now requires a field renderMdx does not emit', async () => {
+    const mutatedSchema = REAL_CONTENT_CONFIG.replace('image: image().optional(),', 'image: image(),');
+    const fake = fakeGithub(mutatedSchema);
+    vi.stubGlobal('fetch', fake.fetchMock);
+
+    await expect(openPullRequest(env, draft())).rejects.toThrow(/image/);
+    expect(fake.prPostCount()).toBe(0);
+    expect(fake.branches.size).toBe(0);
   });
 });
