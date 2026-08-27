@@ -343,6 +343,22 @@ The call finished with `finish_reason: "stop"` at 2,045 of the 8,192-token
 1,000 down to 500, roughly 2x the single measurement rather than matching it exactly. The
 raw envelope is recorded in this PR's body.
 
+**Treat 222 as a floor, not the expected figure.** Only 2 of the probe's 15
+`ArticleSummary` fixtures were real map-step output copied verbatim (Fowler and Anthropic,
+from #18's probes); those two carry 1,260 and 1,211 characters of `summary` + `claims`,
+while the 13 synthetic ones average 328. A shortlist of fifteen summaries all sized like
+the two real ones would carry roughly 18.5k characters of summary text rather than the
+6.7k the probe sent, putting the reduce prompt near 24k characters — about 1.9x the
+measured 12,590 — and so near 4,990 input tokens rather than 2,576. Holding the measured
+output length, that projects to roughly **300 neurons**, still inside the 500 reserve and
+moving the per-run total to ~3,645 of 6,000. The next real run settles it; nobody should
+build on 222 as though it were the ceiling.
+
+Note also that `SYNTHESIS_NEURON_RESERVE` moving 1,000 → 500 is a *loosening* of a safety
+margin on the strength of one sample. It is defensible at these margins — the projection
+above still fits twice over — but it is the one number in this table a reviewer should
+push back on if they disagree, rather than a purely additive measurement.
+
 The measured total, ~3,567 of `NEURON_BUDGET_PER_RUN` (6,000), leaves ~2,433 of headroom —
 more than the earlier, pre-measurement projection, because both the summary estimate (used
 conservatively, at the higher of two real measurements) and now the synthesis figure
