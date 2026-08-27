@@ -110,6 +110,9 @@ open pull request → record run.
   export is the Worker entrypoint required by the runtime.
 - Secrets go in `wrangler secret put`, never `wrangler.toml` and never `.dev.vars` in git.
 - The agent writes to branches only. It must never push to `BLOG_BASE_BRANCH`.
+- Comment sparingly. Explain *why* where the reason is not on the page — a platform limit,
+  a non-obvious ordering, a workaround. Never restate what the code already says, and do
+  not narrate a function step by step. Names and types carry the rest.
 
 ## SDLC artifacts
 
