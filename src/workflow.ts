@@ -1,12 +1,15 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import {
+  attachRunTopic,
   claimOldestQueuedTopic,
   claimTopicById,
   findOrProposeTopic,
   findSeenUrls,
   pruneRunCandidates,
   readRunCandidates,
+  reclaimStaleTopics,
   recordRunOutcome,
+  startRun,
   writeRunCandidates,
 } from './lib/d1';
 import { extractArticleText } from './lib/extract';
@@ -63,11 +66,18 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
     // persisted step results, so it must never be mutated outside a step result.
     let neuronsSpent = 0;
 
+    // 0. Written before anything that can fail, so a run that dies in
+    // select-topic (or later) still leaves a runs row (spec.md req. 10). It
+    // has to be its own step, ahead of select-topic, rather than folded into
+    // it: select-topic is already a step that can fail, and the row must
+    // exist before that can happen, not conditional on it succeeding.
+    await traceStep('start-run', {}, async () => startRun(this.env.DB, event.instanceId));
+
     // 1. Queue first; the agent proposes a topic only when the queue is empty.
     // `agent.topic.id` is only known once the call returns, so it is set on
     // the span handed to the body rather than passed in as an attr.
     const topic = await traceStep('select-topic', {}, async (span) => {
-      const result = await selectTopic(this.env, event.payload.topicId);
+      const result = await selectTopic(this.env, event.instanceId, event.payload.topicId);
       if (result !== null) span.setAttribute(ATTR_TOPIC_ID, result.id);
       return result;
     });
@@ -293,6 +303,14 @@ export const GATHER_UNDATED_MAX_PER_FEED = 20;
  * so no terminal path needs its own step.
  */
 export const RUN_CANDIDATE_RETENTION_DAYS = 7;
+/**
+ * How long a claim survives its claimant (spec.md req. 9, which asks for the
+ * margin to be stated rather than implied). Six hours against a run bounded
+ * by 46 gather steps plus 15 article steps plus inference - minutes, not
+ * hours - and a 48-hour cron gap: too long to race a live run, too short to
+ * strand a topic across a cycle.
+ */
+export const TOPIC_CLAIM_TTL_HOURS = 6;
 /** Newest-first ceiling: 40 of D1's 50 queries, ten spare. */
 export const SHORTLIST_MAX_CANDIDATES = 4000;
 /**
@@ -320,15 +338,30 @@ export const DUPLICATE_TOKEN_THRESHOLD = 2;
 // the caller can enforce NEURON_BUDGET_PER_RUN between steps.
 // ---------------------------------------------------------------------------
 
-export async function selectTopic(env: Env, topicId: number | undefined): Promise<Topic | null> {
+export async function selectTopic(env: Env, instanceId: string, topicId: number | undefined): Promise<Topic | null> {
   // A manually-targeted run (event.payload.topicId set) claims that specific
   // row rather than draining the queue - see ResearchParams in lib/types.ts.
+  // This is already the manual recovery spec.md req. 8 describes (claimRow
+  // recovers an in_progress row for a run that names it), so it does not
+  // also reclaim - a hand-triggered run reclaiming *other* runs' stranded
+  // topics would widen its blast radius for no gain.
   if (topicId !== undefined) {
-    return claimTopicById(env.DB, topicId);
+    const named = await claimTopicById(env.DB, topicId);
+    if (named !== null) await attachRunTopic(env.DB, instanceId, named.id);
+    return named;
   }
 
+  // Scheduled path only: a topic left in_progress past TOPIC_CLAIM_TTL_HOURS
+  // is unattended by definition (spec.md req. 8), so reclaiming here, before
+  // draining the queue, is what makes it selectable again without a human
+  // passing its id.
+  await reclaimStaleTopics(env.DB, TOPIC_CLAIM_TTL_HOURS);
+
   const queued = await claimOldestQueuedTopic(env.DB);
-  if (queued !== null) return queued;
+  if (queued !== null) {
+    await attachRunTopic(env.DB, instanceId, queued.id);
+    return queued;
+  }
 
   // Only reached when the queue is empty (spec.md req. 2). Proposing a topic
   // needs BOTH a non-inference way to generate a candidate and a dedupe
@@ -344,7 +377,13 @@ export async function selectTopic(env: Env, topicId: number | undefined): Promis
   const proposal = await proposeTopic(env);
   if (proposal === null) return null;
 
-  return findOrProposeTopic(env.DB, proposal);
+  // attachRunTopic runs on all three success paths, not only this one: a run
+  // that dies later - in gather, not in select-topic - must still record
+  // which topic it stranded, which is what pairs req. 8's reclaim with req.
+  // 10's runs row (the runs row says which topic, the TTL brings it back).
+  const proposed = await findOrProposeTopic(env.DB, proposal);
+  await attachRunTopic(env.DB, instanceId, proposed.id);
+  return proposed;
 }
 
 async function loadSources(_env: Env): Promise<Source[]> {

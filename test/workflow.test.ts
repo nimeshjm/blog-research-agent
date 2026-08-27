@@ -1,6 +1,6 @@
 import { env as testEnv } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SEEN_URLS_CHUNK_SIZE, writeRunCandidates } from '../src/lib/d1';
+import { SEEN_URLS_CHUNK_SIZE, startRun, writeRunCandidates } from '../src/lib/d1';
 import { loadFeeds } from '../src/lib/feeds';
 import { InvalidDraftError } from '../src/lib/mdx';
 import type { ArticleSummary, Candidate, Draft, Env, Topic } from '../src/lib/types';
@@ -17,6 +17,7 @@ import {
   shortlistCandidates,
   summarizeArticle,
   synthesizeDraft,
+  TOPIC_CLAIM_TTL_HOURS,
 } from '../src/workflow';
 import { applySchema } from './schema';
 
@@ -375,14 +376,14 @@ describe('selectTopic()', () => {
     const insert = await env.DB.prepare(
       `INSERT INTO topics (title, angle, status, origin) VALUES ('targeted', NULL, 'queued', 'human') RETURNING id`,
     ).first<{ id: number }>();
-    const result = await selectTopic(env, insert?.id as number);
+    const result = await selectTopic(env, 'run-targeted', insert?.id as number);
     expect(result?.title).toBe('targeted');
     expect(result?.status).toBe('in_progress');
   });
 
   it('drains the queue before proposing', async () => {
     await env.DB.prepare(`INSERT INTO topics (title, angle, status, origin) VALUES ('queued one', NULL, 'queued', 'human')`).run();
-    const result = await selectTopic(env, undefined);
+    const result = await selectTopic(env, 'run-drain', undefined);
     expect(result?.title).toBe('queued one');
   });
 
@@ -405,13 +406,13 @@ describe('selectTopic()', () => {
       }),
     );
 
-    const first = await selectTopic(env, undefined);
+    const first = await selectTopic(env, 'run-replay', undefined);
     expect(first?.title).toBe('Brand New Unrelated Topic Nobody Has Written About');
     expect(first?.origin).toBe('agent');
     expect(first?.status).toBe('in_progress');
 
     // Replay: a retried select-topic step must recover the same row, not insert a second one.
-    const second = await selectTopic(env, undefined);
+    const second = await selectTopic(env, 'run-replay', undefined);
     expect(second?.id).toBe(first?.id);
 
     const rows = await env.DB.prepare(`SELECT COUNT(*) as n FROM topics WHERE origin = 'agent'`).first<{ n: number }>();
@@ -437,8 +438,106 @@ describe('selectTopic()', () => {
       }),
     );
 
-    const result = await selectTopic(env, undefined);
+    const result = await selectTopic(env, 'run-covered', undefined);
     expect(result).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // Acceptance criterion 10: a runs row exists after start-run, with a
+  // non-success status, and the queue-draining path sets topic_id on it.
+  // startRun's own replay safety is covered in test/d1.test.ts; this proves
+  // the wiring through selectTopic.
+  // -------------------------------------------------------------------------
+  it('a runs row started before selectTopic gets its topic_id attached on the queue-draining path (acceptance criterion 10)', async () => {
+    await env.DB.prepare(`INSERT INTO topics (title, angle, status, origin) VALUES ('queued one', NULL, 'queued', 'human')`).run();
+
+    await startRun(env.DB, 'run-attach');
+    const beforeSelect = await env.DB.prepare('SELECT status, topic_id FROM runs WHERE instance_id = ?').bind('run-attach').first<{
+      status: string;
+      topic_id: number | null;
+    }>();
+    expect(beforeSelect?.status).toBe('running'); // not a success status - acceptance criterion 10
+    expect(beforeSelect?.topic_id).toBeNull();
+
+    const result = await selectTopic(env, 'run-attach', undefined);
+
+    const afterSelect = await env.DB.prepare('SELECT topic_id FROM runs WHERE instance_id = ?').bind('run-attach').first<{
+      topic_id: number | null;
+    }>();
+    expect(afterSelect?.topic_id).toBe(result?.id);
+  });
+
+  // -------------------------------------------------------------------------
+  // Acceptance criterion 9: a stale in_progress topic is reachable again by
+  // the scheduled path, and a live one is not stolen from it.
+  //
+  // The two ages below are *fixed* hours that bracket TOPIC_CLAIM_TTL_HOURS
+  // (7 above it, 1 below), not `TOPIC_CLAIM_TTL_HOURS ± 1`. Written relatively,
+  // changing the constant moves both the fixture and the threshold together and
+  // the pair cannot see it - the constant's magnitude, which requirement 9 is
+  // specifically about, would be unpinned. Written this way, raising the TTL
+  // past 7 hours or dropping it below 1 fails a test.
+  // -------------------------------------------------------------------------
+  const STALE_AGE_HOURS = 7;
+  const LIVE_AGE_HOURS = 1;
+
+  it(`a topic left in_progress ${STALE_AGE_HOURS}h ago, past TOPIC_CLAIM_TTL_HOURS, is selectable again by a plain scheduled call`, async () => {
+    expect(TOPIC_CLAIM_TTL_HOURS).toBeLessThan(STALE_AGE_HOURS);
+    const insert = await env.DB
+      .prepare(
+        `INSERT INTO topics (title, angle, status, origin, claimed_at)
+         VALUES ('stranded', NULL, 'in_progress', 'human', datetime('now', '-' || ? || ' hours')) RETURNING id`,
+      )
+      .bind(STALE_AGE_HOURS)
+      .first<{ id: number }>();
+
+    const result = await selectTopic(env, 'run-reclaim', undefined);
+
+    expect(result?.id).toBe(insert?.id);
+    expect(result?.status).toBe('in_progress');
+  });
+
+  it(`a topic claimed ${LIVE_AGE_HOURS}h ago, within TOPIC_CLAIM_TTL_HOURS, is not returned to a second scheduled selectTopic (a live run is not stolen from)`, async () => {
+    expect(TOPIC_CLAIM_TTL_HOURS).toBeGreaterThan(LIVE_AGE_HOURS);
+    await env.DB
+      .prepare(
+        `INSERT INTO topics (title, angle, status, origin, claimed_at)
+         VALUES ('live-run-topic', NULL, 'in_progress', 'human', datetime('now', '-' || ? || ' hours'))`,
+      )
+      .bind(LIVE_AGE_HOURS)
+      .run();
+    // A second queued row so the second call has somewhere to land other
+    // than the live one, proving the live topic specifically was skipped.
+    await env.DB.prepare(`INSERT INTO topics (title, angle, status, origin) VALUES ('other queued', NULL, 'queued', 'human')`).run();
+
+    const result = await selectTopic(env, 'run-no-steal', undefined);
+
+    expect(result?.title).toBe('other queued');
+  });
+
+  // -------------------------------------------------------------------------
+  // The reclaim runs only on the scheduled path - a run naming a topicId
+  // must not widen its blast radius to other runs' stranded topics.
+  // -------------------------------------------------------------------------
+  it('a call naming a topicId does not reclaim another topic that is in_progress past its TTL', async () => {
+    const stranded = await env.DB
+      .prepare(
+        `INSERT INTO topics (title, angle, status, origin, claimed_at)
+         VALUES ('stranded-elsewhere', NULL, 'in_progress', 'human', datetime('now', '-' || ? || ' hours')) RETURNING id`,
+      )
+      .bind(STALE_AGE_HOURS)
+      .first<{ id: number }>();
+    const named = await env.DB.prepare(
+      `INSERT INTO topics (title, angle, status, origin) VALUES ('named', NULL, 'queued', 'human') RETURNING id`,
+    ).first<{ id: number }>();
+
+    const result = await selectTopic(env, 'run-named', named?.id as number);
+
+    expect(result?.id).toBe(named?.id);
+    const strandedRow = await env.DB.prepare('SELECT status FROM topics WHERE id = ?').bind(stranded?.id).first<{
+      status: string;
+    }>();
+    expect(strandedRow?.status).toBe('in_progress'); // untouched - reclaim did not run on this path
   });
 });
 
