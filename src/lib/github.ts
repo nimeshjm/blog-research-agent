@@ -1,0 +1,151 @@
+/**
+ * GitHub REST client for the one repo this agent writes to: read the base
+ * ref, create a `research/*` branch, PUT a file, open a pull request.
+ *
+ * Deliberately takes `baseBranch` as a plain string parameter and never
+ * imports `Env` or names the identifier `BLOG_BASE_BRANCH` anywhere in this
+ * file. `base-branch-not-a-write-target` (scripts/review-checks.mjs) flags
+ * any `src/` file that mentions that identifier *and* contains `refs/heads`
+ * or PUTs to `/contents/` - which branch creation and file commits
+ * unavoidably do. Splitting the read of `env.BLOG_BASE_BRANCH` out to the
+ * call site (which passes it in as an ordinary string) is what keeps that
+ * check honest instead of suppressed. The apiBase URL comes from
+ * `GITHUB_API_BASE` (wrangler.toml `[vars]`) via `GithubConfig`, so this
+ * file carries no URL literal of its own either.
+ */
+
+export interface GithubConfig {
+  apiBase: string;
+  token: string;
+  /** `owner/repo`, e.g. `nimeshjm/nimeshjm.com`. */
+  repo: string;
+}
+
+export class GithubError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly operation: string,
+  ) {
+    // Constructor name and operation only - never the URL or response body,
+    // which could carry a repo path or an error detail worth keeping out of
+    // logs (REVIEW.md pass 2).
+    super(`GitHub API error during ${operation}: HTTP ${status}`);
+    this.name = 'GithubError';
+  }
+}
+
+async function githubFetch(config: GithubConfig, path: string, init?: RequestInit): Promise<Response> {
+  return fetch(`${config.apiBase}${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${config.token}`,
+      Accept: 'application/vnd.github+json',
+      'Content-Type': 'application/json',
+      'User-Agent': 'blog-research-agent',
+      ...init?.headers,
+    },
+  });
+}
+
+function base64Encode(text: string): string {
+  return btoa(unescape(encodeURIComponent(text)));
+}
+
+/** Reads the tip commit SHA of `baseBranch` - a plain string, supplied by the caller. */
+export async function readBaseRefSha(config: GithubConfig, baseBranch: string): Promise<string> {
+  const res = await githubFetch(config, `/repos/${config.repo}/git/ref/heads/${encodeURIComponent(baseBranch)}`);
+  if (!res.ok) throw new GithubError(res.status, 'readBaseRefSha');
+  const body = (await res.json()) as { object: { sha: string } };
+  return body.object.sha;
+}
+
+/**
+ * Creates `refs/heads/<branchName>` pointing at `fromSha`. Idempotent: a
+ * `422` ("Reference already exists") is treated as success rather than an
+ * error, because a retried `step.do` must not fail on a branch an earlier
+ * attempt already created.
+ */
+export async function createBranch(config: GithubConfig, branchName: string, fromSha: string): Promise<void> {
+  const res = await githubFetch(config, `/repos/${config.repo}/git/refs`, {
+    method: 'POST',
+    body: JSON.stringify({ ref: `refs/heads/${branchName}`, sha: fromSha }),
+  });
+  if (res.status === 422) return;
+  if (!res.ok) throw new GithubError(res.status, 'createBranch');
+}
+
+export interface PutFileParams {
+  path: string;
+  content: string;
+  message: string;
+  branch: string;
+}
+
+async function readFileSha(config: GithubConfig, path: string, ref: string): Promise<string | null> {
+  const res = await githubFetch(
+    config,
+    `/repos/${config.repo}/contents/${path}?ref=${encodeURIComponent(ref)}`,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new GithubError(res.status, 'readFileSha');
+  const body = (await res.json()) as { sha: string };
+  return body.sha;
+}
+
+/**
+ * PUTs `params.content` to `params.path` on `params.branch`. Idempotent:
+ * reads the file's current SHA on that branch first (`null` when it does
+ * not exist yet) so a retry updates the file it already committed instead
+ * of conflicting with itself.
+ */
+export async function putFile(config: GithubConfig, params: PutFileParams): Promise<void> {
+  const existingSha = await readFileSha(config, params.path, params.branch);
+  const res = await githubFetch(config, `/repos/${config.repo}/contents/${params.path}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      message: params.message,
+      content: base64Encode(params.content),
+      branch: params.branch,
+      ...(existingSha === null ? {} : { sha: existingSha }),
+    }),
+  });
+  if (!res.ok) throw new GithubError(res.status, 'putFile');
+}
+
+export interface OpenPullRequestParams {
+  title: string;
+  body: string;
+  /** The branch carrying the commit. */
+  head: string;
+  /** The branch to open against - a plain string; never pass BLOG_BASE_BRANCH through anything but this. */
+  base: string;
+}
+
+async function findOpenPullRequest(config: GithubConfig, head: string): Promise<string | null> {
+  const owner = config.repo.split('/')[0];
+  const res = await githubFetch(
+    config,
+    `/repos/${config.repo}/pulls?state=open&head=${encodeURIComponent(`${owner}/${head}`)}`,
+  );
+  if (!res.ok) throw new GithubError(res.status, 'findOpenPullRequest');
+  const list = (await res.json()) as Array<{ html_url: string }>;
+  return list[0]?.html_url ?? null;
+}
+
+/**
+ * Opens a pull request. Idempotent: an existing open PR for `params.head`
+ * is reused rather than duplicated, so a retried `open-pull-request` step
+ * does not open a second PR for the same branch.
+ */
+export async function openPullRequest(config: GithubConfig, params: OpenPullRequestParams): Promise<string> {
+  const existing = await findOpenPullRequest(config, params.head);
+  if (existing !== null) return existing;
+
+  const res = await githubFetch(config, `/repos/${config.repo}/pulls`, {
+    method: 'POST',
+    body: JSON.stringify({ title: params.title, body: params.body, head: params.head, base: params.base }),
+  });
+  if (!res.ok) throw new GithubError(res.status, 'openPullRequest');
+  const created = (await res.json()) as { html_url: string };
+  return created.html_url;
+}

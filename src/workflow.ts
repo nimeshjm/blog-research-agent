@@ -1,5 +1,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import type { ArticleSummary, Candidate, Draft, Env, ResearchParams, Source, Topic } from './lib/types';
+import { claimOldestQueuedTopic, claimTopicById, recordRunOutcome } from './lib/d1';
+import { loadFeeds } from './lib/feeds';
+import type { ArticleSummary, Candidate, Draft, Env, ResearchParams, RunOutcome, Source, Topic } from './lib/types';
 import {
   ATTR_NEURONS_BUDGET,
   ATTR_NEURONS_SPENT,
@@ -56,7 +58,7 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
           [ATTR_RUN_STATUS]: 'no_topic',
         },
         async () => {
-          return recordOutcome(this.env, { status: 'no_topic', neuronsSpent });
+          return recordOutcome(this.env, event.instanceId, { status: 'no_topic', neuronsSpent });
         },
       );
       return;
@@ -102,7 +104,7 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
           [ATTR_RUN_STATUS]: 'insufficient_sources',
         },
         async () => {
-          return recordOutcome(this.env, {
+          return recordOutcome(this.env, event.instanceId, {
             status: 'insufficient_sources',
             topicId: topic.id,
             neuronsSpent,
@@ -139,7 +141,7 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
           [ATTR_RUN_STATUS]: 'insufficient_sources',
         },
         async () => {
-          return recordOutcome(this.env, {
+          return recordOutcome(this.env, event.instanceId, {
             status: 'insufficient_sources',
             topicId: topic.id,
             neuronsSpent,
@@ -169,7 +171,7 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
         [ATTR_RUN_STATUS]: 'succeeded',
       },
       async () => {
-        return recordOutcome(this.env, {
+        return recordOutcome(this.env, event.instanceId, {
           status: 'succeeded',
           topicId: topic.id,
           sourcesUsed: summaries.length,
@@ -234,15 +236,31 @@ function notImplemented(what: string): never {
   throw new Error(`NotImplemented: ${what}`);
 }
 
-async function selectTopic(_env: Env, _topicId: number | undefined): Promise<Topic | null> {
-  // Dedupe must cover BOTH the published feed and `draft: true` posts in the blog
-  // repo - drafts are absent from the feed, so a feed-only check proposes topics
-  // that are already half-written. See spec requirement 3.
-  return notImplemented('selectTopic - drain the queue, else propose vs feed + repo drafts');
+async function selectTopic(env: Env, topicId: number | undefined): Promise<Topic | null> {
+  // A manually-targeted run (event.payload.topicId set) claims that specific
+  // row rather than draining the queue - see ResearchParams in lib/types.ts.
+  if (topicId !== undefined) {
+    return claimTopicById(env.DB, topicId);
+  }
+
+  const queued = await claimOldestQueuedTopic(env.DB);
+  if (queued !== null) return queued;
+
+  // Only reached when the queue is empty. Proposing a topic here needs BOTH
+  // a non-inference way to generate a candidate and a dedupe check against
+  // BLOG_FEED_URL and `draft: true` posts in the blog repo (spec requirement
+  // 3) - and neither read seam exists in this PR. `feeds.ts` is the RSS/Atom
+  // *allowlist* loader only, and `github.ts` here is scoped to the
+  // branch/commit/PR write path, not a repo-content reader; widening either
+  // to cover this would put code in a file for a different reason than the
+  // one review constraint that gave it its shape (plan.md's Files table).
+  // `record-no-topic`, already wired in run(), is the correct exit for an
+  // empty queue until proposal lands in a later step of #3.
+  return null;
 }
 
 async function loadSources(_env: Env): Promise<Source[]> {
-  return notImplemented('loadSources - read the approved RSS/Atom allowlist');
+  return loadFeeds();
 }
 
 async function gatherCandidates(_source: Source): Promise<Candidate[]> {
@@ -292,14 +310,25 @@ async function openPullRequest(_env: Env, _draft: Draft): Promise<string> {
 }
 
 async function recordOutcome(
-  _env: Env,
-  _outcome: {
-    status: string;
+  env: Env,
+  instanceId: string,
+  outcome: {
+    status: RunOutcome['status'];
     topicId?: number;
     sourcesUsed?: number;
     neuronsSpent: number;
     prUrl?: string | null;
   },
 ): Promise<void> {
-  return notImplemented('recordOutcome - insert into runs');
+  // INSERT ... ON CONFLICT(instance_id) DO UPDATE, keyed on the Workflow
+  // instance id: spec requirement 9 wants exactly one row per run whatever
+  // the outcome, and every record-* step above is retried like any other.
+  return recordRunOutcome(env.DB, {
+    instanceId,
+    topicId: outcome.topicId ?? null,
+    status: outcome.status,
+    neuronsSpent: outcome.neuronsSpent,
+    sourcesUsed: outcome.sourcesUsed ?? 0,
+    prUrl: outcome.prUrl ?? null,
+  });
 }

@@ -10,6 +10,8 @@ export interface Env {
   LLM_MODEL: string;
   AI_GATEWAY: string;
   NEURON_BUDGET_PER_RUN: string;
+  /** Base URL for the GitHub REST client (src/lib/github.ts). Keeps that file free of a URL literal. */
+  GITHUB_API_BASE: string;
 
   /** Set with `wrangler secret put GITHUB_TOKEN`. Never in wrangler.toml. */
   GITHUB_TOKEN: string;

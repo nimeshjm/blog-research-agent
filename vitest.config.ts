@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { cloudflareTest } from '@cloudflare/vitest-pool-workers';
 import { defineConfig } from 'vitest/config';
 
@@ -39,6 +39,23 @@ function wranglerConfigWithoutAiBinding(): string {
     }
     if (skippingAiSection && /^\[/.test(line)) skippingAiSection = false;
     if (skippingAiSection) continue;
+
+    // `main` (and any other wrangler.toml path field) is resolved by wrangler
+    // relative to the *config file's own directory* - fine for the real
+    // wrangler.toml at the repo root, but this copy is written into a fresh
+    // mkdtemp() directory below, so a relative `main = "src/index.ts"` would
+    // resolve to a path that does not exist there. Rewritten to an absolute
+    // path back to the real repo root so the pool can still load the entry
+    // point. Only bites a test that touches a real binding requiring the
+    // worker to boot (e.g. D1) - test/llm.test.ts never surfaced this
+    // because it stubs `Env` entirely rather than using `cloudflare:test`'s
+    // real one.
+    const mainMatch = /^main\s*=\s*"([^"]+)"\s*$/.exec(line);
+    const mainPath = mainMatch?.[1];
+    if (mainPath !== undefined) {
+      out.push(`main = ${JSON.stringify(resolve(process.cwd(), mainPath))}`);
+      continue;
+    }
     out.push(line);
   }
   if (!foundAiSection) {
