@@ -1140,7 +1140,13 @@ def row_12(root: str) -> "tuple[bool, list[str]]":
     row's dates any earlier than that would let that real, unrelated commit's
     committer date spuriously read as "after" a synthetic anchor and inflate
     the count - a fixture-dating trap, not an extractor bug, and exactly why
-    this note exists here rather than being rediscovered the hard way."""
+    this note exists here rather than being rediscovered the hard way.
+
+    That makes these dates perishable: real history keeps growing, and once it
+    passes October 2026 the same trap returns. This row going red is what that
+    looks like - move every date in it (and in its siblings that copy the
+    template verbatim) forward past the newest real commit, rather than
+    weakening the assertion."""
     notes: "list[str]" = []
     copy_template_artifacts(root, "002-synth")
     commit(root, "copy template verbatim", "2026-10-01T00:00:00Z")

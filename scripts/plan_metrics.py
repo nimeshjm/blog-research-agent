@@ -926,11 +926,12 @@ def build_feature(
         else:
             # No [gate] issue filed yet for this feature's intent: undecided, i.e.
             # still "open" pending one being filed and closed. This is feature
-            # 001's real state today - feature:001 issues exist, none is
-            # gate:intent - and it correctly counts toward the rollup's
-            # open_count rather than being omitted, since some feature:NNN
-            # GitHub signal does exist. `issue` stays omitted: there is no
-            # gate:intent issue to point at yet.
+            # Such a feature counts toward the rollup's open_count rather than
+            # being omitted, since some feature:NNN GitHub signal does exist.
+            # `issue` stays omitted: there is no gate:intent issue to point at.
+            # (This was feature 001's state when the note was first written; it
+            # has since been given a gate:intent issue and reports "accepted",
+            # so do not read the branch as describing any current feature.)
             outcome = "open"
 
     now = now_utc()
