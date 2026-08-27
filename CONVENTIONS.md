@@ -82,41 +82,52 @@ Part 2 of 4 of #47
 - The **last** PR in the stack is an ordinary PR: it drops the `Part N of M` marker and
   carries `Closes #N` like any other.
 
-There is a second, quieter way to close the tracking issue too early, which the
-`Part N of M` marker does not protect against. GitHub's auto-close keywords are
+There is a second, quieter way to close the tracking issue too early, and the
+`Part N of M` marker does not protect against it. GitHub's auto-close keywords are
 **case-insensitive**, so an ordinary English sentence in an intermediate PR's body —
-"pass 2 adds the span and closes #42" — closes the issue the moment *that* PR merges,
-with the rest of the stack still unwritten. `pr-body-not-empty` cannot catch it: it
-looks for the exact string `Closes #N`, which a lowercase `closes #42` is not. So in an
-intermediate PR's body, never put a closing keyword (`close`/`closes`/`closed`,
-`fix`/`fixes`/`fixed`, `resolve`/`resolves`/`resolved`) immediately before an issue
-reference, in any casing. Write "is the PR that closes the tracking issue" instead, and
-grep the body before posting it.
+"pass 2 adds the span and closes #1234" — closes that issue once the PR's commits land
+on `main`, with the rest of the stack still unwritten. Both the atomic stack merge and
+GitHub's base-retargeting get them there, so an intermediate base branch is no shield.
 
-`gh stack submit --auto` (the `github/gh-stack` extension) is a reasonable way to push a
-stack and open its PRs, with one thing to know: it has no flag for a PR body. For a
-single-commit branch it seeds the body from the commit message, otherwise from the
-humanised branch name — so **CI starts against a body that has not been written yet**, and
-`pr-body-not-empty` fails on any PR whose commit message does not happen to contain the
-exact marker. Set the real bodies with `gh pr edit <n> --body-file <path>` immediately
-after submitting, then re-run the failed job. `--body-file -` is still forbidden — see
-`CLAUDE.md`'s "Repeated mistakes". Note also that `gh pr merge` does not work on a stack;
-it is `gh stack merge --yes`, which merges bottom-to-top atomically.
+`pr-body-not-empty` cannot catch this, and not because of the casing: the check only ever
+asserts that one of the two markers is **present**, never that a closing keyword is
+**absent**. An intermediate PR carrying an uppercase `Closes #N` passes it just as
+happily. So in an intermediate PR's body, never put a closing keyword
+(`close`/`closes`/`closed`, `fix`/`fixes`/`fixed`, `resolve`/`resolves`/`resolved`)
+immediately before an issue reference, in any casing. Write "is the PR that closes the
+tracking issue" instead, and grep before posting:
 
-`pr-body-not-empty` (`scripts/review-checks.mjs`, documented in `REVIEW.md`) enforces
-this mechanically.
+```bash
+grep -nEi '(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#[0-9]+' <body-file>
+```
+
+`pr-body-not-empty` (`scripts/review-checks.mjs`, documented in `REVIEW.md`) enforces the
+`Part N of M` / `Closes #N` rule mechanically.
+
+`gh stack submit --auto` (the `github/gh-stack` extension) has no flag for a PR body: it
+is auto-generated from the branch's commit messages plus a stack footer. So **CI starts
+against a body nobody wrote**, and `pr-body-not-empty` fails on any PR whose commit
+message does not happen to carry the exact marker. Set the real bodies with `gh pr edit
+<n> --body-file <path>` immediately after submitting; if CI already reached
+`pr-body-not-empty`, re-run the job. `--body-file -` is still forbidden — see
+`CLAUDE.md`'s "Repeated mistakes".
+
+`--auto` also opens each PR as a **draft** unless `--open` is passed, and `gh stack merge`
+refuses drafts. `gh pr merge` does not work on a stack at all; it is `gh stack merge
+--yes`, which merges bottom-to-top atomically.
 
 ## Model delegation
 
-Non-trivial work on this repo is split across three model roles, deliberately, in this
-order. The split exists because the three jobs fail differently: orchestration fails by
-misreading the design, implementation fails by writing the wrong code, and verification
-fails by believing a green test run.
+**Opus orchestrates, Sonnet implements, Opus verifies.**
+
+The split exists because the three jobs fail differently: orchestration fails by trusting
+a stale premise, implementation fails by passing a suite that does not test the thing, and
+verification fails by believing a green run.
 
 - **Orchestrate with Opus.** Read the issue, read the code it touches, check the issue's
   factual claims against the tree *before* delegating — this repo's issues carry measured
-  evidence (blob hashes, commit shas, timing tables) that can go stale between filing and
-  implementation. Write the brief. Own the git surface: branch, commits, and the pull
+  evidence (file hashes, commit shas, measured numbers) that can go stale between filing
+  and implementation. Write the brief. Own the git surface: branch, commits, and the pull
   request are never delegated, because that is where `CONVENTIONS.md` is violated
   (branch-number rule, `Closes #N`, the stdin trap in "Repeated mistakes").
 - **Implement with Sonnet**, via the `Agent` tool with `model: "sonnet"`, one pass per
@@ -124,12 +135,15 @@ fails by believing a green test run.
   one giant pass. Each brief carries the exact identifiers (function names, field names,
   attribute names) the next pass will build on, so a later pass never has to rediscover
   what an earlier one chose. Passes that share state run **serially**.
-- **Verify with Opus.** Not "the suite is green" — that is the implementer's own claim
-  and it is the weakest evidence available. Verification re-derives the numbers from git
-  by hand, and for anything guarded by a mutation-table row (`test:plan-metrics`,
-  `test:checks`, `test:ast`) it **removes each new guard in turn and confirms the row goes
-  red**. A row that passes with its guard removed is dead, and a dead row is the exact
-  failure mode those suites exist to prevent.
+- **Verify with Opus.** Not "the suite is green" — that is the implementer's own claim.
+  Verification re-derives the numbers from git by hand, and for anything guarded by a
+  mutation-table row (`test:plan-metrics`, `test:checks`, `test:ast`) it **removes each
+  new guard in turn and confirms the row goes red**. A row that passes with its guard
+  removed is dead.
+
+A subagent's report is evidence, not a finding. Where it contradicts something the
+orchestrator observed directly, the primary evidence wins and the disagreement gets
+recorded rather than quietly resolved.
 
 The orchestrator states which role produced what in the pull request body, so a reviewer
 knows which claims were re-derived and which were taken from a subagent.
