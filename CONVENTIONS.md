@@ -54,8 +54,36 @@ that is the branch pattern the agent writes in the **blog** repo, not here.
 - The pull request body closes its issue with `Closes #N`. Do not close issues by hand;
   the merge should do it, so the issue and the commit that resolved it stay linked.
 - One issue per pull request wherever it is reasonable. A PR that closes three issues is
-  usually three PRs.
+  usually three PRs. (The reverse — several PRs against the same issue, stacked — is
+  fine and covered below; that is not the same as one PR closing several issues.)
 - Every PR gets the passes in `REVIEW.md`, in order.
+
+### Stacked pull requests
+
+A feature built as a stack of PRs — each based on the previous one rather than on
+`main` — still has every branch in the stack starting with the same issue number, per
+the branch-name rule above. That collides with `Closes #N`: only the **last** PR in the
+stack may close the tracking issue, because an earlier one carrying `Closes #N` would
+close it with the rest of the stack still unwritten.
+
+So every PR in the stack except the last carries this instead, verbatim, somewhere in
+its body:
+
+```
+Part 2 of 4 of #47
+```
+
+- `N` (this PR's position) and `M` (the stack's length) are both required and are
+  validated as `1 <= N <= M` — a swapped or nonsensical ordinal (`Part 5 of 2`, `Part 0
+  of 3`) does not satisfy the check.
+- `#<issue>` must match the issue number the stack's branches carry. Mentioning the
+  issue elsewhere in the body does not count — the marker has to be this exact,
+  deliberate phrase, or `pr-body-not-empty` still fails the PR.
+- The **last** PR in the stack is an ordinary PR: it drops the `Part N of M` marker and
+  carries `Closes #N` like any other.
+
+`pr-body-not-empty` (`scripts/review-checks.mjs`, documented in `REVIEW.md`) enforces
+this mechanically.
 
 ## The turn log
 

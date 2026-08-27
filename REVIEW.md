@@ -132,7 +132,10 @@ implements, would each drift silently otherwise.
 - `branch-carries-issue` — the current branch starts with an issue number and isn't
   `main`. Needs no `gh`; runs by default and in the pre-push hook.
 - `pr-body-not-empty` — with `--pr N`, the PR body is non-empty and contains
-  `Closes #N`. Skips silently without `--pr` or without `gh`.
+  `Closes #N`, or, for an intermediate PR in a stack against the same issue (see
+  CONVENTIONS.md's "Stacked pull requests"), the explicit marker `Part N of M of
+  #<issue>` with the issue number matching the branch and `1 <= N <= M`. Skips
+  silently without `--pr` or without `gh`.
 - `checks-and-docs-in-sync` — every `rules/<id>.yml` has a `rule-tests/<id>-test.yml`
   and declares its own filename as its `id:`, every marker in this file resolves to a real
   rule or check id, and every rule and check id is mentioned somewhere in this file.

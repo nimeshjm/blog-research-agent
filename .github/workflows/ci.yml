@@ -2,7 +2,6 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
 
 # Reads the tree, and reads (not writes) pull request metadata so
 # pr-body-not-empty's `gh api` call can look up this PR's body.
