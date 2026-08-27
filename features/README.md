@@ -101,3 +101,4 @@ rework, not judging it.
 | # | Feature | Stage |
 |---|---|---|
 | 001 | [scheduled-research-drafts](001-scheduled-research-drafts/) | Built: all five pull requests in `plan.md` written, closing [#3](https://github.com/nimeshjm/blog-research-agent/issues/3). [Open issues](https://github.com/nimeshjm/blog-research-agent/issues?q=is%3Aissue+is%3Aopen+label%3Afeature%3A001) |
+| 002 | [gather-without-accumulation](002-gather-without-accumulation/) | Stage 2: `spec.md` written, awaiting approval. `plan.md` is still the template. Tracking [#61](https://github.com/nimeshjm/blog-research-agent/issues/61), intent gate [#62](https://github.com/nimeshjm/blog-research-agent/issues/62). [Open issues](https://github.com/nimeshjm/blog-research-agent/issues?q=is%3Aissue+is%3Aopen+label%3Afeature%3A002) |
