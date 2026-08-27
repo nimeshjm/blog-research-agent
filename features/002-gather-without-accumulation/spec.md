@@ -59,19 +59,33 @@ The OpenAI row is the shape of the waste: **1,154 items parsed to keep 62** — 
    truncated (feature 001 `spec.md`, "The recency window in `gather`").
 7. **Candidate persistence is idempotent.** A retried gather step leaves the same rows,
    not duplicates.
-8. **A claimed topic is reclaimable.** A topic left `in_progress` by a dead instance
-   becomes selectable again after `TOPIC_CLAIM_TTL`, without a webhook, a second
-   schedule, or manual SQL.
+8. **A claimed topic is reclaimable by an unattended run.** A topic left `in_progress` by
+   a dead instance becomes selectable again after `TOPIC_CLAIM_TTL`, without a webhook, a
+   second schedule, or manual SQL. "Unattended" is the precise scope: `claimRow`
+   (`src/lib/d1.ts:44`) *does* already recover an `in_progress` row — but only for a run
+   that names it via `ResearchParams.topicId` (`src/workflow.ts:299`), i.e. one triggered
+   by hand. The scheduled path reaches only `queued` rows, so today a stranded topic waits
+   for a human who knows to pass its id.
 9. **Reclaim cannot steal a live run's topic.** `TOPIC_CLAIM_TTL` exceeds the longest
    legitimate run by a margin that is stated, not implied.
 10. **Every run writes a `runs` row, including one that dies mid-step.** The row is
     created when the run starts and updated with its outcome, so a hard step failure is
     distinguishable after the fact from a cycle with nothing to write about. This
     replaces feature 001 requirement 9, which the dead run of 2026-08-27 violated.
-11. **The corrected CPU rule is recorded.** `CLAUDE.md`'s "10 ms CPU per step" and
-    feature 001 `spec.md`'s constraints-table row are both replaced with whatever
-    implementation measures, in the same pull request as the code. A design premise this
-    wrong, left in place, produces the same bug again.
+11. **The corrected CPU rule is recorded, in all three places that assert it.** Replaced
+    with whatever implementation measures, in the same pull request as the code:
+    - `CLAUDE.md:62` — "**10 ms CPU per step.**"
+    - `features/001-scheduled-research-drafts/spec.md` — :64, :295, :383, and the
+      constraints-table row at :463.
+    - `.claude/skills/cf-free-tier/SKILL.md` — **the one that matters most**, because it is
+      the file loaded when someone writes a new step. It already carries both halves of the
+      contradiction adjacently (`:15` "10 ms per invocation" directly above `:16` "10 ms per
+      step") and then asserts at `:35` that "A Workflow step gets its own 10 ms and
+      unlimited wall-clock."
+
+    A design premise this wrong, left in place, produces the same bug again — and correcting
+    the two prose files while leaving the skill intact is the version of that failure that
+    looks fixed.
 12. **No change to which drafts are opened.** The recency window, grounding gate,
     `draft: true`, branch-only rule, neuron ceiling, and shortlist ranking are untouched.
 
@@ -194,6 +208,22 @@ on the `instance_id` primary key, so replay is safe) and updated by `recordOutco
 `running` row with an old `started_at` is then the durable signal that a run died — the
 same signal `TOPIC_CLAIM_TTL` acts on, from the other side.
 
+**Measured, and worse than "a run that dies writes nothing" suggests:** `SELECT count(*)
+FROM runs` on the remote database returns **0**, and `wrangler workflows instances list`
+shows **two** instances, both failed:
+
+| instance | trigger | outcome |
+|---|---|---|
+| `8808602a` (27/08 06:00 UTC) | cron | `NotImplemented: selectTopic`, 6 attempts |
+| `956de9f8` (27/08 16:11 UTC) | api | `Worker exceeded CPU time limit` in `gather:GitHub`, 5 attempts |
+
+So feature 001 requirement 9 ("every run writes exactly one row to `runs`, whatever the
+outcome") has **never once held**, and the reason it went unnoticed is exactly the reason
+this requirement exists: with no row, a failed run is invisible unless someone thinks to
+list Workflow instances. The two failures are also unrelated to each other — the first was
+an unimplemented `selectTopic` in the then-deployed version — which is the point: the
+`runs` table is meant to be where that distinction is legible after the fact.
+
 ## Platform constraints applied
 
 | Constraint | How this design respects it |
@@ -228,8 +258,10 @@ same signal `TOPIC_CLAIM_TTL` acts on, from the other side.
 9. A terminated instance's topic returns to `queued` on its own after
    `TOPIC_CLAIM_TTL`, and a topic claimed by a run still in flight does not.
 10. A terminated instance leaves a `runs` row whose status is not a success status.
-11. `CLAUDE.md` and feature 001 `spec.md` no longer assert a per-step CPU budget, and
-    the number they assert instead is one this feature measured.
+11. `CLAUDE.md`, feature 001 `spec.md`, and `.claude/skills/cf-free-tier/SKILL.md` no
+    longer assert a per-step CPU budget, and the number they assert instead is one this
+    feature measured. Grepping the tree for "per step" alongside a CPU figure returns
+    nothing stale.
 
 ## Risks and mitigations
 
@@ -243,6 +275,7 @@ same signal `TOPIC_CLAIM_TTL` acts on, from the other side.
 | `run_candidates` becomes a second cross-run dedupe key | It is per-run scratch, pruned, and `shortlist` reads it scoped to `run_id`. `seen_urls` stays the only cross-run key |
 | Reclaim races a live run | `TOPIC_CLAIM_TTL` of 6 hours against a minutes-long run and a 48-hour cron gap; both margins stated in the design rather than left to be inferred |
 | `shortlist`'s scoped read relocates the problem rather than removing it | Requirement 5 materializes the whole candidate set for the run in one step — 678 candidates by feature 001's measurement, against a bench that failed at 393 accumulated plus three parses. Taking the array out of `run()` does not by itself prove it fits in `shortlist`. Acceptance criterion 5 is the check, and the fallback is a `LIMIT`-ordered read plus chunked ranking rather than one materialized set. Named here because a stage-2 approver should not have to derive it |
+| The prose is corrected and the skill is not | The skill is what an author loads before writing a step, so a stale premise there survives every correction elsewhere and is re-derived on the next feature. Requirement 11 names it explicitly and acceptance criterion 11 greps for the stale phrasing rather than checking the three files by hand |
 | The corrected CPU rule is itself wrong | It is measured and the measurement is recorded with it. The failure mode being avoided is an *unmeasured* number derived from documentation, which is what produced this feature |
 
 ## Deferred
