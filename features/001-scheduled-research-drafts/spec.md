@@ -2,7 +2,8 @@
 
 > Stage 2. Written from the approved `intent.md`. **Approved** — see
 > [#1](https://github.com/nimeshjm/blog-research-agent/issues/1). Implementation is
-> planned in [`plan.md`](plan.md); the step bodies it describes are not written yet.
+> planned in [`plan.md`](plan.md); all five pull requests in that plan are now written,
+> closing [#3](https://github.com/nimeshjm/blog-research-agent/issues/3).
 
 ## Summary
 
@@ -294,13 +295,75 @@ Map-reduce rather than one long-context call. The model holds 128k, so this is n
 context workaround: it keeps each step's parse inside 10 ms of CPU, bounds spend per
 article rather than per run, and lets a single failed article retry on its own.
 
-Estimated cost per run at 31,818 neurons/M input and 68,182/M output:
+Estimated cost per run at 31,818 neurons/M input and 68,182/M output. The summary row is
+now **measured**, not assumed: [#18](https://github.com/nimeshjm/blog-research-agent/issues/18)
+found `@cf/openai/gpt-oss-120b` is a reasoning model whose thinking is billed inside
+`completion_tokens` alongside `content`, so the original table (below, historical) assumed
+*produced-text* length rather than the true completion cost. `plan.md` step 2 closed that
+gap with two real `complete()` calls, through `createLlm()` and AI Gateway, at production
+prompt size, deliberately spanning easy and hard: an off-topic legacy-modernization article
+(Martin Fowler's "Patterns of Legacy Displacement," a first-party allowlist feed — the model
+scored it `relevance: 0.2`) and a squarely on-topic one (Anthropic's "How we built our
+multi-agent research system" — `relevance: 0.93`), both summarized with the step-5 map
+prompt's shape. Reasoning tracks task difficulty, not article length, so a single easy
+sample would not have been evidence for the fifteen the pipeline actually runs; both raw
+envelopes are recorded in the body of the pull request that closed #18.
+
+| Article | Input tokens | Output tokens (content + reasoning) | Neurons | `finish_reason` |
+|---|---|---|---|---|
+| Fowler, "Legacy Displacement" (relevance 0.2) | 5,987 | 464 | 223 | `stop` |
+| Anthropic, "Multi-agent research system" (relevance 0.93) | 4,946 | 669 | 203 | `stop` |
+
+The on-topic article produced 44% more completion tokens than the off-topic one — reasoning
+did scale with difficulty, as #18 predicted — but its neuron cost still came in *lower*,
+because its input was shorter and input tokens outweigh the difference at these ratios.
+Both land comfortably inside the `SUMMARY_NEURON_ESTIMATE = 300` the budget gate in
+`src/workflow.ts` already used, so that constant is unchanged. Neither call was truncated.
 
 | Stage | Tokens | Neurons |
 |---|---|---|
-| 15 article summaries | 90k in, 9k out | ~3,500 |
-| 1 synthesis | 12k in, 6k out | ~800 |
-| **Total** | | **~4,300 of 10,000/day** |
+| 15 article summaries | 89.8k in, 7.0k out (× the higher-cost of the two measured articles, 5,987 in / 464 out) | ~3,345 |
+| 1 synthesis | 2,576 in, 2,045 out (**measured**, this PR) | 222 |
+| **Total** | | **~3,567 of 10,000/day** |
+
+The summary-stage projection uses the higher-neuron measurement of the two (Fowler,
+223/article) rather than an average, to stay conservative. Two samples are still not
+fifteen, but they now bracket both ends of the relevance range the grounding gate cares
+about, and the fact that the harder sample cost *less* (shorter input outweighed longer
+reasoning) is itself evidence against "harder article always costs more."
+
+The synthesis row is no longer an assumption. Step 5 measured a real `complete()` call,
+through `createLlm()` and AI Gateway, driven by the real `buildReduceMessages()` in
+`src/lib/prompts.ts` and 15 production-shaped `ArticleSummary` entries (the shortlist
+cap) — deliberately fifteen, not one, since the reduce prompt's cost scales with how many
+summaries it carries, not with a single article's difficulty the way the map call does.
+The call finished with `finish_reason: "stop"` at 2,045 of the 8,192-token
+`SYNTHESIS_MAX_TOKENS` ceiling — comfortable margin, not a near-miss — so
+`SYNTHESIS_NEURON_RESERVE` (`src/workflow.ts`) moved from its pre-measurement value of
+1,000 down to 500, roughly 2x the single measurement rather than matching it exactly. The
+raw envelope is recorded in this PR's body.
+
+**Treat 222 as a floor, not the expected figure.** Only 2 of the probe's 15
+`ArticleSummary` fixtures were real map-step output copied verbatim (Fowler and Anthropic,
+from #18's probes); those two carry 1,260 and 1,211 characters of `summary` + `claims`,
+while the 13 synthetic ones average 328. A shortlist of fifteen summaries all sized like
+the two real ones would carry roughly 18.5k characters of summary text rather than the
+6.7k the probe sent, putting the reduce prompt near 24k characters — about 1.9x the
+measured 12,590 — and so near 4,990 input tokens rather than 2,576. Holding the measured
+output length, that projects to roughly **300 neurons**, still inside the 500 reserve and
+moving the per-run total to ~3,645 of 6,000. The next real run settles it; nobody should
+build on 222 as though it were the ceiling.
+
+Note also that `SYNTHESIS_NEURON_RESERVE` moving 1,000 → 500 is a *loosening* of a safety
+margin on the strength of one sample. It is defensible at these margins — the projection
+above still fits twice over — but it is the one number in this table a reviewer should
+push back on if they disagree, rather than a purely additive measurement.
+
+The measured total, ~3,567 of `NEURON_BUDGET_PER_RUN` (6,000), leaves ~2,433 of headroom —
+more than the earlier, pre-measurement projection, because both the summary estimate (used
+conservatively, at the higher of two real measurements) and now the synthesis figure
+(measured directly rather than assumed at 12k in / 6k out) came in under what the original
+table guessed.
 
 **Growing the allowlist from 13 feeds to 46 does not move this number.** Inference happens
 in exactly two places — `summarizeArticle`, capped at 15 by `shortlist`, and one
@@ -313,7 +376,7 @@ What the extra 34 feeds do move is everything measured in steps, bytes and CPU:
 
 | Per run | 13 feeds (before) | 46 feeds (after) | Headroom |
 |---|---|---|---|
-| Neurons | ~4,300 | ~4,300 | 10,000/day |
+| Neurons | ~3,567 | ~3,567 | 10,000/day |
 | `gather` steps | 13 | 46 | — |
 | Steps total | ~34 | ~67 | 1,024 per instance |
 | Feed bytes fetched | 9.50 MiB | **4.99 MiB** | wall-clock is uncapped |
@@ -402,7 +465,7 @@ research brief; the committed file is the draft.
 | 1,024 steps per instance | 46 feeds + 15 articles + 6 fixed = ~67 steps, 7% of the cap |
 | D1: 100 bound params/query, 50 queries/invocation | The 30-day window in `gather` takes 4,742 raw items to 678 candidates (7 chunked queries, measured); `shortlist`'s 4,000 ceiling bounds the pathological case at 40 |
 | Cron 15 min wall-clock | Cron only creates the instance; steps have no wall-clock cap |
-| 10,000 neurons/day | ~4,300 per run, hard-stopped at `NEURON_BUDGET_PER_RUN` |
+| 10,000 neurons/day | ~3,567 per run (measured, #18 and step 5), hard-stopped at `NEURON_BUDGET_PER_RUN` |
 | Steps are retried | Every step body must be idempotent (enforced by `REVIEW.md` pass 3) |
 | 5 cron triggers | One used |
 | No paid search | Feeds only |
@@ -425,7 +488,7 @@ research brief; the committed file is the draft.
    exceeds `NEURON_BUDGET_PER_RUN` by no more than the cost of a single article call.
 8. Each run stays inside a single day's free allocation. `*/2` is day-of-month, so the
    31st and the 1st are consecutive; both must still succeed, which they do because the
-   allowance resets daily and one run costs ~4,300 of 10,000.
+   allowance resets daily and one run costs ~3,567 of 10,000 (measured, #18 and step 5).
 9. Every feed in the allowlist returns 200 and parses. `gather` emits no *dated* item
    published more than 30 days ago, and no more than 20 *undated* items from any one
    feed; it does not truncate a feed's dated items, so a full arXiv day survives intact.

@@ -26,8 +26,11 @@ export default tseslint.config(
     ignores: ['node_modules', '.wrangler', 'dist', '.claude/worktrees'],
   },
   {
-    // Matches tsconfig.json's `include`. Nothing outside src/ is part of
-    // the tsconfig project the type-aware parser resolves against anyway.
+    // Scoped to src/ deliberately, narrower than tsconfig.json's `include`
+    // (which also covers test/ and vitest.config.ts so those get typechecked).
+    // The type-aware rules below - unhandled Workflow-step rejections - are a
+    // Worker seam; the test suite is invoked directly by vitest, not retried
+    // by the runtime, so it isn't in scope for these two rules.
     files: ['src/**/*.ts'],
     extends: [tseslint.configs.base],
     languageOptions: {

@@ -35,6 +35,9 @@ LLM_MODEL = "@cf/openai/gpt-oss-120b"
 AI_GATEWAY = "blog-research-agent"
 # Hard ceiling per run. Free allocation is 10,000 neurons/day.
 NEURON_BUDGET_PER_RUN = "6000"
+# Base URL for src/lib/github.ts's REST client. Kept here, not a literal in
+# that file, so no-hardcoded-urls has nothing to flag.
+GITHUB_API_BASE = "https://api.github.com"
 
 # Secrets (never put these here - use `wrangler secret put <NAME>`):
 #   GITHUB_TOKEN  fine-grained PAT, contents:write + pull_requests:write,

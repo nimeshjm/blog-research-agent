@@ -13,8 +13,12 @@ the pipeline's synthesis step and a checklist for anyone reviewing a draft.
 The feed at `https://nimeshjm.com/rss.xml` carries 30 posts with full bodies in
 `content:encoded`. They are not one corpus:
 
-- **2026-era posts (10, roughly 10,000-22,000 characters).** Long-form essays on AI in
-  engineering organisations. **These define the current voice.**
+- **2026-era posts (10).** Long-form essays on AI in engineering organisations. **These
+  define the current voice.** Nine of the ten run roughly 8,900-20,000 characters
+  (1,000-2,800 prose words); the tenth (2026-01-12, "We Tested lambda Managed
+  Instances", 4,002 characters) is a hands-on AWS how-to that also misses the Audience
+  and Recurring-themes sections below — a known outlier, not a voice exemplar, and not
+  silently dropped from the count of ten.
 - **2012-2016 posts (20, roughly 450-1,300 characters).** Short technical notes on
   EPiServer, WinDbg, ASP.NET. A legacy archive from a different decade and a different
   kind of writing.
@@ -151,12 +155,45 @@ the feed will propose a topic that is already half-written.
   company's blog post, say so. "One team reports" is honest; "the industry has moved to"
   usually is not.
 - Assert a claim without a source. Every factual claim in a draft carries a link.
-- Pad to length. Fewer than 3 relevant sources means no draft at all.
+- Pad to length. Fewer than 2 relevant sources, at least one carrying an attributable
+  practice, means no draft at all (spec.md req. 5 / `MIN_SOURCES` in `src/workflow.ts` —
+  this is the authoritative gate; treat any other number stated elsewhere as stale).
 
-## TODO — sharpen the style rules
+## Sentence-level style
 
-Sentence-level rules here (rhythm, paragraph length, use of second person, how code and
-quotations are formatted) are inferred from a single sampled post. Before the synthesis
-prompt is finalised, read all 10 of the 2026 posts from `content:encoded` and replace
-this section with rules derived from the set. Do not bake in a hard style rule — em
-dashes, sentence length, heading depth — on the strength of one example.
+Derived from all ten 2026-era posts (the outlier included, since even a non-exemplar's
+mechanics are real data) — see `blog-voice-evidence.md` for the measurements behind
+each bullet.
+
+- **Sentences run 10-20 words on average, but vary it.** Mix in short ones — down to a
+  word or two, right after a longer sentence — for emphasis. Don't normalise to one
+  length.
+- **Paragraphs are short: 1-3 sentences.** Break up anything running past 4-5.
+- **Write to the reader as "you"/"your", consistently, not about "engineering leaders" in
+  the third person.** This is the one feature every post shares without exception.
+- **No em dashes as prose punctuation.** Most posts use none at all. Where they appear
+  it's narrowly for labeling a code snippet's file path, a term/definition pair inside a
+  list item, or an attribution right after a link — never mid-sentence. Use a comma,
+  parentheses, or a new sentence instead.
+- **Headings: `##` top level, `###` for subsections, occasionally `####` for a deep
+  how-to subsection. Never an `#`/h1 in the body** — the frontmatter title is the h1.
+  Phrase headings as a claim or noun phrase ("The amplifier, not the fixer", "What to do
+  on Monday morning"), not a question.
+- **Code only when the post is genuinely hands-on/technical — most aren't.** A
+  leadership/organisational argument should carry no code at all; don't insert a snippet
+  to look technical. When code does appear, keep fenced blocks realistic (a `#`-comment
+  naming the file it belongs to is typical) and keep inline code to short identifiers —
+  an attribute name, a file path, a command — never a full sentence.
+- **Reach for a list only when it's a genuine step-by-step or option breakdown; don't
+  force one into a narrative post.** Blockquotes are rare (one instance in ten posts, a
+  labeled callout box rather than a rendered quotation) — thin evidence, so treat them as
+  an option, not a rule either way.
+- **Bold short terms or claims for a skimming reader, never a full sentence. Italics,
+  lightly, if at all.**
+- **A generated draft has no standing to originate a first-person aside ("I think...",
+  "we shipped...") any more than it does to invent the opening incident** — see "What a
+  draft must not do" above; the same `<!-- OPENING INCIDENT: needs a real example -->`
+  marker covers both. The one safe residue: the post's first sentence is always concrete
+  and specific, never scene-setting or a dictionary-style definition.
+- **No fixed word-count target.** The set runs from roughly 1,000 to 2,800 words; match
+  length to what the grounding actually supports rather than padding toward a number.

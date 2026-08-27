@@ -36,7 +36,7 @@ written.
 | `config/feeds.json` | The 46-feed allowlist as data: `[{ name, feedUrl }]`. **Deliberately not under `src/`** — `rules/no-hardcoded-urls.yml` matches `https?://` string literals and is `language: TypeScript`, so 46 URLs in a `.ts` file would fire it 46 times while a JSON file is invisible to it. This is also the "version-controlled file" `spec.md` → Source allowlist asks for, reviewable like any other change. Needs `resolveJsonModule` in `tsconfig.json` — see below. |
 | `src/lib/feeds.ts` | Typed loader over that JSON → `Source[]`. Carries no URL literal of its own. |
 | `src/lib/d1.ts` | Every query against the four tables. Owns the chunked `seen_urls` lookup (100 bound params per query, ≤ 50 queries per invocation) and the `topics` status transitions. |
-| `src/lib/feed.ts` | RSS **and** Atom parsing over `HTMLRewriter`, streaming, plus `GATHER_WINDOW_DAYS` / `GATHER_UNDATED_MAX_PER_FEED`. Streaming rather than string work is what keeps arXiv cs.AI (743 KiB, the largest feed) inside 10 ms of CPU. |
+| `src/lib/feed.ts` | RSS **and** Atom parsing over `HTMLRewriter`, streaming. Applies the recency window as parameters (`windowDays`/`undatedMax`) rather than redefining `GATHER_WINDOW_DAYS` / `GATHER_UNDATED_MAX_PER_FEED`, which stay in `workflow.ts`. Streaming rather than string work is what keeps arXiv cs.AI (743 KiB, the largest feed) inside 10 ms of CPU. |
 | `src/lib/extract.ts` | Article body → plain text over `HTMLRewriter`, truncated before it reaches a prompt. `REVIEW.md` pass 1 names regex-over-article-body as a reject. |
 | `src/lib/github.ts` | GitHub REST client: read the base ref, create `research/*`, PUT the file, open the PR. **Takes `baseBranch` as a plain string parameter and never names the identifier `BLOG_BASE_BRANCH`** — `base-branch-not-a-write-target` flags any `src/` file that mentions that identifier *and* contains `refs/heads` or PUTs to `/contents/`, which the branch-creation call unavoidably does. Splitting the file is what keeps the check honest instead of suppressed. |
 | `src/lib/mdx.ts` | Frontmatter emission and validation against the blog's `src/content.config.ts`. Never emits an `image` key; always `draft: true`; kebab-case slug with no space. |
@@ -113,12 +113,12 @@ neuron estimate that is measured rather than assumed.
 `config/feeds.json`, `src/lib/feeds.ts`, `src/lib/d1.ts`, `src/lib/github.ts`,
 `src/lib/mdx.ts`, plus the three step bodies that need no inference and no feed parsing:
 
-- `selectTopic` — oldest `queued` row first; only when the queue is empty does it propose,
-  and a proposal is checked against **both** `BLOG_FEED_URL` and `draft: true` posts in
-  the blog repo (`spec.md` req. 3 — drafts are absent from the feed, so a feed-only check
-  proposes what is already half-written). Idempotent: the `queued` → `in_progress`
-  transition must be safe to replay, so it is conditional on current status rather than a
-  blind `UPDATE`.
+- `selectTopic` — oldest `queued` row first; the `queued` → `in_progress` transition is
+  conditional on current status rather than a blind `UPDATE`, so it is safe to replay. **The
+  propose-when-empty half of this body (spec.md req. 3) moved to step 4**: it needs to read
+  both `BLOG_FEED_URL` and the blog repo's `draft: true` posts, and neither read seam existed
+  yet in this step — `feeds.ts` here is the allowlist *loader* only, and `github.ts` here is
+  scoped to the branch/commit/PR write path, not a repo-content reader.
 - `loadSources` — reads the allowlist through `feeds.ts`.
 - `recordOutcome` — `INSERT … ON CONFLICT(instance_id) DO UPDATE`, keyed on the instance
   id. `spec.md` req. 9 wants exactly one row per run whatever the outcome, and steps
@@ -132,7 +132,12 @@ that writes to another repository.
 
 ### 4. Discovery (`#3`, part 2 of 3)
 
-`src/lib/feed.ts` and two bodies:
+`src/lib/feed.ts`, two bodies, and `selectTopic`'s propose-when-empty path reassigned from
+step 3: it needs `feed.ts` (new here) to read `BLOG_FEED_URL` and a new `listBlogPostSlugs`
+read added to `github.ts` (which now exists, from step 3) to read the blog repo's `draft:
+true` posts — both seams `selectTopic`'s propose path needs are only available starting
+this step. Candidate generation itself is non-inference, per spec.md's "inference happens
+in exactly two places": the newest still-uncovered item from the first allowlisted feed.
 
 - `gatherCandidates` — one fetch, streamed parse, RSS and Atom. The 30-day window is
   applied **here**, per feed, never in `shortlist`. Dated items are filtered by date and

@@ -10,6 +10,8 @@ export interface Env {
   LLM_MODEL: string;
   AI_GATEWAY: string;
   NEURON_BUDGET_PER_RUN: string;
+  /** Base URL for the GitHub REST client (src/lib/github.ts). Keeps that file free of a URL literal. */
+  GITHUB_API_BASE: string;
 
   /** Set with `wrangler secret put GITHUB_TOKEN`. Never in wrangler.toml. */
   GITHUB_TOKEN: string;
@@ -32,6 +34,19 @@ export interface Topic {
 export interface Source {
   name: string;
   feedUrl: string;
+}
+
+/**
+ * One item as parsed from a raw RSS or Atom feed (src/lib/feed.ts), before
+ * the source name is attached and the recency window applied - both of
+ * which `gatherCandidates` (src/workflow.ts) does to turn this into a
+ * `Candidate`.
+ */
+export interface FeedItem {
+  url: string;
+  title: string;
+  /** Raw date text from the feed (RFC 822 `pubDate` or RFC 3339 `published`/`updated`), or null if absent/unparseable. */
+  publishedAt: string | null;
 }
 
 /** A candidate article discovered in a feed, before it has been read. */

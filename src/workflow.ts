@@ -1,5 +1,21 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import type { ArticleSummary, Candidate, Draft, Env, ResearchParams, Source, Topic } from './lib/types';
+import { claimOldestQueuedTopic, claimTopicById, findOrProposeTopic, findSeenUrls, recordRunOutcome } from './lib/d1';
+import { extractArticleText } from './lib/extract';
+import { applyGatherWindow, parseFeed } from './lib/feed';
+import { loadFeeds } from './lib/feeds';
+import {
+  createBranch,
+  listBlogPostSlugs,
+  openPullRequest as githubOpenPullRequest,
+  putFile,
+  readBaseRefSha,
+  readRepoFile,
+} from './lib/github';
+import type { GithubConfig } from './lib/github';
+import { createLlm, neuronsFor } from './lib/llm';
+import { blogPostPath, renderMdx, validateAgainstContentConfig, validateDraft } from './lib/mdx';
+import { buildMapMessages, buildReduceMessages, parseMapResponse, parseReduceResponse } from './lib/prompts';
+import type { ArticleSummary, Candidate, Draft, Env, FeedItem, ResearchParams, RunOutcome, Source, Topic } from './lib/types';
 import {
   ATTR_NEURONS_BUDGET,
   ATTR_NEURONS_SPENT,
@@ -56,7 +72,7 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
           [ATTR_RUN_STATUS]: 'no_topic',
         },
         async () => {
-          return recordOutcome(this.env, { status: 'no_topic', neuronsSpent });
+          return recordOutcome(this.env, event.instanceId, { status: 'no_topic', neuronsSpent });
         },
       );
       return;
@@ -102,7 +118,7 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
           [ATTR_RUN_STATUS]: 'insufficient_sources',
         },
         async () => {
-          return recordOutcome(this.env, {
+          return recordOutcome(this.env, event.instanceId, {
             status: 'insufficient_sources',
             topicId: topic.id,
             neuronsSpent,
@@ -139,7 +155,7 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
           [ATTR_RUN_STATUS]: 'insufficient_sources',
         },
         async () => {
-          return recordOutcome(this.env, {
+          return recordOutcome(this.env, event.instanceId, {
             status: 'insufficient_sources',
             topicId: topic.id,
             neuronsSpent,
@@ -169,7 +185,7 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
         [ATTR_RUN_STATUS]: 'succeeded',
       },
       async () => {
-        return recordOutcome(this.env, {
+        return recordOutcome(this.env, event.instanceId, {
           status: 'succeeded',
           topicId: topic.id,
           sourcesUsed: summaries.length,
@@ -192,14 +208,46 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
 const MIN_SOURCES = 2;
 const MIN_PRACTICES = 1;
 
-function isGrounded(summaries: ArticleSummary[]): boolean {
+export function isGrounded(summaries: ArticleSummary[]): boolean {
   const practices = summaries.filter((s) => s.attributablePractice !== null);
   return summaries.length >= MIN_SOURCES && practices.length >= MIN_PRACTICES;
 }
 
-/** Conservative per-article and synthesis estimates used for the budget gate. */
+/** Conservative per-article estimate used for the budget gate - see spec.md's cost table (measured, #18). */
 const SUMMARY_NEURON_ESTIMATE = 300;
-const SYNTHESIS_NEURON_RESERVE = 1000;
+/**
+ * Headroom the budget gate reserves for the synthesis call, so it is never
+ * the call `run()` skips (spec.md req. 6). This PR measured a real
+ * synthesis call - through `createLlm()`, the real `buildReduceMessages()`,
+ * 15 production-shaped summaries, `SYNTHESIS_MAX_TOKENS` as the ceiling - at
+ * **222 neurons** (2,576 input / 2,045 output tokens, `finish_reason:
+ * "stop"`, well short of the 8,192-token ceiling; raw envelope in this PR's
+ * body). 500 keeps roughly 2x margin over that single measurement rather
+ * than matching it exactly - one sample, and a harder topic could reason
+ * longer. This replaces the previous, pre-measurement value of 1,000.
+ */
+const SYNTHESIS_NEURON_RESERVE = 500;
+
+/**
+ * `maxTokens` for the map call. Matches what `plan.md` step 2's probe used
+ * (4,096) - the 203/223-neuron measurements in spec.md's cost table were
+ * taken at this ceiling, so raising it materially would need remeasuring.
+ */
+const MAP_MAX_TOKENS = 4096;
+/**
+ * `maxTokens` for the synthesis call. `@cf/openai/gpt-oss-120b` spends
+ * reasoning tokens before content ones (issue #18), and the reduce prompt
+ * asks for a full MDX post body (blog-voice: 1,000-2,800 words, roughly
+ * 1,300-3,700 content tokens) on top of that reasoning - `llm.ts`'s
+ * `DEFAULT_MAX_TOKENS` (2,048) is nowhere near enough and would truncate the
+ * draft body into the model's reasoning trace via `normalise()`'s fallback.
+ * The measured call (see `SYNTHESIS_NEURON_RESERVE`) used 2,045 of this
+ * 8,192 ceiling and returned `finish_reason: "stop"` - comfortable margin,
+ * not a near-miss. `synthesizeDraft` below still treats
+ * `finishReason === 'length'` as a hard failure rather than silently
+ * committing a truncated draft, in case a harder topic ever reaches it.
+ */
+const SYNTHESIS_MAX_TOKENS = 8192;
 
 /**
  * Discovery bounds. They exist because D1 allows 100 bound parameters per query
@@ -216,90 +264,414 @@ const SYNTHESIS_NEURON_RESERVE = 1000;
  * find. The date window bounds the common case; SHORTLIST_MAX_CANDIDATES bounds
  * a feed that dumps its archive with fresh timestamps.
  */
-const GATHER_WINDOW_DAYS = 30;
+export const GATHER_WINDOW_DAYS = 30;
 /** Backstop for items with no parseable date only. Zero such items today. */
-const GATHER_UNDATED_MAX_PER_FEED = 20;
+export const GATHER_UNDATED_MAX_PER_FEED = 20;
 /** Newest-first ceiling: 40 of D1's 50 queries, ten spare. */
-const SHORTLIST_MAX_CANDIDATES = 4000;
+export const SHORTLIST_MAX_CANDIDATES = 4000;
+/**
+ * Final shortlist size handed to the map step (spec.md's pipeline diagram:
+ * "rank vs topic, cap at 15"). Sets the neuron bill - see spec.md ->
+ * Inference: 15 summaries plus one synthesis call is the ~4,132/run figure
+ * measured in #18, so this is not a knob to turn casually.
+ */
+export const SHORTLIST_TOP_N = 15;
+/**
+ * How many meaningful title-word overlaps with an existing (published or
+ * drafted) post count as "already covered" when the agent proposes its own
+ * topic (spec.md req. 3). Heuristic, not semantic - see "Deferred: Vectorize
+ * semantic dedupe" in spec.md, which is what a real version of this check
+ * would use. Two shared non-stopword tokens is deliberately low: a proposal
+ * that shares that much vocabulary with something already on the blog is
+ * cheap to skip and expensive to publish twice.
+ */
+export const DUPLICATE_TOKEN_THRESHOLD = 2;
 
 // ---------------------------------------------------------------------------
-// Step bodies. Implemented in feature 001's build stage; see
-// features/001-scheduled-research-drafts/plan.md.
+// Step bodies.
 //
 // Each inference-bearing step returns its neuron cost alongside its result so
 // the caller can enforce NEURON_BUDGET_PER_RUN between steps.
 // ---------------------------------------------------------------------------
 
-function notImplemented(what: string): never {
-  throw new Error(`NotImplemented: ${what}`);
-}
+export async function selectTopic(env: Env, topicId: number | undefined): Promise<Topic | null> {
+  // A manually-targeted run (event.payload.topicId set) claims that specific
+  // row rather than draining the queue - see ResearchParams in lib/types.ts.
+  if (topicId !== undefined) {
+    return claimTopicById(env.DB, topicId);
+  }
 
-async function selectTopic(_env: Env, _topicId: number | undefined): Promise<Topic | null> {
-  // Dedupe must cover BOTH the published feed and `draft: true` posts in the blog
-  // repo - drafts are absent from the feed, so a feed-only check proposes topics
-  // that are already half-written. See spec requirement 3.
-  return notImplemented('selectTopic - drain the queue, else propose vs feed + repo drafts');
+  const queued = await claimOldestQueuedTopic(env.DB);
+  if (queued !== null) return queued;
+
+  // Only reached when the queue is empty (spec.md req. 2). Proposing a topic
+  // needs BOTH a non-inference way to generate a candidate and a dedupe
+  // check against BLOG_FEED_URL and `draft: true` posts in the blog repo
+  // (spec req. 3 - drafts are absent from the feed, so a feed-only check
+  // proposes what is already half-written). Neither read seam existed in
+  // #46 (feeds.ts there is the allowlist *loader* only; github.ts there is
+  // scoped to the branch/commit/PR write path). Both now do - feed.ts
+  // (parsing) is new in this PR, and github.ts gained `listBlogPostSlugs`
+  // here - so the reassignment plan.md records lands the work in this step
+  // instead. See features/001-scheduled-research-drafts/plan.md, steps 3
+  // and 4.
+  const proposal = await proposeTopic(env);
+  if (proposal === null) return null;
+
+  return findOrProposeTopic(env.DB, proposal);
 }
 
 async function loadSources(_env: Env): Promise<Source[]> {
-  return notImplemented('loadSources - read the approved RSS/Atom allowlist');
+  return loadFeeds();
 }
 
-async function gatherCandidates(_source: Source): Promise<Candidate[]> {
-  // Apply GATHER_WINDOW_DAYS here, in the per-feed step, never in `shortlist` -
-  // the point is to bound the candidate count before it is aggregated across 46
-  // feeds. Dated items are filtered by date, never truncated by rank;
-  // GATHER_UNDATED_MAX_PER_FEED applies only to items carrying no parseable date.
-  void GATHER_WINDOW_DAYS;
-  void GATHER_UNDATED_MAX_PER_FEED;
-  return notImplemented('gatherCandidates - fetch one feed, window it, parse with HTMLRewriter, no D1');
+/**
+ * Generates a candidate {title, angle} without inference (spec.md is
+ * explicit that inference happens in exactly two places - summarizeArticle
+ * and synthesizeDraft - neither of which is this). Deterministic and cheap
+ * enough to run inside the single `select-topic` step's budget:
+ *
+ *  1. The "published" set: parse BLOG_FEED_URL (one fetch) for post titles.
+ *  2. The "drafted" set: list post slugs under src/content/blog/ at the
+ *     repo's default branch (one fetch, `listBlogPostSlugs` -
+ *     github.ts) - no per-post read needed, because spec.md's own measured
+ *     fact ("the repo holds 33 posts and the feed 30 - the 3 missing are
+ *     all unpublished drafts") means repo slugs minus feed slugs already
+ *     *is* the drafted set, without reading a single file's frontmatter.
+ *  3. The candidate itself: the newest item from the first configured
+ *     discovery feed (deterministic, and - at 62 items - small enough to
+ *     parse well inside this step's CPU budget even alongside the two
+ *     reads above) whose title does not overlap either covered set past
+ *     DUPLICATE_TOKEN_THRESHOLD.
+ *
+ * Returns null on any read failure or when every candidate from the seed
+ * feed is already covered - `selectTopic` falls through to the existing
+ * `record-no-topic` exit either way.
+ */
+export async function proposeTopic(env: Env): Promise<{ title: string; angle: string | null } | null> {
+  const [publishedTitles, draftedSlugs] = await Promise.all([
+    fetchFeedTitles(env.BLOG_FEED_URL),
+    listBlogPostSlugs({ apiBase: env.GITHUB_API_BASE, token: env.GITHUB_TOKEN, repo: env.BLOG_REPO }).catch(
+      () => [] as string[],
+    ),
+  ]);
+
+  const covered = new Set<string>();
+  for (const title of publishedTitles) for (const word of tokenize(title)) covered.add(word);
+  for (const slug of draftedSlugs) for (const word of tokenize(slug.replace(/-/g, ' '))) covered.add(word);
+
+  const seed = loadFeeds()[0];
+  if (seed === undefined) return null;
+  const seedItems = await fetchFeedItems(seed.feedUrl);
+
+  for (const item of seedItems) {
+    if (item.title === '') continue;
+    const words = tokenize(item.title);
+    const overlap = words.filter((w) => covered.has(w)).length;
+    if (overlap < DUPLICATE_TOKEN_THRESHOLD) {
+      return { title: item.title, angle: null };
+    }
+  }
+  return null;
 }
 
-async function shortlistCandidates(
-  _env: Env,
-  _candidates: Candidate[],
-  _topic: Topic,
-): Promise<Candidate[]> {
-  // Take the newest SHORTLIST_MAX_CANDIDATES *before* touching D1: the batch is
-  // chunked at 100 bound params per query against a 50-query invocation budget.
-  void SHORTLIST_MAX_CANDIDATES;
-  return notImplemented(
-    'shortlistCandidates - cap at 4,000, seen_urls in chunks of 100 params, rank, cap at 15',
-  );
+async function fetchFeedItems(feedUrl: string): Promise<FeedItem[]> {
+  try {
+    const response = await fetch(feedUrl);
+    if (!response.ok) return [];
+    return await parseFeed(response);
+  } catch {
+    return [];
+  }
 }
 
-async function summarizeArticle(
-  _env: Env,
-  _candidate: Candidate,
-  _topic: Topic,
+async function fetchFeedTitles(feedUrl: string): Promise<string[]> {
+  const items = await fetchFeedItems(feedUrl);
+  return items.map((i) => i.title);
+}
+
+/**
+ * One fetch, streamed parse (src/lib/feed.ts), no D1. The 30-day window and
+ * the undated-item cap are applied here, per feed, never in `shortlist` -
+ * see GATHER_WINDOW_DAYS / GATHER_UNDATED_MAX_PER_FEED above and spec.md,
+ * "The recency window in `gather`". A feed that cannot be fetched or fails
+ * to parse contributes zero candidates rather than failing the step: one
+ * dead feed must not fail the run (spec.md risk table), and a feed that
+ * consistently returns nothing is a review finding against the allowlist,
+ * visible via `agent.sources.gathered` on the step's own span.
+ */
+export async function gatherCandidates(source: Source): Promise<Candidate[]> {
+  const items = await fetchFeedItems(source.feedUrl);
+  const windowed = applyGatherWindow(items, {
+    windowDays: GATHER_WINDOW_DAYS,
+    undatedMax: GATHER_UNDATED_MAX_PER_FEED,
+  });
+  return windowed.map((item) => ({ ...item, sourceName: source.name }));
+}
+
+/** Sort key for "newest first": undated items sort last, so they are the first the SHORTLIST_MAX_CANDIDATES ceiling drops. */
+function dateKey(publishedAt: string | null): number {
+  if (publishedAt === null) return Number.NEGATIVE_INFINITY;
+  const parsed = Date.parse(publishedAt);
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+}
+
+const STOPWORDS = new Set([
+  'the', 'a', 'an', 'of', 'in', 'on', 'for', 'to', 'and', 'or', 'is', 'are',
+  'with', 'how', 'why', 'what', 'this', 'that', 'from', 'at', 'by', 'as',
+  'it', 'its', 'be', 'we', 'you', 'your', 'new', 'v1', 'vs',
+]);
+
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length > 2 && !STOPWORDS.has(w));
+}
+
+/**
+ * A paper/finding/first-hand-practice writeup, favoured because that is
+ * what the grounding gate (isGrounded, MIN_PRACTICES) needs at least one of.
+ */
+const PRACTICE_SIGNAL_RE =
+  /\b(paper|study|studies|research|benchmark|arxiv|survey|dataset|evaluation|evaluat\w*|results?|findings?|we (built|found|measured|shipped)|case study)\b/i;
+/** Roundups, opinion and newsletter framing, deprioritised in favour of attributable material. */
+const COMMENTARY_SIGNAL_RE = /\b(opinion|thoughts on|roundup|newsletter|weekly|digest|why i think|announcing)\b/i;
+
+/**
+ * Heuristic relevance score against `topic`. Takes no `Ai` binding by
+ * design (spec.md: inference happens in exactly two places, and ranking is
+ * not one of them, which is what keeps the feed count invariant to the
+ * neuron bill). Word overlap with the topic's title/angle, nudged toward
+ * material carrying an attributable practice or finding over commentary
+ * (spec.md -> Inference: "Ranking in shortlist should therefore favour
+ * material that carries an attributable practice or finding over
+ * commentary").
+ */
+function relevanceScore(candidate: Candidate, topic: Topic): number {
+  const topicWords = new Set([...tokenize(topic.title), ...tokenize(topic.angle ?? '')]);
+  const candidateWords = tokenize(candidate.title);
+  let overlap = 0;
+  for (const word of candidateWords) if (topicWords.has(word)) overlap++;
+
+  let score = overlap;
+  if (PRACTICE_SIGNAL_RE.test(candidate.title)) score += 2;
+  if (COMMENTARY_SIGNAL_RE.test(candidate.title)) score -= 1;
+  return score;
+}
+
+/**
+ * Newest-first cap at SHORTLIST_MAX_CANDIDATES *before* touching D1 (D1
+ * caps a query at 100 bound params and an invocation at 50 queries), then
+ * the batched `seen_urls` dedupe (`findSeenUrls`, chunked at 100 params -
+ * `d1.ts` owns that chunking, not reimplemented here), then heuristic
+ * ranking against `topic`, then a cap of SHORTLIST_TOP_N. See spec.md, "The
+ * aggregate ceiling in `shortlist`".
+ */
+export async function shortlistCandidates(env: Env, candidates: Candidate[], topic: Topic): Promise<Candidate[]> {
+  const capped = [...candidates].sort((a, b) => dateKey(b.publishedAt) - dateKey(a.publishedAt)).slice(0, SHORTLIST_MAX_CANDIDATES);
+
+  const seen = await findSeenUrls(env.DB, capped.map((c) => c.url));
+  const unseen = capped.filter((c) => !seen.has(c.url));
+
+  return unseen
+    .map((candidate) => ({ candidate, score: relevanceScore(candidate, topic) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, SHORTLIST_TOP_N)
+    .map((r) => r.candidate);
+}
+
+/**
+ * One fetch, streamed extraction (`src/lib/extract.ts`), one `Llm` call.
+ * Returns `summary: null` - never throws for anything short of the `Llm`
+ * call itself failing - so one bad article (unfetchable, unextractable, or a
+ * response that doesn't parse as the expected JSON) cannot fail the run
+ * (spec.md risk table). `neurons` is still reported on every path that
+ * actually spent them, so the budget gate in `run()` stays accurate even
+ * when the article was a bust.
+ */
+export async function summarizeArticle(
+  env: Env,
+  candidate: Candidate,
+  topic: Topic,
 ): Promise<{ summary: ArticleSummary | null; neurons: number }> {
-  return notImplemented('summarizeArticle - fetch, extract text, one LLM call, report neurons');
+  let response: Response;
+  try {
+    response = await fetch(candidate.url);
+  } catch {
+    return { summary: null, neurons: 0 };
+  }
+  if (!response.ok) return { summary: null, neurons: 0 };
+
+  const articleText = await extractArticleText(response);
+  if (articleText === '') return { summary: null, neurons: 0 };
+
+  const llm = createLlm(env);
+  const result = await llm.complete({
+    messages: buildMapMessages(topic, candidate, articleText),
+    maxTokens: MAP_MAX_TOKENS,
+  });
+  const neurons = neuronsFor(result);
+
+  // A truncated completion's text (if any survived) is not trustworthy JSON
+  // - skip parsing it rather than risk parseMapResponse accepting a
+  // partial/malformed object by accident.
+  if (result.finishReason === 'length') return { summary: null, neurons };
+
+  const parsed = parseMapResponse(result.text);
+  if (parsed === null) return { summary: null, neurons };
+
+  return {
+    summary: { url: candidate.url, title: candidate.title, ...parsed },
+    neurons,
+  };
 }
 
-async function synthesizeDraft(
-  _env: Env,
-  _topic: Topic,
-  _summaries: ArticleSummary[],
+/** kebab-case, ASCII-only, matching mdx.ts's `SLUG_RE`. Falls back to a topic-id-based slug if a title yields nothing usable. */
+function slugify(title: string, fallbackId: number): string {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80)
+    .replace(/-+$/, '');
+  return slug === '' ? `research-topic-${fallbackId}` : slug;
+}
+
+/**
+ * One `Llm` call producing the draft's model-authored fields (title,
+ * description, tags, body), applying the `blog-voice` rules embedded in
+ * `src/lib/prompts.ts` - including the `<!-- OPENING INCIDENT: needs a real
+ * example -->` marker instruction. Never invents a war story: that
+ * instruction is the single most important rule in the skill, and nothing
+ * here gives the model room to originate one - see prompts.ts's
+ * REDUCE_SYSTEM_PROMPT.
+ *
+ * `slug`, `date`, `authors`, `draft` and the source list are computed here
+ * in TypeScript, never asked of the model: this is also what makes
+ * `openPullRequest`'s branch name deterministic across a retry (see its own
+ * comment) - `date` is fixed once, at the point `synthesizeDraft`'s
+ * `step.do` result is first cached, and never recomputed afterwards.
+ */
+export async function synthesizeDraft(
+  env: Env,
+  topic: Topic,
+  summaries: ArticleSummary[],
 ): Promise<{ draft: Draft; neurons: number }> {
-  return notImplemented('synthesizeDraft - brief + draft, applying the blog-voice skill');
+  const llm = createLlm(env);
+  const result = await llm.complete({
+    messages: buildReduceMessages(topic, summaries),
+    maxTokens: SYNTHESIS_MAX_TOKENS,
+  });
+  const neurons = neuronsFor(result);
+
+  if (result.finishReason === 'length') {
+    throw new Error(`synthesizeDraft: completion truncated at maxTokens=${SYNTHESIS_MAX_TOKENS} before the draft finished`);
+  }
+
+  const parsed = parseReduceResponse(result.text);
+  if (parsed === null) {
+    throw new Error('synthesizeDraft: model response was not valid JSON in the expected shape');
+  }
+
+  const draft: Draft = {
+    slug: slugify(parsed.title, topic.id),
+    title: parsed.title,
+    description: parsed.description,
+    date: new Date().toISOString().slice(0, 10),
+    authors: ['nimeshjm'],
+    tags: parsed.tags,
+    draft: true,
+    brief: renderBrief(topic, summaries),
+    body: parsed.body,
+    sources: summaries.map((s) => s.url),
+  };
+
+  return { draft, neurons };
 }
 
-async function openPullRequest(_env: Env, _draft: Draft): Promise<string> {
-  // Writes src/content/blog/<slug>/index.mdx on a research/* branch. Validate
-  // frontmatter against src/content.config.ts first; never emit an `image` key
-  // (the Astro image() helper needs a real file, so it would break the build).
-  return notImplemented('openPullRequest - validate vs content.config.ts, branch-only');
+/** The pull request body: deterministic, never model-authored, so a source link can never be hallucinated (spec.md req. 7). */
+function renderBrief(topic: Topic, summaries: ArticleSummary[]): string {
+  const lines = [`# Research brief: ${topic.title}`, ''];
+  if (topic.angle !== null) lines.push(`**Angle:** ${topic.angle}`, '');
+  lines.push('## Sources', '');
+  for (const s of summaries) {
+    const practice = s.attributablePractice ?? 'commentary';
+    lines.push(`- [${s.title}](${s.url}) — ${practice}`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Validates frontmatter (statically, then against the blog's live
+ * `content.config.ts`), creates `research/<yyyy-mm-dd>-<slug>`, commits
+ * `src/content/blog/<slug>/index.mdx`, opens the PR with the brief as its
+ * body. Idempotent on retry - see the module-level comment below for the
+ * mechanism-by-mechanism breakdown; every write here delegates to
+ * `src/lib/github.ts`'s own idempotent primitives, none of it reimplemented.
+ *
+ * The agent never pushes to `BLOG_BASE_BRANCH`: `prParams.base` below is the
+ * only read of it, inline inside a `base:` property so
+ * `base-branch-not-a-write-target` can prove that structurally, and it is
+ * only ever passed to `readBaseRefSha` (a GET) and as the PR's `base` field
+ * - never to `createBranch` or `putFile`, which are what could write to it.
+ */
+export async function openPullRequest(env: Env, draft: Draft): Promise<string> {
+  validateDraft(draft);
+
+  const config: GithubConfig = { apiBase: env.GITHUB_API_BASE, token: env.GITHUB_TOKEN, repo: env.BLOG_REPO };
+
+  // Dynamic check against the live schema - spec.md: "the PR step reads it
+  // ... rather than trusting the copy above, so a schema change upstream
+  // surfaces as a failed step instead of a broken build." A missing schema
+  // file is itself surfaced the same way (readRepoFile returns null here
+  // only on 404; any other failure already threw inside it).
+  const schemaSource = await readRepoFile(config, 'src/content.config.ts');
+  if (schemaSource === null) {
+    throw new Error('openPullRequest: src/content.config.ts not found in the blog repo - cannot validate frontmatter');
+  }
+  validateAgainstContentConfig(schemaSource);
+
+  const prParams = {
+    title: draft.title,
+    body: draft.brief,
+    head: `research/${draft.date}-${draft.slug}`,
+    base: env.BLOG_BASE_BRANCH,
+  };
+
+  const baseSha = await readBaseRefSha(config, prParams.base);
+  await createBranch(config, prParams.head, baseSha); // idempotent: 422 (already exists) is success
+
+  await putFile(config, {
+    path: blogPostPath(draft.slug),
+    content: renderMdx(draft),
+    message: `Add research draft: ${draft.title}`,
+    branch: prParams.head,
+  }); // idempotent: reads the file's current sha on that branch first
+
+  return githubOpenPullRequest(config, prParams); // idempotent: reuses an existing open PR for this head
 }
 
 async function recordOutcome(
-  _env: Env,
-  _outcome: {
-    status: string;
+  env: Env,
+  instanceId: string,
+  outcome: {
+    status: RunOutcome['status'];
     topicId?: number;
     sourcesUsed?: number;
     neuronsSpent: number;
     prUrl?: string | null;
   },
 ): Promise<void> {
-  return notImplemented('recordOutcome - insert into runs');
+  // INSERT ... ON CONFLICT(instance_id) DO UPDATE, keyed on the Workflow
+  // instance id: spec requirement 9 wants exactly one row per run whatever
+  // the outcome, and every record-* step above is retried like any other.
+  return recordRunOutcome(env.DB, {
+    instanceId,
+    topicId: outcome.topicId ?? null,
+    status: outcome.status,
+    neuronsSpent: outcome.neuronsSpent,
+    sourcesUsed: outcome.sourcesUsed ?? 0,
+    prUrl: outcome.prUrl ?? null,
+  });
 }
