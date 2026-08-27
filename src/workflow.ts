@@ -43,10 +43,15 @@ import {
  * The research pipeline.
  *
  * Structured as a Workflow rather than a plain cron handler because the free
- * plan gives 10 ms of CPU per *invocation* and 15 minutes of wall-clock for a
- * whole cron run, whereas a Workflow gets 10 ms of CPU per *step* with no
- * wall-clock cap. Parsing ~46 feeds and ~15 articles cannot fit in one 10 ms
- * budget, so each fetch-and-parse is its own step.
+ * plan caps `scheduled()` at 15 minutes of wall-clock for the whole run, and
+ * a Workflow step carries no such cap. The 10 ms CPU budget is charged per
+ * invocation, *not* reset at each `step.do` - Workflows packs consecutive
+ * fast steps into one invocation instead (measured 2026-08-27, #61: one feed
+ * parse in an invocation passes, two pass, three fail with Workers error
+ * `1102`). What a step boundary buys is a *chance* of a fresh invocation,
+ * never a guarantee - so parsing ~46 feeds and ~15 articles still has to
+ * stay one fetch-and-parse per step, on the chance that pays off, not on a
+ * promise the platform never made.
  *
  * Every step body must be idempotent: Workflows retry steps on failure.
  */

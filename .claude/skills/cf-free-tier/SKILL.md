@@ -12,9 +12,8 @@ inference. These are the limits that actually bite, and what each one forces.
 
 | Limit | Free value | Verified |
 |---|---|---|
-| Worker CPU time | **10 ms per invocation** | Workers limits docs |
-| Workflow step CPU | **10 ms per step**, wall-clock unlimited | Workflows limits docs |
-| Steps per Workflow | 1,024 | Workflows limits docs |
+| Worker CPU time | **10 ms per invocation.** A Workflow step is not its own invocation - Workflows packs consecutive fast steps into one, and only the wall-clock cap is scoped to a single step | Workers + Workflows limits docs, measured 2026-08-27 (#61) |
+| Steps per Workflow | 1,024, wall-clock unlimited per step | Workflows limits docs |
 | Cron trigger wall-clock | 15 min per run | Workers limits docs |
 | Cron triggers | 5 per account | Workers limits docs |
 | Subrequests | **50 per request/step** | Workers limits docs |
@@ -26,15 +25,22 @@ inference. These are the limits that actually bite, and what each one forces.
 
 ## Rules that follow
 
-**CPU is per step, so make steps small.** 10 ms is CPU, not wall time — waiting on
-`fetch` is free, parsing the response is not. Never parse many feeds or many articles in
-one step. One feed per step, one article per step. If a step is close to the limit, split
-it; there are 1,024 available.
+**Keep steps small anyway — a step boundary buys a chance, not a guarantee.** 10 ms of
+CPU is charged per invocation. Workflows packs consecutive fast steps into one
+invocation rather than starting fresh at each `step.do`, so a step boundary only gives
+the runtime an *opportunity* to roll to a new invocation, never a promise that it will.
+Measured 2026-08-27 (#61), replaying `run()`'s gather loop in one invocation: one feed
+parse passes, two pass (393 candidates accumulated), three fail with Workers error
+`1102`. Keep parsing to one feed and one article per unit of work regardless — it is
+still what makes each unit small enough to survive whichever invocation it lands in, and
+it is the only lever that exists. If a step is close to the limit, split it further;
+there are 1,024 available.
 
 **Orchestration belongs in the Workflow, never in `scheduled()`.** The cron handler gets
-10 ms of CPU and 15 minutes of wall-clock for the entire run. A Workflow step gets its
-own 10 ms and unlimited wall-clock. Moving logic back into the handler is the single
-most likely way to break this agent.
+10 ms of CPU and 15 minutes of wall-clock for the entire run, both fixed at the handler's
+outer boundary with no per-unit reprieve. A Workflow gives every step a wall-clock
+exemption and the *chance* of a fresh CPU budget described above. Moving logic back into
+the handler is the single most likely way to break this agent.
 
 **One fetch per step.** 50 subrequests per step sounds generous until a redirect chain
 counts against it. Keep it to one primary fetch and its redirects.

@@ -3,7 +3,8 @@ import type { FeedItem, WindowedItem } from './types';
 /**
  * RSS 2.0 and Atom parsing over `HTMLRewriter`, the platform's native
  * streaming parser - this is what keeps arXiv cs.AI (743 KiB, the largest
- * feed in the allowlist) inside the 10 ms per-step CPU budget.
+ * feed in the allowlist) cheap against the 10 ms CPU budget, which is
+ * charged per invocation and may already be shared with other steps.
  * `HTMLRewriter` tokenizes natively and only invokes a JS callback per
  * matched element/text chunk; it never materializes the document as one
  * string or a DOM the way `response.text()` followed by a parser (or regex

@@ -18,7 +18,7 @@
 // before trusting any row that claims a specific check fails. The eslint
 // rows get the same treatment (their own baseline row).
 //
-// The checker-based rows cover exactly the 11 checks review-checks.mjs still
+// The checker-based rows cover exactly the 12 checks review-checks.mjs still
 // implements. The other 7 (moved to ast-grep, or dropped for
 // `no-credential-literals` - see the comment in review-checks.mjs) have no
 // rows here any more; their mutation coverage now lives in rule-tests/*.yml.
@@ -246,6 +246,87 @@ const rows = [
         '      if (neuronsSpent + SUMMARY_NEURON_ESTIMATE > budget - SYNTHESIS_NEURON_RESERVE) break;\n\n',
         '',
       );
+    },
+  },
+  // -------------------------------------------------------------------------
+  // `cpu-premise-is-per-invocation` (requirement 11, see the comment in
+  // review-checks.mjs) - proves the stale-phrase scan fires in prose and in
+  // code, fires across a wrapped line break and not only within one line,
+  // and that the sentinel is load-bearing on its own rather than decorative
+  // alongside the stale-phrase scan.
+  // -------------------------------------------------------------------------
+  {
+    name: 'reintroduce "10 ms ... per step" prose in a markdown file (CLAUDE.md)',
+    expectFail: ['cpu-premise-is-per-invocation'],
+    expectFindingMatch: {
+      'cpu-premise-is-per-invocation': /stale per-step CPU premise/,
+    },
+    mutate(dir) {
+      // Inserted as a new paragraph rather than overwriting the corrected
+      // bullet at :62 - this row isolates the stale-phrase detector from the
+      // sentinel (row below), so a failure here can only mean the detector
+      // itself stopped matching.
+      mustReplace(
+        dir,
+        'CLAUDE.md',
+        '## Repeated mistakes',
+        'Mutation-row probe: the budget is 10 ms per step.\n\n## Repeated mistakes',
+      );
+    },
+  },
+  {
+    name: 'reintroduce the stale premise in a .ts comment (src/lib/feed.ts)',
+    expectFail: ['cpu-premise-is-per-invocation'],
+    expectFindingMatch: {
+      'cpu-premise-is-per-invocation': /stale per-step CPU premise/,
+    },
+    mutate(dir) {
+      mustReplace(
+        dir,
+        'src/lib/feed.ts',
+        "import type { FeedItem, WindowedItem } from './types';",
+        "import type { FeedItem, WindowedItem } from './types';\n\n// Mutation-row probe: 10 ms CPU per step.",
+      );
+    },
+  },
+  {
+    name: 'reintroduce the stale premise wrapped across two lines - proves the sliding window, not a single-line grep',
+    expectFail: ['cpu-premise-is-per-invocation'],
+    expectFindingMatch: {
+      'cpu-premise-is-per-invocation': /stale per-step CPU premise/,
+    },
+    mutate(dir) {
+      // "10 ms" ends one line and "per step" opens the next, with nothing
+      // between them but the line break the checker's two-line window
+      // collapses to a single space - a single-line-only grep would miss
+      // this entirely.
+      mustReplace(
+        dir,
+        'CLAUDE.md',
+        '## Repeated mistakes',
+        'Mutation-row probe: the budget is 10 ms\nper step, split across a line break.\n\n## Repeated mistakes',
+      );
+    },
+  },
+  {
+    name: 'strip enough corrected per-invocation assertions in feature 001 spec.md to drop below the sentinel',
+    expectFail: ['cpu-premise-is-per-invocation'],
+    expectFindingMatch: {
+      'cpu-premise-is-per-invocation': /sentinel: only \d+ correct per-invocation assertions found/,
+    },
+    mutate(dir) {
+      // Strips every corrected "per invocation" assertion this file carries
+      // (4 of the 11 the sentinel counts) without touching the stale-phrase
+      // detector's input at all - proves the sentinel fires on its own when
+      // the tree simply stops asserting the corrected premise, rather than
+      // riding along on the rows above.
+      const rel = 'features/001-scheduled-research-drafts/spec.md';
+      const text = readFile(dir, rel);
+      const stripped = text.replace(/per[-\s]invocation/gi, 'per unit of work');
+      if (stripped === text) {
+        throw new Error(`expected at least one "per invocation" occurrence to strip in ${rel}`);
+      }
+      writeFile(dir, rel, stripped);
     },
   },
   {

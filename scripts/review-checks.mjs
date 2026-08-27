@@ -303,6 +303,95 @@ checks.push({
   },
 });
 
+// The design premise this whole feature (#61) exists to correct: CPU is per
+// *invocation*, not per step - a Workflow step is not a fresh budget, it is
+// packed with other fast steps into one invocation and only the wall-clock
+// cap is per step. Left in place anywhere in the tree, the same bug gets
+// re-derived on the next feature (spec.md requirement 11, plan.md "The CPU
+// premise"). This is a grep, not a hand-checked list of files, because a
+// list goes stale.
+//
+// A two-line sliding window: prose that wraps across one line break is still
+// matched, and the reported line is exact. `|` is excluded from the gap so a
+// match can never run from one table cell into the next - the skill's own
+// table has the correct assertion one row above the stale one, and a
+// paragraph-granular scan reports that as one finding starting on the
+// correct line.
+const CPU_STALE_RE =
+  /(?:10\s*ms(?:\s+of\s+CPU|\s+CPU)?[^.|]{0,50}?per[-\s]step|per[-\s]step[^.|]{0,50}?10\s*ms|10\s*ms\s+step\s+budget|(?:gets\s+)?its\s+own\s+10\s*ms|own\s+10\s*ms\s+and|step[^.|]{0,30}?inside\s+10\s*ms)/i;
+const CPU_CORRECT_RE = /10\s*ms[^.|]{0,40}?per[-\s]invocation/i;
+
+// features/002-gather-without-accumulation/ quotes the wrong premise on
+// purpose, in order to correct it (its own spec.md and plan.md are the
+// record of the bug). That is the carve-out, not a gap in this check's
+// coverage.
+const CPU_PREMISE_EXCLUDE_PREFIX = 'features/002-gather-without-accumulation/';
+
+// Sentinel: the number of correct per-invocation assertions this PR actually
+// lands, measured by running this check after the PR 5 edits. A legitimate
+// future reduction (a file merged away, prose tightened further) means
+// updating this number deliberately, not lowering the bar silently - same
+// style as the `>= 8` / `>= 11` sentinels above.
+const CPU_PREMISE_CORRECT_MIN = 11;
+
+checks.push({
+  id: 'cpu-premise-is-per-invocation',
+  pass: 1,
+  severity: 'Important',
+  run(ctx) {
+    const findings = [];
+    let correctLines = 0;
+
+    for (const rel of ctx.allFiles) {
+      if (rel.startsWith(CPU_PREMISE_EXCLUDE_PREFIX)) continue;
+      if (!(rel.endsWith('.md') || rel.endsWith('.ts'))) continue;
+      const text = ctx.readTextFile(rel);
+      if (text === null) continue;
+
+      const clean = text.split('\n').map((l) => l.replace(/[*`]/g, ''));
+      const reportedStaleLines = new Set();
+      const reportedCorrectLines = new Set();
+
+      for (let i = 0; i < clean.length; i++) {
+        const windowText = `${clean[i]} ${clean[i + 1] ?? ''}`.replace(/\s+/g, ' ');
+
+        // Same two-line window as the stale scan below, so a correct
+        // assertion that wraps across a line break (as prose in these files
+        // routinely does) is counted once rather than lost between two
+        // single-line tests.
+        const cm = CPU_CORRECT_RE.exec(windowText);
+        if (cm) {
+          const correctLine = cm.index < clean[i].length ? i + 1 : i + 2;
+          if (!reportedCorrectLines.has(correctLine)) {
+            reportedCorrectLines.add(correctLine);
+            correctLines++;
+          }
+        }
+
+        const m = CPU_STALE_RE.exec(windowText);
+        if (!m) continue;
+        const foundLine = m.index < clean[i].length ? i + 1 : i + 2;
+        if (reportedStaleLines.has(foundLine)) continue;
+        reportedStaleLines.add(foundLine);
+        findings.push({
+          file: rel,
+          line: foundLine,
+          message: `stale per-step CPU premise (requirement 11): ${JSON.stringify(m[0].trim())}`,
+        });
+      }
+    }
+
+    if (correctLines < CPU_PREMISE_CORRECT_MIN) {
+      findings.push({
+        file: 'scripts/review-checks.mjs',
+        line: 0,
+        message: `sentinel: only ${correctLines} correct per-invocation assertions found, expected >= ${CPU_PREMISE_CORRECT_MIN} - the matcher likely stopped matching`,
+      });
+    }
+    return findings;
+  },
+});
+
 // --- Pass 2: secrets ---------------------------------------------------------
 //
 // `no-credential-literals` (a local regex over every tracked file, looking
@@ -921,6 +1010,11 @@ checks.push({
 function buildContext(root, pr) {
   const files = listTrackedFiles(root);
   const srcFiles = files.filter((f) => f.startsWith('src/') && f.endsWith('.ts'));
+  // Full tracked-file list, for checks that walk wider than src/**/*.ts (e.g.
+  // cpu-premise-is-per-invocation, which greps every tracked .md and .ts
+  // file). Exposed here rather than having a check call listTrackedFiles a
+  // second time.
+  const allFiles = files;
 
   const textCache = new Map();
   function readTextFile(rel) {
@@ -967,7 +1061,7 @@ function buildContext(root, pr) {
     })(traceSf);
   }
 
-  return { root, srcFiles, readTextFile, getSourceFile, tracerBoundNames, attrConstantNames, pr };
+  return { root, srcFiles, allFiles, readTextFile, getSourceFile, tracerBoundNames, attrConstantNames, pr };
 }
 
 const PASS_TITLES = {

@@ -62,10 +62,12 @@ cron (06:00 UTC, every 2nd day of month)
 ```
 
 The step boundaries are load-bearing, not cosmetic. The free plan allows 10 ms of CPU
-per step and 50 subrequests per step; one feed or one article per step keeps both well
-inside budget, and gives Workflows a natural retry unit. This is also why orchestration
-cannot live in the `scheduled()` handler, which is capped at 15 minutes of wall-clock
-for the whole run.
+per invocation — not refreshed at every step boundary the way this spec first assumed,
+as feature 002 later measured (`features/002-gather-without-accumulation/spec.md`) —
+and 50 subrequests for each step. One feed or one article per step keeps both concerns
+small regardless, and gives Workflows a natural retry unit. This is also why
+orchestration cannot live in the `scheduled()` handler, which is capped at 15 minutes of
+wall-clock for the whole run.
 
 #### The recency window in `gather`
 
@@ -192,9 +194,10 @@ Published by the source itself, at a URL the source controls.
 **`danluu.com/atom.xml` was in this list and has been removed.** It is a full-archive Atom
 feed: 6.15 MiB and 128 items, of which **3** fell inside the 30-day window on 2026-08-26.
 It was 55% of every byte the run fetched and 0.4% of the candidates, and at 6.15 MiB it was
-the single largest parse in the pipeline — the one feed most likely to break the 10 ms
-per-step CPU budget. Long-form retrospectives are also the genre the recency window is
-least able to serve. Do not re-add it without a per-feed streaming cap.
+the single largest parse in the pipeline — the one feed most likely to blow the 10 ms
+CPU budget of whichever invocation happened to draw it. Long-form retrospectives are
+also the genre the recency window is least able to serve. Do not re-add it without a
+per-feed streaming cap.
 
 #### Syndicated feeds (34), via `Olshansk/rss-feeds`
 
@@ -292,8 +295,9 @@ Two prompt shapes, both on `@cf/openai/gpt-oss-120b` via `src/lib/llm.ts`:
   attributable practice or finding over commentary.
 
 Map-reduce rather than one long-context call. The model holds 128k, so this is not a
-context workaround: it keeps each step's parse inside 10 ms of CPU, bounds spend per
-article rather than per run, and lets a single failed article retry on its own.
+context workaround: it keeps each step's parse cheap against the 10 ms-per-invocation
+CPU budget, bounds spend per article rather than per run, and lets a single failed
+article retry on its own.
 
 Estimated cost per run at 31,818 neurons/M input and 68,182/M output. The summary row is
 now **measured**, not assumed: [#18](https://github.com/nimeshjm/blog-research-agent/issues/18)
@@ -380,7 +384,7 @@ What the extra 34 feeds do move is everything measured in steps, bytes and CPU:
 | `gather` steps | 13 | 46 | — |
 | Steps total | ~34 | ~67 | 1,024 per instance |
 | Feed bytes fetched | 9.50 MiB | **4.99 MiB** | wall-clock is uncapped |
-| Largest single feed | 6.15 MiB (`danluu.com`) | **0.73 MiB** (arXiv cs.AI) | 10 ms CPU per step |
+| Largest single feed | 6.15 MiB (`danluu.com`) | **0.73 MiB** (arXiv cs.AI) | 10 ms CPU per invocation |
 | Items across all feeds | 1,921 | 4,742 | — |
 | Candidates after the 30-day window | 592 | 678 | 4,000 ceiling in `shortlist` |
 | `seen_urls` queries in `shortlist` | 6 | 7 | 50 per invocation |
@@ -458,9 +462,15 @@ research brief; the committed file is the draft.
 
 ## Platform constraints applied
 
+> **2026-08-27 correction (#61):** the CPU row below originally read "per step." Feature
+> 002 measured that the budget is charged per invocation instead, and a step boundary
+> only buys a chance of a fresh one, not a guarantee — see
+> `features/002-gather-without-accumulation/spec.md`, "The measured facts this design is
+> built on."
+
 | Constraint | How the design respects it |
 |---|---|
-| 10 ms CPU per step | One feed or one article per step; no aggregate parsing. Largest feed in the allowlist is 743 KiB (arXiv cs.AI); `danluu.com` was dropped at 6.15 MiB |
+| 10 ms CPU per invocation | One feed or one article per step regardless; no aggregate parsing. Largest feed in the allowlist is 743 KiB (arXiv cs.AI); `danluu.com` was dropped at 6.15 MiB |
 | 50 subrequests per step | A single fetch per step |
 | 1,024 steps per instance | 46 feeds + 15 articles + 6 fixed = ~67 steps, 7% of the cap |
 | D1: 100 bound params/query, 50 queries/invocation | The 30-day window in `gather` takes 4,742 raw items to 678 candidates (7 chunked queries, measured); `shortlist`'s 4,000 ceiling bounds the pathological case at 40 |
