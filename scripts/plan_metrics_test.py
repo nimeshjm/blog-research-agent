@@ -39,8 +39,18 @@ Why every git call here is hermetic
 Why `git commit -am` never appears here
     `-am` only stages files git already tracks; it silently skips untracked
     new files, which is exactly what every row's fixture is made of (a brand
-    new features/002-*/intent.md). `commit()` below always runs `git add -A`
+    new features/900-*/intent.md). `commit()` below always runs `git add -A`
     first.
+
+Why the synthetic feature is 900 and not the next real number
+    Every row copies the whole repo tree, real `features/` included, and pulls
+    its feature record out of the report by *prefix* (see find()). A synthetic
+    fixture numbered like a plausible real feature therefore collides with that
+    real feature the moment someone creates it: the fixtures were `002-*` until
+    `features/002-gather-without-accumulation` existed, at which point 20 of 26
+    rows failed against the real feature's timestamps rather than their own.
+    900 is reserved for these fixtures. Do not use it for a real feature, and do
+    not renumber the fixtures to anything a real feature could reach.
 """
 from __future__ import annotations
 
@@ -443,7 +453,7 @@ def run_metrics(
 
 def find(report: "dict[str, Any]", feature_prefix: str) -> "dict[str, Any] | None":
     """Pull one feature record out of report['features'] by name prefix (e.g.
-    "002" matches "002-synth"). None if no matching record exists."""
+    "900" matches "900-synth"). None if no matching record exists."""
     for feature in report.get("features", []):
         if feature.get("feature", "").startswith(feature_prefix):
             return feature
@@ -540,7 +550,7 @@ def _contains_negative_number(value: Any) -> bool:
 
 
 def _build_rename_fixture(root: str, rewritten: int) -> None:
-    """Build the features/002-old -> features/002-new rename fixture: a
+    """Build the features/900-old -> features/900-new rename fixture: a
     40-line intent.md is added and committed at 2026-01-01, then `git mv`'d to
     the renumbered directory and committed again at 2026-03-01, rewriting the
     first `rewritten` of its 40 lines in that same rename commit (see
@@ -550,14 +560,14 @@ def _build_rename_fixture(root: str, rewritten: int) -> None:
     original_lines = [
         f"original line {i} about the intent" for i in range(RENAME_FIXTURE_TOTAL_LINES)
     ]
-    write_file(root, "features/002-old/intent.md", "\n".join(original_lines) + "\n")
+    write_file(root, "features/900-old/intent.md", "\n".join(original_lines) + "\n")
     commit(root, "add intent", "2026-01-01T00:00:00Z")
 
-    git(root, ["mv", "features/002-old", "features/002-new"])
+    git(root, ["mv", "features/900-old", "features/900-new"])
     rewritten_lines = list(original_lines)
     for i in range(rewritten):
         rewritten_lines[i] = f"TOTALLY different row {i}"
-    write_file(root, "features/002-new/intent.md", "\n".join(rewritten_lines) + "\n")
+    write_file(root, "features/900-new/intent.md", "\n".join(rewritten_lines) + "\n")
     commit(root, "renumber", "2026-03-01T00:00:00Z")
 
 
@@ -618,24 +628,24 @@ def row_0(root: str) -> "tuple[bool, list[str]]":
 
 
 def row_1(root: str) -> "tuple[bool, list[str]]":
-    """features/002-synth: intent.md, then spec.md, then an intent.md edit -
+    """features/900-synth: intent.md, then spec.md, then an intent.md edit -
     three separate commits with exact hour-precision timestamps, so
     lead_time_hours and intent_post_spec_edits both compute off real history
     rather than off wall-clock. Runs WITH github (no --no-github): a stubbed
-    `gh` on PATH answers one feature:002 issue filed exactly 24h before the
+    `gh` on PATH answers one feature:900 issue filed exactly 24h before the
     intent commit.
     """
     notes: "list[str]" = []
-    write_file(root, "features/002-synth/intent.md", "intent v1\n")
+    write_file(root, "features/900-synth/intent.md", "intent v1\n")
     commit(root, "add intent", "2026-02-01T00:00:00Z")
-    write_file(root, "features/002-synth/spec.md", "spec v1\n")
+    write_file(root, "features/900-synth/spec.md", "spec v1\n")
     commit(root, "add spec", "2026-02-03T00:00:00Z")
-    write_file(root, "features/002-synth/intent.md", "intent v1\nedited after spec\n")
+    write_file(root, "features/900-synth/intent.md", "intent v1\nedited after spec\n")
     commit(root, "edit intent after spec started", "2026-02-05T00:00:00Z")
 
     extra_env = write_gh_stub(
         root,
-        "002",
+        "900",
         [
             {
                 "number": 101,
@@ -647,26 +657,26 @@ def row_1(root: str) -> "tuple[bool, list[str]]":
         ],
     )
     report = run_metrics(root, extra_args=(), extra_env=extra_env)
-    feature = find(report, "002")
+    feature = find(report, "900")
     if feature is None:
-        notes.append("FAIL: feature 002 not found in report")
+        notes.append("FAIL: feature 900 not found in report")
         return False, notes
 
     ok = True
     # Exact, not a tolerance range: 2026-01-31T00:00:00Z -> 2026-02-01T00:00:00Z
     # is exactly 24 hours by construction.
-    ok = expect_eq(notes, "002.lead_time_hours", feature.get("lead_time_hours"), 24.0) and ok
+    ok = expect_eq(notes, "900.lead_time_hours", feature.get("lead_time_hours"), 24.0) and ok
     ok = (
-        expect_eq(notes, "002.intent_post_spec_edits", feature.get("intent_post_spec_edits"), 1)
+        expect_eq(notes, "900.intent_post_spec_edits", feature.get("intent_post_spec_edits"), 1)
         and ok
     )
-    ok = expect_eq(notes, "002.measurable", feature.get("measurable"), True) and ok
-    ok = expect_eq(notes, "002.t0_source", feature.get("t0_source"), "issue") and ok
+    ok = expect_eq(notes, "900.measurable", feature.get("measurable"), True) and ok
+    ok = expect_eq(notes, "900.t0_source", feature.get("t0_source"), "issue") and ok
     return ok, notes
 
 
 def row_2(root: str) -> "tuple[bool, list[str]]":
-    """features/002-synth with intent.md AND spec.md added in the SAME commit, then
+    """features/900-synth with intent.md AND spec.md added in the SAME commit, then
     one later edit to intent.md.
 
     Sharing a first commit suppresses the *lead time* (see row 3 for why - the
@@ -678,37 +688,37 @@ def row_2(root: str) -> "tuple[bool, list[str]]":
     specified omitting it here; that was wrong and this row is what pins the
     correction."""
     notes: "list[str]" = []
-    write_file(root, "features/002-synth/intent.md", "intent v1\n")
-    write_file(root, "features/002-synth/spec.md", "spec v1\n")
+    write_file(root, "features/900-synth/intent.md", "intent v1\n")
+    write_file(root, "features/900-synth/spec.md", "spec v1\n")
     commit(root, "add intent and spec together", "2026-02-01T00:00:00Z")
-    write_file(root, "features/002-synth/intent.md", "intent v1\nrevised\n")
+    write_file(root, "features/900-synth/intent.md", "intent v1\nrevised\n")
     commit(root, "revise the intent after the spec", "2026-02-04T00:00:00Z")
 
     report = run_metrics(root, extra_args=("--no-github",))
-    feature = find(report, "002")
+    feature = find(report, "900")
     if feature is None:
-        notes.append("FAIL: feature 002 not found in report")
+        notes.append("FAIL: feature 900 not found in report")
         return False, notes
 
     ok = True
-    ok = expect_eq(notes, "002.measurable", feature.get("measurable"), False) and ok
+    ok = expect_eq(notes, "900.measurable", feature.get("measurable"), False) and ok
     ok = (
         expect_eq(
             notes,
-            "002.intent_post_spec_edits (counted despite the shared first commit)",
+            "900.intent_post_spec_edits (counted despite the shared first commit)",
             feature.get("intent_post_spec_edits"),
             1,
         )
         and ok
     )
     ok = (
-        expect_absent(notes, "002.lead_time_hours", feature, "lead_time_hours")
+        expect_absent(notes, "900.lead_time_hours", feature, "lead_time_hours")
         and ok
     )
     ok = (
         expect_eq(
             notes,
-            "002.intent_committed_at == 002.spec_committed_at",
+            "900.intent_committed_at == 900.spec_committed_at",
             feature.get("intent_committed_at"),
             feature.get("spec_committed_at"),
         )
@@ -726,12 +736,12 @@ def row_3(root: str) -> "tuple[bool, list[str]]":
     docstring), exercised directly against a synthetic fixture rather than
     read off HEAD."""
     notes: "list[str]" = []
-    write_file(root, "features/002-synth/intent.md", "intent v1\n")
+    write_file(root, "features/900-synth/intent.md", "intent v1\n")
     commit(root, "add intent", "2026-02-01T00:00:00Z")
 
     extra_env = write_gh_stub(
         root,
-        "002",
+        "900",
         [
             {
                 "number": 102,
@@ -743,18 +753,18 @@ def row_3(root: str) -> "tuple[bool, list[str]]":
         ],
     )
     report = run_metrics(root, extra_args=(), extra_env=extra_env)
-    feature = find(report, "002")
+    feature = find(report, "900")
     if feature is None:
-        notes.append("FAIL: feature 002 not found in report")
+        notes.append("FAIL: feature 900 not found in report")
         return False, notes
 
     ok = True
-    ok = expect_eq(notes, "002.measurable", feature.get("measurable"), False) and ok
-    ok = expect_absent(notes, "002.lead_time_hours", feature, "lead_time_hours") and ok
+    ok = expect_eq(notes, "900.measurable", feature.get("measurable"), False) and ok
+    ok = expect_absent(notes, "900.lead_time_hours", feature, "lead_time_hours") and ok
     ok = (
         expect_true(
             notes,
-            "no negative number anywhere in 002's record",
+            "no negative number anywhere in 900's record",
             not _contains_negative_number(feature),
         )
         and ok
@@ -763,23 +773,23 @@ def row_3(root: str) -> "tuple[bool, list[str]]":
 
 
 def row_4a(root: str) -> "tuple[bool, list[str]]":
-    """features/002-old -> features/002-new: a pure `git mv`, zero content
+    """features/900-old -> features/900-new: a pure `git mv`, zero content
     change. --follow pairs this at ANY similarity threshold, git's own 50%
     default included, so this row is the control: it must resolve to the true
     2026-01-01 creation commit, never the 2026-03-01 rename commit."""
     notes: "list[str]" = []
     _build_rename_fixture(root, rewritten=RENAME_FIXTURE_REWRITE_FRACTIONS["pure"])
     report = run_metrics(root, extra_args=("--no-github",))
-    feature = find(report, "002")
+    feature = find(report, "900")
     if feature is None:
-        notes.append("FAIL: feature 002 not found in report")
+        notes.append("FAIL: feature 900 not found in report")
         return False, notes
 
     ok = True
     ok = (
         expect_eq(
             notes,
-            "002.intent_committed_at (rename did not become the creation)",
+            "900.intent_committed_at (rename did not become the creation)",
             feature.get("intent_committed_at"),
             "2026-01-01T00:00:00Z",
         )
@@ -790,7 +800,7 @@ def row_4a(root: str) -> "tuple[bool, list[str]]":
 
 
 def row_4b(root: str) -> "tuple[bool, list[str]]":
-    """features/002-old -> features/002-new: `git mv` + 26/40 (65%) lines
+    """features/900-old -> features/900-new: `git mv` + 26/40 (65%) lines
     rewritten in that same rename commit. This is the row that actually
     exercises plan_metrics.py's FOLLOW_SIMILARITY (-M25%): at git's own 50%
     default the pairing fails and the answer comes out wrong
@@ -800,16 +810,16 @@ def row_4b(root: str) -> "tuple[bool, list[str]]":
     notes: "list[str]" = []
     _build_rename_fixture(root, rewritten=RENAME_FIXTURE_REWRITE_FRACTIONS["partial"])
     report = run_metrics(root, extra_args=("--no-github",))
-    feature = find(report, "002")
+    feature = find(report, "900")
     if feature is None:
-        notes.append("FAIL: feature 002 not found in report")
+        notes.append("FAIL: feature 900 not found in report")
         return False, notes
 
     ok = True
     ok = (
         expect_eq(
             notes,
-            "002.intent_committed_at (still resolves through the 65%-rewritten rename)",
+            "900.intent_committed_at (still resolves through the 65%-rewritten rename)",
             feature.get("intent_committed_at"),
             "2026-01-01T00:00:00Z",
         )
@@ -820,7 +830,7 @@ def row_4b(root: str) -> "tuple[bool, list[str]]":
 
 
 def row_4c(root: str) -> "tuple[bool, list[str]]":
-    """features/002-old -> features/002-new: `git mv` + all 40/40 (100%) lines
+    """features/900-old -> features/900-new: `git mv` + all 40/40 (100%) lines
     rewritten - unresolvable by any similarity threshold, since git has no
     signal left to pair the rename on at all. The extractor's job here is not
     to guess a date; it's to know it can't and say so: intent_t1_source ==
@@ -829,29 +839,29 @@ def row_4c(root: str) -> "tuple[bool, list[str]]":
     notes: "list[str]" = []
     _build_rename_fixture(root, rewritten=RENAME_FIXTURE_REWRITE_FRACTIONS["full"])
     report = run_metrics(root, extra_args=("--no-github",))
-    feature = find(report, "002")
+    feature = find(report, "900")
     if feature is None:
-        notes.append("FAIL: feature 002 not found in report")
+        notes.append("FAIL: feature 900 not found in report")
         return False, notes
 
     ok = True
     ok = _check_t1_source(notes, feature, "follow-unresolved") and ok
-    ok = expect_eq(notes, "002.measurable", feature.get("measurable"), False) and ok
+    ok = expect_eq(notes, "900.measurable", feature.get("measurable"), False) and ok
     return ok, notes
 
 
 def row_5(root: str) -> "tuple[bool, list[str]]":
-    """features/002-synth containing only plan.md - no intent.md at all.
+    """features/900-synth containing only plan.md - no intent.md at all.
     discover_features() requires intent.md on disk; a feature directory
     without one is silently skipped, not an error, and the run must still
     exit 0."""
     notes: "list[str]" = []
-    write_file(root, "features/002-synth/plan.md", "plan only, no intent.md yet\n")
+    write_file(root, "features/900-synth/plan.md", "plan only, no intent.md yet\n")
     commit(root, "add plan only", "2026-02-01T00:00:00Z")
 
     report = run_metrics(root, extra_args=("--no-github",))
     notes.append("OK: run_metrics succeeded (implies exit 0)")
-    ok = expect_eq(notes, "002 absent (no intent.md yet)", find(report, "002"), None)
+    ok = expect_eq(notes, "900 absent (no intent.md yet)", find(report, "900"), None)
     return ok, notes
 
 
@@ -871,30 +881,30 @@ def row_6(root: str) -> "tuple[bool, list[str]]":
 
 
 def row_7(root: str) -> "tuple[bool, list[str]]":
-    """features/002-synth/intent.md committed, no spec.md at all - distinct
+    """features/900-synth/intent.md committed, no spec.md at all - distinct
     from row 2's "same commit" case: here there is no spec.md to even define
     post-spec churn against, so intent_post_spec_edits must be absent, and
     specifically not 0 - a 0 there would claim "no rework happened" instead of
     the true state, "no data exists"."""
     notes: "list[str]" = []
-    write_file(root, "features/002-synth/intent.md", "intent v1\n")
+    write_file(root, "features/900-synth/intent.md", "intent v1\n")
     commit(root, "add intent, no spec", "2026-02-01T00:00:00Z")
 
     report = run_metrics(root, extra_args=("--no-github",))
-    feature = find(report, "002")
+    feature = find(report, "900")
     if feature is None:
-        notes.append("FAIL: feature 002 not found in report")
+        notes.append("FAIL: feature 900 not found in report")
         return False, notes
 
     ok = True
     ok = (
-        expect_absent(notes, "002.intent_post_spec_edits", feature, "intent_post_spec_edits")
+        expect_absent(notes, "900.intent_post_spec_edits", feature, "intent_post_spec_edits")
         and ok
     )
     ok = (
         expect_true(
             notes,
-            "002.intent_post_spec_edits is not literally 0",
+            "900.intent_post_spec_edits is not literally 0",
             feature.get("intent_post_spec_edits") != 0,
         )
         and ok
@@ -903,17 +913,17 @@ def row_7(root: str) -> "tuple[bool, list[str]]":
 
 
 def row_8(root: str) -> "tuple[bool, list[str]]":
-    """Two stubbed issues: a feature:002 issue plus a second, gate:intent
+    """Two stubbed issues: a feature:900 issue plus a second, gate:intent
     -labelled issue closed COMPLETED. Exercises the accepted path end to end -
     per-feature intent_outcome and the repo-wide rollup counts and
     survival_rate."""
     notes: "list[str]" = []
-    write_file(root, "features/002-synth/intent.md", "intent v1\n")
+    write_file(root, "features/900-synth/intent.md", "intent v1\n")
     commit(root, "add intent", "2026-02-01T00:00:00Z")
 
     extra_env = write_gh_stub(
         root,
-        "002",
+        "900",
         [
             {
                 "number": 201,
@@ -932,13 +942,13 @@ def row_8(root: str) -> "tuple[bool, list[str]]":
         ],
     )
     report = run_metrics(root, extra_args=(), extra_env=extra_env)
-    feature = find(report, "002")
+    feature = find(report, "900")
     if feature is None:
-        notes.append("FAIL: feature 002 not found in report")
+        notes.append("FAIL: feature 900 not found in report")
         return False, notes
 
     ok = True
-    ok = expect_eq(notes, "002.intent_outcome", feature.get("intent_outcome"), "accepted") and ok
+    ok = expect_eq(notes, "900.intent_outcome", feature.get("intent_outcome"), "accepted") and ok
     rollup = report.get("rollup", {})
     ok = expect_eq(notes, "rollup.accepted_count", rollup.get("accepted_count"), 1) and ok
     ok = expect_eq(notes, "rollup.survival_rate", rollup.get("survival_rate"), 1.0) and ok
@@ -950,12 +960,12 @@ def row_9(root: str) -> "tuple[bool, list[str]]":
     of COMPLETED - exercises the rejected path: intent_outcome, rejected_count,
     and a survival_rate of 0.0 rather than an absent one."""
     notes: "list[str]" = []
-    write_file(root, "features/002-synth/intent.md", "intent v1\n")
+    write_file(root, "features/900-synth/intent.md", "intent v1\n")
     commit(root, "add intent", "2026-02-01T00:00:00Z")
 
     extra_env = write_gh_stub(
         root,
-        "002",
+        "900",
         [
             {
                 "number": 301,
@@ -974,13 +984,13 @@ def row_9(root: str) -> "tuple[bool, list[str]]":
         ],
     )
     report = run_metrics(root, extra_args=(), extra_env=extra_env)
-    feature = find(report, "002")
+    feature = find(report, "900")
     if feature is None:
-        notes.append("FAIL: feature 002 not found in report")
+        notes.append("FAIL: feature 900 not found in report")
         return False, notes
 
     ok = True
-    ok = expect_eq(notes, "002.intent_outcome", feature.get("intent_outcome"), "rejected") and ok
+    ok = expect_eq(notes, "900.intent_outcome", feature.get("intent_outcome"), "rejected") and ok
     rollup = report.get("rollup", {})
     ok = expect_eq(notes, "rollup.rejected_count", rollup.get("rejected_count"), 1) and ok
     ok = expect_eq(notes, "rollup.survival_rate", rollup.get("survival_rate"), 0.0) and ok
@@ -1073,7 +1083,7 @@ def row_10(root: str) -> "tuple[bool, list[str]]":
     # commit it. The write is not optional: `git commit` on an unchanged tree
     # exits non-zero with "nothing to commit" on *stdout* and an empty stderr,
     # which reads exactly like a hook refusing the commit.
-    write_file(sandbox, "features/002-sandbox/intent.md", "# sandbox\n")
+    write_file(sandbox, "features/900-sandbox/intent.md", "# sandbox\n")
     commit(sandbox, "sandbox is writable", "2026-04-01T00:00:00Z")
     notes.append("OK: sandbox accepts a commit of its own")
     return ok, notes
@@ -1085,7 +1095,7 @@ def row_10(root: str) -> "tuple[bool, list[str]]":
 
 
 def row_11(root: str) -> "tuple[bool, list[str]]":
-    """The row that pins the whole Stage 2 design. features/002-synth: the real
+    """The row that pins the whole Stage 2 design. features/900-synth: the real
     features/_template/{intent,spec}.md are copied byte-for-byte (via
     copy_template_artifacts - see its docstring on why not a pasted literal)
     and committed @2026-03-01, intent.md is FILLED (edited away from the
@@ -1100,27 +1110,27 @@ def row_11(root: str) -> "tuple[bool, list[str]]":
     comparison AND --no-abbrev produces the correct 48.0.
     """
     notes: "list[str]" = []
-    copy_template_artifacts(root, "002-synth", names=("intent.md", "spec.md"))
+    copy_template_artifacts(root, "900-synth", names=("intent.md", "spec.md"))
     commit(root, "copy template verbatim", "2026-03-01T00:00:00Z")
-    write_file(root, "features/002-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
+    write_file(root, "features/900-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
     commit(root, "fill intent", "2026-03-02T00:00:00Z")
-    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in.\n")
+    write_file(root, "features/900-synth/spec.md", "# Spec: synth\n\nfilled in.\n")
     commit(root, "fill spec", "2026-03-04T00:00:00Z")
 
     report = run_metrics(root, extra_args=("--no-github",))
-    feature = find(report, "002")
+    feature = find(report, "900")
     if feature is None:
-        notes.append("FAIL: feature 002 not found in report")
+        notes.append("FAIL: feature 900 not found in report")
         return False, notes
 
     ok = True
     ok = (
         expect_eq(
-            notes, "002.design_lead_time_hours", feature.get("design_lead_time_hours"), 48.0
+            notes, "900.design_lead_time_hours", feature.get("design_lead_time_hours"), 48.0
         )
         and ok
     )
-    ok = expect_eq(notes, "002.design_measurable", feature.get("design_measurable"), True) and ok
+    ok = expect_eq(notes, "900.design_measurable", feature.get("design_measurable"), True) and ok
     return ok, notes
 
 
@@ -1148,28 +1158,28 @@ def row_12(root: str) -> "tuple[bool, list[str]]":
     template verbatim) forward past the newest real commit, rather than
     weakening the assertion."""
     notes: "list[str]" = []
-    copy_template_artifacts(root, "002-synth")
+    copy_template_artifacts(root, "900-synth")
     commit(root, "copy template verbatim", "2026-10-01T00:00:00Z")
-    write_file(root, "features/002-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
+    write_file(root, "features/900-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
     commit(root, "fill intent", "2026-10-02T00:00:00Z")
-    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in.\n")
+    write_file(root, "features/900-synth/spec.md", "# Spec: synth\n\nfilled in.\n")
     commit(root, "fill spec", "2026-10-04T00:00:00Z")
-    write_file(root, "features/002-synth/plan.md", "# Plan: synth\n\nfilled in.\n")
+    write_file(root, "features/900-synth/plan.md", "# Plan: synth\n\nfilled in.\n")
     commit(root, "fill plan", "2026-10-05T00:00:00Z")
-    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in, revised.\n")
+    write_file(root, "features/900-synth/spec.md", "# Spec: synth\n\nfilled in, revised.\n")
     commit(root, "edit spec after plan started", "2026-10-06T00:00:00Z")
 
     report = run_metrics(root, extra_args=("--no-github",))
-    feature = find(report, "002")
+    feature = find(report, "900")
     if feature is None:
-        notes.append("FAIL: feature 002 not found in report")
+        notes.append("FAIL: feature 900 not found in report")
         return False, notes
 
     ok = True
-    ok = expect_eq(notes, "002.spec_post_plan_edits", feature.get("spec_post_plan_edits"), 1) and ok
+    ok = expect_eq(notes, "900.spec_post_plan_edits", feature.get("spec_post_plan_edits"), 1) and ok
     ok = (
         expect_eq(
-            notes, "002.design_anchor_source", feature.get("design_anchor_source"), "plan-filled"
+            notes, "900.design_anchor_source", feature.get("design_anchor_source"), "plan-filled"
         )
         and ok
     )
@@ -1184,27 +1194,27 @@ def row_13(root: str) -> "tuple[bool, list[str]]":
     not exist. spec_post_plan_edits must be ABSENT (not 0 - 0 would still
     claim the anchor is defined), and design_anchor_source must say "none"."""
     notes: "list[str]" = []
-    copy_template_artifacts(root, "002-synth")
+    copy_template_artifacts(root, "900-synth")
     commit(root, "copy template verbatim", "2026-03-01T00:00:00Z")
-    write_file(root, "features/002-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
+    write_file(root, "features/900-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
     commit(root, "fill intent", "2026-03-02T00:00:00Z")
-    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in.\n")
+    write_file(root, "features/900-synth/spec.md", "# Spec: synth\n\nfilled in.\n")
     commit(root, "fill spec", "2026-03-04T00:00:00Z")
     # plan.md is never touched again - it stays byte-identical to the template.
 
     report = run_metrics(root, extra_args=("--no-github",))
-    feature = find(report, "002")
+    feature = find(report, "900")
     if feature is None:
-        notes.append("FAIL: feature 002 not found in report")
+        notes.append("FAIL: feature 900 not found in report")
         return False, notes
 
     ok = True
     ok = (
-        expect_absent(notes, "002.spec_post_plan_edits", feature, "spec_post_plan_edits")
+        expect_absent(notes, "900.spec_post_plan_edits", feature, "spec_post_plan_edits")
         and ok
     )
     ok = (
-        expect_eq(notes, "002.design_anchor_source", feature.get("design_anchor_source"), "none")
+        expect_eq(notes, "900.design_anchor_source", feature.get("design_anchor_source"), "none")
         and ok
     )
     return ok, notes
@@ -1230,14 +1240,14 @@ def row_14(root: str) -> "tuple[bool, list[str]]":
     date, spuriously "later") history and inflate this count for an unrelated
     reason."""
     notes: "list[str]" = []
-    copy_template_artifacts(root, "002-synth")
+    copy_template_artifacts(root, "900-synth")
     commit(root, "copy template verbatim", "2026-10-01T00:00:00Z")
-    write_file(root, "features/002-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
+    write_file(root, "features/900-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
     commit(root, "fill intent", "2026-10-02T00:00:00Z")
-    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in.\n")
+    write_file(root, "features/900-synth/spec.md", "# Spec: synth\n\nfilled in.\n")
     commit(root, "fill spec", "2026-10-04T00:00:00Z")
-    write_file(root, "features/002-synth/plan.md", "# Plan: synth\n\nfilled in.\n")
-    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in, revised in the same commit as plan.\n")
+    write_file(root, "features/900-synth/plan.md", "# Plan: synth\n\nfilled in.\n")
+    write_file(root, "features/900-synth/spec.md", "# Spec: synth\n\nfilled in, revised in the same commit as plan.\n")
     commit_with_dates(
         root,
         "fill plan and revise spec together (rebased)",
@@ -1246,13 +1256,13 @@ def row_14(root: str) -> "tuple[bool, list[str]]":
     )
 
     report = run_metrics(root, extra_args=("--no-github",))
-    feature = find(report, "002")
+    feature = find(report, "900")
     if feature is None:
-        notes.append("FAIL: feature 002 not found in report")
+        notes.append("FAIL: feature 900 not found in report")
         return False, notes
 
     ok = True
-    ok = expect_eq(notes, "002.spec_post_plan_edits", feature.get("spec_post_plan_edits"), 0) and ok
+    ok = expect_eq(notes, "900.spec_post_plan_edits", feature.get("spec_post_plan_edits"), 0) and ok
     return ok, notes
 
 
@@ -1266,28 +1276,28 @@ def row_15(root: str) -> "tuple[bool, list[str]]":
     see row_18 for that case). spec.md is copied from the template and then
     NEVER touched again; features/_template/spec.md itself is edited
     afterwards. A point-in-time "compare to the current template" reading
-    would see 002/spec.md differ from the now-edited template and misreport
-    it "filled"; the historical-set reading still recognises 002/spec.md's
+    would see 900/spec.md differ from the now-edited template and misreport
+    it "filled"; the historical-set reading still recognises 900/spec.md's
     blob as one the template has HAD, so it correctly stays unfilled."""
     notes: "list[str]" = []
-    copy_template_artifacts(root, "002-synth", names=("intent.md", "spec.md"))
+    copy_template_artifacts(root, "900-synth", names=("intent.md", "spec.md"))
     commit(root, "copy template verbatim", "2026-04-01T00:00:00Z")
-    write_file(root, "features/002-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
+    write_file(root, "features/900-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
     commit(root, "fill intent", "2026-04-02T00:00:00Z")
     write_file(root, "features/_template/spec.md", "# Spec: <feature name>\n\nEDITED TEMPLATE.\n")
     commit(root, "edit the template itself", "2026-04-03T00:00:00Z")
-    # features/002-synth/spec.md is left untouched - still the ORIGINAL
+    # features/900-synth/spec.md is left untouched - still the ORIGINAL
     # template blob, which the historical set still remembers.
 
     report = run_metrics(root, extra_args=("--no-github",))
-    feature = find(report, "002")
+    feature = find(report, "900")
     if feature is None:
-        notes.append("FAIL: feature 002 not found in report (intent.md was filled - it should exist)")
+        notes.append("FAIL: feature 900 not found in report (intent.md was filled - it should exist)")
         return False, notes
 
     ok = True
-    ok = expect_absent(notes, "002.spec_committed_at", feature, "spec_committed_at") and ok
-    ok = expect_eq(notes, "002.design_measurable", feature.get("design_measurable"), False) and ok
+    ok = expect_absent(notes, "900.spec_committed_at", feature, "spec_committed_at") and ok
+    ok = expect_eq(notes, "900.design_measurable", feature.get("design_measurable"), False) and ok
     return ok, notes
 
 
@@ -1298,21 +1308,21 @@ def row_16(root: str) -> "tuple[bool, list[str]]":
     would be negative if computed naively; the guard must withhold it
     entirely rather than emit a negative number anywhere in the report."""
     notes: "list[str]" = []
-    copy_template_artifacts(root, "002-synth", names=("intent.md", "spec.md"))
+    copy_template_artifacts(root, "900-synth", names=("intent.md", "spec.md"))
     commit(root, "copy template verbatim", "2026-05-01T00:00:00Z")
-    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in first.\n")
+    write_file(root, "features/900-synth/spec.md", "# Spec: synth\n\nfilled in first.\n")
     commit(root, "fill spec", "2026-05-02T00:00:00Z")
-    write_file(root, "features/002-synth/intent.md", "# Intent: synth\n\nfilled in later.\n")
+    write_file(root, "features/900-synth/intent.md", "# Intent: synth\n\nfilled in later.\n")
     commit(root, "fill intent", "2026-05-04T00:00:00Z")
 
     report = run_metrics(root, extra_args=("--no-github",))
-    feature = find(report, "002")
+    feature = find(report, "900")
     if feature is None:
-        notes.append("FAIL: feature 002 not found in report")
+        notes.append("FAIL: feature 900 not found in report")
         return False, notes
 
     ok = True
-    ok = expect_eq(notes, "002.design_measurable", feature.get("design_measurable"), False) and ok
+    ok = expect_eq(notes, "900.design_measurable", feature.get("design_measurable"), False) and ok
     ok = (
         expect_true(
             notes,
@@ -1325,7 +1335,7 @@ def row_16(root: str) -> "tuple[bool, list[str]]":
 
 
 def row_17(root: str) -> "tuple[bool, list[str]]":
-    """features/002-old -> features/002-new, renumbered AFTER spec.md was
+    """features/900-old -> features/900-new, renumbered AFTER spec.md was
     filled: intent.md and spec.md (40 lines, distinct from the template from
     their first commit) are added and filled outright, then the directory is
     renumbered and 26/40 (65%) of spec.md's lines are rewritten in that same
@@ -1336,39 +1346,39 @@ def row_17(root: str) -> "tuple[bool, list[str]]":
     design_lead_time_hours would come out wrong (spec would read as first
     filled at the rename); at -M25% it must stay exactly 48.0."""
     notes: "list[str]" = []
-    write_file(root, "features/002-old/intent.md", "intent v1, already filled\n")
+    write_file(root, "features/900-old/intent.md", "intent v1, already filled\n")
     commit(root, "add intent", "2026-06-01T00:00:00Z")
 
     original_lines = [
         f"spec line {i} about the design" for i in range(RENAME_FIXTURE_TOTAL_LINES)
     ]
-    write_file(root, "features/002-old/spec.md", "\n".join(original_lines) + "\n")
+    write_file(root, "features/900-old/spec.md", "\n".join(original_lines) + "\n")
     commit(root, "add spec", "2026-06-03T00:00:00Z")  # 48h after intent
 
-    git(root, ["mv", "features/002-old", "features/002-new"])
+    git(root, ["mv", "features/900-old", "features/900-new"])
     rewritten_lines = list(original_lines)
     for i in range(RENAME_FIXTURE_REWRITE_FRACTIONS["partial"]):
         rewritten_lines[i] = f"TOTALLY different design row {i}"
-    write_file(root, "features/002-new/spec.md", "\n".join(rewritten_lines) + "\n")
+    write_file(root, "features/900-new/spec.md", "\n".join(rewritten_lines) + "\n")
     commit(root, "renumber, rewriting most of spec.md", "2026-08-01T00:00:00Z")
 
     report = run_metrics(root, extra_args=("--no-github",))
-    feature = find(report, "002")
+    feature = find(report, "900")
     if feature is None:
-        notes.append("FAIL: feature 002 not found in report")
+        notes.append("FAIL: feature 900 not found in report")
         return False, notes
 
     ok = True
     ok = (
         expect_eq(
             notes,
-            "002.design_lead_time_hours (unchanged by the renumbering)",
+            "900.design_lead_time_hours (unchanged by the renumbering)",
             feature.get("design_lead_time_hours"),
             48.0,
         )
         and ok
     )
-    ok = expect_eq(notes, "002.design_measurable", feature.get("design_measurable"), True) and ok
+    ok = expect_eq(notes, "900.design_measurable", feature.get("design_measurable"), True) and ok
     return ok, notes
 
 
@@ -1380,11 +1390,11 @@ def row_18(root: str) -> "tuple[bool, list[str]]":
     must be entirely absent from report["features"], not present with
     everything omitted."""
     notes: "list[str]" = []
-    copy_template_artifacts(root, "002-synth", names=("intent.md",))
+    copy_template_artifacts(root, "900-synth", names=("intent.md",))
     commit(root, "copy template intent.md, never filled", "2026-07-01T00:00:00Z")
 
     report = run_metrics(root, extra_args=("--no-github",))
-    ok = expect_eq(notes, "002 absent (intent.md never filled)", find(report, "002"), None)
+    ok = expect_eq(notes, "900 absent (intent.md never filled)", find(report, "900"), None)
     return ok, notes
 
 
@@ -1470,47 +1480,47 @@ def row_19(root: str) -> "tuple[bool, list[str]]":
 
 
 def row_20(root: str) -> "tuple[bool, list[str]]":
-    """`--no-github` completeness. With a fully measurable synthetic 002
+    """`--no-github` completeness. With a fully measurable synthetic 900
     (intent, spec AND plan all filled) in the tree, EVERY Stage 2 field must
     be present under `--no-github` - Stage 2 is pure git, per issue #42's "No
     GitHub" section. Only Stage 1's t0/outcome may degrade. This row exists so
     a future reader does not "fix" Stage 2 by adding a `gh` call: there is
     nothing broken to fix."""
     notes: "list[str]" = []
-    copy_template_artifacts(root, "002-synth")
+    copy_template_artifacts(root, "900-synth")
     commit(root, "copy template verbatim", "2026-09-01T00:00:00Z")
-    write_file(root, "features/002-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
+    write_file(root, "features/900-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
     commit(root, "fill intent", "2026-09-02T00:00:00Z")
-    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in.\n")
+    write_file(root, "features/900-synth/spec.md", "# Spec: synth\n\nfilled in.\n")
     commit(root, "fill spec", "2026-09-04T00:00:00Z")
-    write_file(root, "features/002-synth/plan.md", "# Plan: synth\n\nfilled in.\n")
+    write_file(root, "features/900-synth/plan.md", "# Plan: synth\n\nfilled in.\n")
     commit(root, "fill plan", "2026-09-05T00:00:00Z")
 
     report = run_metrics(root, extra_args=("--no-github",))
-    feature = find(report, "002")
+    feature = find(report, "900")
     if feature is None:
-        notes.append("FAIL: feature 002 not found in report")
+        notes.append("FAIL: feature 900 not found in report")
         return False, notes
 
     ok = True
-    ok = expect_eq(notes, "002.design_measurable", feature.get("design_measurable"), True) and ok
-    ok = expect_present(notes, "002.spec_committed_at", feature, "spec_committed_at") and ok
-    ok = expect_present(notes, "002.spec_t1_source", feature, "spec_t1_source") and ok
-    ok = expect_present(notes, "002.spec_age_days", feature, "spec_age_days") and ok
-    ok = expect_present(notes, "002.design_lead_time_hours", feature, "design_lead_time_hours") and ok
-    ok = expect_present(notes, "002.design_plan_filled_at", feature, "design_plan_filled_at") and ok
+    ok = expect_eq(notes, "900.design_measurable", feature.get("design_measurable"), True) and ok
+    ok = expect_present(notes, "900.spec_committed_at", feature, "spec_committed_at") and ok
+    ok = expect_present(notes, "900.spec_t1_source", feature, "spec_t1_source") and ok
+    ok = expect_present(notes, "900.spec_age_days", feature, "spec_age_days") and ok
+    ok = expect_present(notes, "900.design_lead_time_hours", feature, "design_lead_time_hours") and ok
+    ok = expect_present(notes, "900.design_plan_filled_at", feature, "design_plan_filled_at") and ok
     ok = (
         expect_eq(
-            notes, "002.design_anchor_source", feature.get("design_anchor_source"), "plan-filled"
+            notes, "900.design_anchor_source", feature.get("design_anchor_source"), "plan-filled"
         )
         and ok
     )
-    ok = expect_present(notes, "002.spec_post_plan_edits", feature, "spec_post_plan_edits") and ok
+    ok = expect_present(notes, "900.spec_post_plan_edits", feature, "spec_post_plan_edits") and ok
 
     # Only Stage 1's t0/outcome degrade under --no-github.
-    ok = expect_absent(notes, "002.t0", feature, "t0") and ok
-    ok = expect_eq(notes, "002.t0_source", feature.get("t0_source"), "none") and ok
-    ok = expect_absent(notes, "002.intent_outcome", feature, "intent_outcome") and ok
+    ok = expect_absent(notes, "900.t0", feature, "t0") and ok
+    ok = expect_eq(notes, "900.t0_source", feature.get("t0_source"), "none") and ok
+    ok = expect_absent(notes, "900.intent_outcome", feature, "intent_outcome") and ok
     return ok, notes
 
 
@@ -1530,33 +1540,33 @@ def row_21(root: str) -> "tuple[bool, list[str]]":
     of spec.md's state (see row_12's docstring on why plan.md is resolved
     unconditionally)."""
     notes: "list[str]" = []
-    copy_template_artifacts(root, "002-synth")
+    copy_template_artifacts(root, "900-synth")
     commit(root, "copy template verbatim", "2026-11-01T00:00:00Z")
-    write_file(root, "features/002-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
+    write_file(root, "features/900-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
     commit(root, "fill intent", "2026-11-02T00:00:00Z")
-    write_file(root, "features/002-synth/plan.md", "# Plan: synth\n\nfilled in.\n")
+    write_file(root, "features/900-synth/plan.md", "# Plan: synth\n\nfilled in.\n")
     commit(root, "fill plan", "2026-11-03T00:00:00Z")
-    # features/002-synth/spec.md is left untouched - still the verbatim template.
+    # features/900-synth/spec.md is left untouched - still the verbatim template.
 
     report = run_metrics(root, extra_args=("--no-github",))
-    feature = find(report, "002")
+    feature = find(report, "900")
     if feature is None:
-        notes.append("FAIL: feature 002 not found in report")
+        notes.append("FAIL: feature 900 not found in report")
         return False, notes
 
     ok = True
     ok = (
-        expect_absent(notes, "002.spec_post_plan_edits", feature, "spec_post_plan_edits")
+        expect_absent(notes, "900.spec_post_plan_edits", feature, "spec_post_plan_edits")
         and ok
     )
     ok = (
         expect_eq(
-            notes, "002.design_anchor_source", feature.get("design_anchor_source"), "plan-filled"
+            notes, "900.design_anchor_source", feature.get("design_anchor_source"), "plan-filled"
         )
         and ok
     )
-    ok = expect_absent(notes, "002.spec_committed_at", feature, "spec_committed_at") and ok
-    ok = expect_eq(notes, "002.design_measurable", feature.get("design_measurable"), False) and ok
+    ok = expect_absent(notes, "900.spec_committed_at", feature, "spec_committed_at") and ok
+    ok = expect_eq(notes, "900.design_measurable", feature.get("design_measurable"), False) and ok
     return ok, notes
 
 
@@ -1567,7 +1577,7 @@ def row_21(root: str) -> "tuple[bool, list[str]]":
 
 def row_22(root: str) -> "tuple[bool, list[str]]":
     """Span-shape row for `_build_specs`'s new `sdlc.design.snapshot` span.
-    Builds a tree with a fully-filled, measurable synthetic 002 (template
+    Builds a tree with a fully-filled, measurable synthetic 900 (template
     copied, intent/spec/plan all filled, then spec.md edited once more after
     the plan fill - row_12/row_14's dated-in-October fixture, so the churn
     count is not inflated by `--follow -M25%` walking into the template's own
@@ -1578,14 +1588,14 @@ def row_22(root: str) -> "tuple[bool, list[str]]":
 
     Asserts: exactly one `sdlc.design.snapshot` span per feature, alongside
     the existing per-feature `sdlc.plan.snapshot` and the single
-    `sdlc.plan.rollup` (2 + 2 + 1 = 5 specs for a 2-feature report); 002's
+    `sdlc.plan.rollup` (2 + 2 + 1 = 5 specs for a 2-feature report); 900's
     design span - fully filled, so every mapped attribute is present - carries
     EXACTLY the attribute-name set issue #42's mapping table specifies, no
     more and no less (this is what catches a typo'd name AND a stray extra
     one, e.g. the `sdlc.design.plan_filled_at` vs `sdlc.plan.filled_at`
     trap); `sdlc.measurable` and `sdlc.design.anchor_source` are present on
     BOTH features' design spans, including 001's unmeasurable one;
-    `sdlc.design.lead_time_hours` is present for 002 and absent for 001 (its
+    `sdlc.design.lead_time_hours` is present for 900 and absent for 001 (its
     design is unmeasurable); no attribute value is `None` anywhere; and no
     `sdlc.design.rollup` span exists at all - see plan_metrics.py's module
     docstring for why that span is deliberately absent.
@@ -1598,15 +1608,15 @@ def row_22(root: str) -> "tuple[bool, list[str]]":
     live repo, not against a future-dated synthetic fixture.
     """
     notes: "list[str]" = []
-    copy_template_artifacts(root, "002-synth")
+    copy_template_artifacts(root, "900-synth")
     commit(root, "copy template verbatim", "2026-10-01T00:00:00Z")
-    write_file(root, "features/002-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
+    write_file(root, "features/900-synth/intent.md", "# Intent: synth\n\nfilled in.\n")
     commit(root, "fill intent", "2026-10-02T00:00:00Z")
-    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in.\n")
+    write_file(root, "features/900-synth/spec.md", "# Spec: synth\n\nfilled in.\n")
     commit(root, "fill spec", "2026-10-04T00:00:00Z")
-    write_file(root, "features/002-synth/plan.md", "# Plan: synth\n\nfilled in.\n")
+    write_file(root, "features/900-synth/plan.md", "# Plan: synth\n\nfilled in.\n")
     commit(root, "fill plan", "2026-10-05T00:00:00Z")
-    write_file(root, "features/002-synth/spec.md", "# Spec: synth\n\nfilled in, revised.\n")
+    write_file(root, "features/900-synth/spec.md", "# Spec: synth\n\nfilled in, revised.\n")
     commit(root, "edit spec after plan started", "2026-10-06T00:00:00Z")
 
     with hermetic_environ():
@@ -1615,8 +1625,8 @@ def row_22(root: str) -> "tuple[bool, list[str]]":
 
     ok = True
     feature_count = len(report["features"])
-    # >= 2, not == 2: 002-synth plus the real, currently-sole 001. This must
-    # keep passing the day a real features/002-* lands in this repo (the
+    # >= 2, not == 2: 900-synth plus the real, currently-sole 001. This must
+    # keep passing the day a real features/900-* lands in this repo (the
     # board this row is proving out exists precisely so that can happen) -
     # the per-span counts below key off feature_count so they still catch a
     # missing/duplicated span regardless of how many real features exist.
@@ -1655,16 +1665,16 @@ def row_22(root: str) -> "tuple[bool, list[str]]":
                 return span
         return None
 
-    span_002 = find_design("002")
+    span_900 = find_design("900")
     span_001 = find_design("001")
-    if span_002 is None or span_001 is None:
+    if span_900 is None or span_001 is None:
         notes.append(
-            "FAIL: expected a sdlc.design.snapshot span for both 001 and 002, got "
+            "FAIL: expected a sdlc.design.snapshot span for both 001 and 900, got "
             f"features {[s['attributes'].get('sdlc.feature') for s in design_spans]!r}"
         )
         return False, notes
 
-    for label, span in (("002 (fully filled)", span_002), ("001 (real, design-unmeasurable)", span_001)):
+    for label, span in (("900 (fully filled)", span_900), ("001 (real, design-unmeasurable)", span_001)):
         attrs = span["attributes"]
         ok = expect_true(notes, f"{label}: sdlc.measurable present", "sdlc.measurable" in attrs) and ok
         ok = (
@@ -1682,8 +1692,8 @@ def row_22(root: str) -> "tuple[bool, list[str]]":
             and ok
         )
 
-    # 002 is fully filled: EVERY mapped attribute is present, and nothing else.
-    expected_002_keys = {
+    # 900 is fully filled: EVERY mapped attribute is present, and nothing else.
+    expected_900_keys = {
         "sdlc.feature",
         "sdlc.repo",
         "sdlc.measurable",
@@ -1698,20 +1708,20 @@ def row_22(root: str) -> "tuple[bool, list[str]]":
     ok = (
         expect_eq(
             notes,
-            "002 sdlc.design.snapshot attribute key set (exact - issue #42's mapping table)",
-            set(span_002["attributes"].keys()),
-            expected_002_keys,
+            "900 sdlc.design.snapshot attribute key set (exact - issue #42's mapping table)",
+            set(span_900["attributes"].keys()),
+            expected_900_keys,
         )
         and ok
     )
-    ok = expect_eq(notes, "002 sdlc.feature", span_002["attributes"].get("sdlc.feature"), "002-synth") and ok
-    ok = expect_eq(notes, "002 sdlc.repo", span_002["attributes"].get("sdlc.repo"), report["repo"]) and ok
-    ok = expect_eq(notes, "002 sdlc.measurable", span_002["attributes"].get("sdlc.measurable"), True) and ok
+    ok = expect_eq(notes, "900 sdlc.feature", span_900["attributes"].get("sdlc.feature"), "900-synth") and ok
+    ok = expect_eq(notes, "900 sdlc.repo", span_900["attributes"].get("sdlc.repo"), report["repo"]) and ok
+    ok = expect_eq(notes, "900 sdlc.measurable", span_900["attributes"].get("sdlc.measurable"), True) and ok
     ok = (
         expect_eq(
             notes,
-            "002 sdlc.design.lead_time_hours",
-            span_002["attributes"].get("sdlc.design.lead_time_hours"),
+            "900 sdlc.design.lead_time_hours",
+            span_900["attributes"].get("sdlc.design.lead_time_hours"),
             48.0,
         )
         and ok
@@ -1719,8 +1729,8 @@ def row_22(root: str) -> "tuple[bool, list[str]]":
     ok = (
         expect_eq(
             notes,
-            "002 sdlc.design.anchor_source",
-            span_002["attributes"].get("sdlc.design.anchor_source"),
+            "900 sdlc.design.anchor_source",
+            span_900["attributes"].get("sdlc.design.anchor_source"),
             "plan-filled",
         )
         and ok
@@ -1728,8 +1738,8 @@ def row_22(root: str) -> "tuple[bool, list[str]]":
     ok = (
         expect_eq(
             notes,
-            "002 sdlc.spec.post_plan_edits",
-            span_002["attributes"].get("sdlc.spec.post_plan_edits"),
+            "900 sdlc.spec.post_plan_edits",
+            span_900["attributes"].get("sdlc.spec.post_plan_edits"),
             1,
         )
         and ok
@@ -1785,7 +1795,7 @@ def row_23(root: str) -> "tuple[bool, list[str]]":
     notes: "list[str]" = []
 
     maximal_feature: "dict[str, Any]" = {
-        "feature": "002-synth",
+        "feature": "900-synth",
         "issue": 999,
         "measurable": True,
         "t0": "2026-01-01T00:00:00Z",
@@ -1897,36 +1907,36 @@ def row_23(root: str) -> "tuple[bool, list[str]]":
 ROWS: "list[tuple[str, Callable[[str], tuple[bool, list[str]]]]]" = [
     ("baseline (no mutation) - proves the harness itself is not vacuously green", row_0),
     (
-        "features/002-synth: intent -> spec -> post-spec intent edit (3 commits); "
+        "features/900-synth: intent -> spec -> post-spec intent edit (3 commits); "
         "gh stub issue filed 24h before intent",
         row_1,
     ),
     (
-        "features/002-synth: intent.md and spec.md in one commit, then a later "
+        "features/900-synth: intent.md and spec.md in one commit, then a later "
         "intent edit - churn still counted",
         row_2,
     ),
     (
-        "features/002-synth: intent committed before the stubbed issue was filed "
+        "features/900-synth: intent committed before the stubbed issue was filed "
         "(would-be negative lead time)",
         row_3,
     ),
-    ("features/002-old -> 002-new: pure git mv, 0/40 lines rewritten", row_4a),
+    ("features/900-old -> 900-new: pure git mv, 0/40 lines rewritten", row_4a),
     (
-        "features/002-old -> 002-new: git mv + 26/40 (65%) lines rewritten in the "
+        "features/900-old -> 900-new: git mv + 26/40 (65%) lines rewritten in the "
         "same commit",
         row_4b,
     ),
     (
-        "features/002-old -> 002-new: git mv + 40/40 (100%) lines rewritten - "
+        "features/900-old -> 900-new: git mv + 40/40 (100%) lines rewritten - "
         "unresolvable",
         row_4c,
     ),
-    ("features/002-synth containing only plan.md, no intent.md", row_5),
+    ("features/900-synth containing only plan.md, no intent.md", row_5),
     ("features/_template untouched on HEAD - proves the digit-prefix anchor excludes it", row_6),
-    ("features/002-synth/intent.md committed, no spec.md at all", row_7),
-    ("gh stub: feature:002 issue + a gate:intent issue closed COMPLETED", row_8),
-    ("gh stub: feature:002 issue + a gate:intent issue closed NOT_PLANNED", row_9),
+    ("features/900-synth/intent.md committed, no spec.md at all", row_7),
+    ("gh stub: feature:900 issue + a gate:intent issue closed COMPLETED", row_8),
+    ("gh stub: feature:900 issue + a gate:intent issue closed NOT_PLANNED", row_9),
     (
         "copy_tree gives a linked worktree a sandbox that owns its gitdir "
         "(issue #31, this file's copy of it)",
@@ -1953,7 +1963,7 @@ ROWS: "list[tuple[str, Callable[[str], tuple[bool, list[str]]]]]" = [
         row_14,
     ),
     (
-        "Stage 2: features/_template/spec.md edited after 002 copied it, 002's own "
+        "Stage 2: features/_template/spec.md edited after 900 copied it, 900's own "
         "spec.md untouched - proves the historical-blob-SET comparison",
         row_15,
     ),
@@ -1963,7 +1973,7 @@ ROWS: "list[tuple[str, Callable[[str], tuple[bool, list[str]]]]]" = [
         row_16,
     ),
     (
-        "Stage 2: features/002-old -> 002-new renumbered after spec.md was filled, "
+        "Stage 2: features/900-old -> 900-new renumbered after spec.md was filled, "
         "with a 65%-rewritten spec.md in the rename commit - proves --follow -M25% "
         "covers spec.md",
         row_17,
