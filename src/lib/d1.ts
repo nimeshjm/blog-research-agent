@@ -1,4 +1,4 @@
-import type { Candidate, RunOutcome, Topic, TopicStatus, WindowedItem } from './types';
+import type { Candidate, ParsedItem, RunOutcome, Topic, TopicStatus } from './types';
 
 /**
  * Every query against the tables in migrations/0001_init.sql and
@@ -234,7 +234,7 @@ export async function recordRunOutcome(db: D1Database, outcome: RunOutcome): Pro
  * still runs when `candidates` is empty, so a feed that went empty between
  * attempts does not leave an earlier attempt's rows behind.
  *
- * Takes `WindowedItem`, not `Candidate`: `sourceName` is bound once as `?2`
+ * Takes `ParsedItem`, not `Candidate`: `sourceName` is bound once as `?2`
  * for the whole statement, so a caller has no reason to attach it to every
  * item first. That spares the gather loop one object allocation per item -
  * up to 1,154 of them on the largest feed - in exactly the loop this
@@ -248,7 +248,7 @@ export async function writeRunCandidates(
   db: D1Database,
   runId: string,
   sourceName: string,
-  items: WindowedItem[],
+  items: ParsedItem[],
 ): Promise<number> {
   const payload = JSON.stringify(items.map((i) => ({ u: i.url, t: i.title, p: i.publishedAt, m: i.publishedMs })));
 

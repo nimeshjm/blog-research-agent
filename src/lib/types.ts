@@ -49,8 +49,15 @@ export interface FeedItem {
   publishedAt: string | null;
 }
 
-/** A `FeedItem` carrying the epoch-ms `applyGatherWindow` already parsed, so no caller has to `Date.parse` it a second time. */
-export type WindowedItem = FeedItem & { publishedMs: number | null };
+/**
+ * A `FeedItem` carrying the epoch-ms of `publishedAt`, parsed once during
+ * `parseFeed` (src/lib/feed.ts) so neither the bounded parse's stop condition
+ * nor `applyGatherWindow`'s filter has to `Date.parse` it again. Named for
+ * when it is produced, not for the window: `parseFeed` returns this *before*
+ * any window is applied, so a name like `WindowedItem` would be a lie about
+ * an unwindowed parse.
+ */
+export type ParsedItem = FeedItem & { publishedMs: number | null };
 
 /** A candidate article discovered in a feed, before it has been read. */
 export interface Candidate {

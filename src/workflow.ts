@@ -14,6 +14,7 @@ import {
 } from './lib/d1';
 import { extractArticleText } from './lib/extract';
 import { applyGatherWindow, parseFeed } from './lib/feed';
+import type { ParseBound } from './lib/feed';
 import { loadFeeds } from './lib/feeds';
 import {
   createBranch,
@@ -27,7 +28,7 @@ import type { GithubConfig } from './lib/github';
 import { createLlm, neuronsFor } from './lib/llm';
 import { blogPostPath, renderMdx, validateAgainstContentConfig, validateDraft } from './lib/mdx';
 import { buildMapMessages, buildReduceMessages, parseMapResponse, parseReduceResponse } from './lib/prompts';
-import type { ArticleSummary, Candidate, Draft, Env, FeedItem, ResearchParams, RunOutcome, Source, Topic } from './lib/types';
+import type { ArticleSummary, Candidate, Draft, Env, ParsedItem, ResearchParams, RunOutcome, Source, Topic } from './lib/types';
 import {
   ATTR_NEURONS_BUDGET,
   ATTR_NEURONS_SPENT,
@@ -303,6 +304,26 @@ export const GATHER_WINDOW_DAYS = 30;
 /** Backstop for items with no parseable date only. Zero such items today. */
 export const GATHER_UNDATED_MAX_PER_FEED = 20;
 /**
+ * How many consecutive dated, out-of-window items `parseFeed` reads before it
+ * cancels the response body rather than draining the rest of the archive
+ * (spec.md req. 1). The margin it rests on is the differential over all 46
+ * live feeds (acceptance criterion 2), not a derivation - it only has to
+ * absorb the local disorder of a feed that is mostly, not perfectly,
+ * newest-first.
+ */
+export const GATHER_STALE_RUN = 10;
+/**
+ * Requirement 3's backstop only: a wholly undated feed can never trip
+ * `GATHER_STALE_RUN`, so without a raw-item ceiling it would be unbounded.
+ * The margin is stated both ways it could be wrong: the largest raw item
+ * count in the allowlist is OpenAI's 1,155, and the largest legitimate
+ * *kept* count is arXiv cs.AI's 352-item announcement day (requirement 6
+ * forbids truncating that). 2,000 sits far enough above both that it can
+ * never truncate a real day - it is a safety net, not a tuning knob, and
+ * deliberately not sized anywhere near 352.
+ */
+export const GATHER_RAW_ITEM_MAX = 2000;
+/**
  * `run_candidates` is per-run scratch, not a second cross-run dedupe key -
  * `seen_urls` stays the only one. Pruned once per run, in `recordOutcome`,
  * so no terminal path needs its own step.
@@ -445,17 +466,33 @@ export async function proposeTopic(env: Env): Promise<{ title: string; angle: st
   return null;
 }
 
-async function fetchFeedItems(feedUrl: string): Promise<FeedItem[]> {
+/**
+ * `bound`, when given, is threaded two places: as the `fetch`'s abort
+ * signal (so cancelling it actually stops the network read, not only the
+ * in-process parse) and into `parseFeed` (so it can decide when to stop
+ * reading and call `bound.abort.abort()` itself). `parseFeed` absorbs the
+ * rejection that abort causes in its own drain - see its module doc comment
+ * - so by the time control reaches this function's `catch`, an aborted
+ * bounded parse has already returned normally with whatever it read. This
+ * `catch` therefore only ever sees a genuine fetch/parse failure, never the
+ * bound firing; if that stopped being true, a bound tripping on every
+ * archive feed would look identical to a dead feed here, and every one of
+ * them would silently contribute zero candidates.
+ */
+async function fetchFeedItems(feedUrl: string, bound?: ParseBound): Promise<ParsedItem[]> {
   try {
-    const response = await fetch(feedUrl);
+    const response = await fetch(feedUrl, bound === undefined ? undefined : { signal: bound.abort.signal });
     if (!response.ok) return [];
-    return await parseFeed(response);
+    return await parseFeed(response, bound);
   } catch {
     return [];
   }
 }
 
 async function fetchFeedTitles(feedUrl: string): Promise<string[]> {
+  // No bound: the seed-feed read that backs proposeTopic wants the newest
+  // item regardless of the window (spec.md req. 12 - bounding it could
+  // change which topic gets proposed).
   const items = await fetchFeedItems(feedUrl);
   return items.map((i) => i.title);
 }
@@ -472,12 +509,26 @@ async function fetchFeedTitles(feedUrl: string): Promise<string[]> {
  * a review finding against the allowlist, visible via `agent.sources.gathered`
  * on the step's own span. A D1 write failure, though, does still fail the
  * step, and should - that is not a dead feed, it is a dead database.
+ *
+ * `now` is computed once and shared between the bound's `cutoffMs` and
+ * `applyGatherWindow`'s own cutoff, so the parse-time stop and the
+ * post-parse filter agree on exactly the same window boundary rather than
+ * drifting apart across the (sub-millisecond) gap between two separate
+ * `Date.now()` reads.
  */
 export async function gatherCandidates(env: Env, runId: string, source: Source): Promise<number> {
-  const items = await fetchFeedItems(source.feedUrl);
+  const now = new Date();
+  const bound: ParseBound = {
+    abort: new AbortController(),
+    cutoffMs: now.getTime() - GATHER_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+    staleRun: GATHER_STALE_RUN,
+    rawMax: GATHER_RAW_ITEM_MAX,
+  };
+  const items = await fetchFeedItems(source.feedUrl, bound);
   const windowed = applyGatherWindow(items, {
     windowDays: GATHER_WINDOW_DAYS,
     undatedMax: GATHER_UNDATED_MAX_PER_FEED,
+    now,
   });
   return writeRunCandidates(env.DB, runId, source.name, windowed);
 }

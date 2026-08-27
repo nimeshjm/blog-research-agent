@@ -139,6 +139,47 @@ both now constraints on the implementation:
   Stopping early has to come from cancelling the source (an `AbortController` on the
   fetch), not from JS deciding per chunk whether to continue.
 
+#### Corrected in PR 6 (per `REVIEW.md` pass 4): requirement 1 is implemented, not dropped
+
+`plan.md`'s "Measured 2026-08-27: it pays" section records the measurement that decided
+this, taken against a bench *copy* of the parser. Re-measured against the code this PR
+actually ships, same harness, nine repetitions per feed, all 46 feeds:
+
+| | unbounded | bounded | ratio |
+|---|---|---|---|
+| all 46 feeds, summed | 1,257 ms | 1,003 ms | **0.798** |
+| OpenAI (686 KB) — **1,155 raw items read, now 71** | 253 ms | 44 ms | **0.174** |
+| arXiv cs.AI (744 KB, 352 kept, nothing stale to skip) | 137 ms | 134 ms | 0.978 |
+
+The bound fires on **33 of the 46 feeds**, and all 46 produce a candidate set identical in
+both membership *and order* to the unbounded parse, through a **live `fetch` aborted
+mid-stream** — not merely through buffered bodies, which would prove the stopping logic
+without proving that aborting a real response preserves what was already collected. Exactly
+two feeds are 2 ms or more slower (DX 29 → 33 ms, Pinecone 27 → 32 ms) against 209 ms saved
+on OpenAI alone. Local `workerd` numbers, so a **ratio** and never an absolute; acceptance
+criterion 5 is still the check that decides.
+
+Two corrections to the design above, both shape rather than substance:
+
+- **`WindowedItem` is `ParsedItem`.** The design above has `applyGatherWindow` parsing
+  every item's date and returning the epoch-ms alongside it. That is no longer where the
+  parse happens: `parseFeed(response, bound?)` now parses `publishedAt` once, at the point
+  each item is emitted, and returns `ParsedItem[]` — every item it read, unfiltered — for
+  both the bounded and unbounded call shapes. `applyGatherWindow` reads `publishedMs` off
+  its input and calls `Date.parse` zero times; it stays the sole authority on what is
+  kept. A type produced *before* any window is applied could not keep the name
+  `WindowedItem` without misdescribing what it is — `src/lib/types.ts`, `src/lib/feed.ts`,
+  `src/lib/d1.ts`, `src/workflow.ts`, and every test that constructs one were updated
+  together.
+- **The bound lives on `ParseBound`, passed into `parseFeed`, not as two bare parameters.**
+  `{ abort, cutoffMs, staleRun, rawMax }` — one object rather than the parser closing over
+  free-standing constants — is what lets `gatherCandidates` compute `cutoffMs` once,
+  from the same `now` it hands `applyGatherWindow`, so the stop condition and the filter
+  never disagree about the window boundary.
+
+The two hard constraints ("What bounding must not cost", above) are unchanged and are
+exactly what the implementation is written against.
+
 A third variant doing both correctly was inconclusive: by then the harness's own variance
 was about one feed wide — the same size as the effect. **So this cannot be settled by
 pass/fail against the CPU limit.** It needs per-request CPU numbers; `wrangler dev`'s local

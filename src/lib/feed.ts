@@ -1,4 +1,4 @@
-import type { FeedItem, WindowedItem } from './types';
+import type { FeedItem, ParsedItem } from './types';
 
 /**
  * RSS 2.0 and Atom parsing over `HTMLRewriter`, the platform's native
@@ -49,6 +49,46 @@ import type { FeedItem, WindowedItem } from './types';
  * Atom has neither problem: `entry`, `title`, `published`/`updated` and
  * `id` are ordinary elements, and Atom's `<link href="..."/>` carries the
  * URL as an attribute, not text.
+ *
+ * ## Bounding the parse (`ParseBound`, optional)
+ *
+ * `parseFeed` always returns *every* item it read, unfiltered - it is never
+ * the authority on what is kept, only (optionally) on when to stop reading.
+ * `applyGatherWindow` below stays the sole filter, so the two can be tested
+ * independently: requirement 2 (spec.md) is a differential comparison of
+ * `applyGatherWindow`'s output, bounded parse vs. unbounded, never an
+ * inspection of `parseFeed` itself.
+ *
+ * A caller that wants the parse bounded passes a `ParseBound`. Two
+ * conditions stop it, either of which cancels the response body rather than
+ * draining it:
+ *
+ *  - `staleRun` consecutive *dated* items at or before `cutoffMs` - the
+ *    saving, for an archive feed like OpenAI's (1,154 raw items to keep 62).
+ *    It keys on *consecutive* stale items, not the first one, because every
+ *    allowlisted feed is newest-first (asserted in feature 001's spec.md),
+ *    but that assertion is now load-bearing in a way it was not before this
+ *    bound existed: a single out-of-order stale item - one paragraph
+ *    misdated, one feed with a minor sort hiccup - must not truncate the
+ *    rest of an otherwise newest-first feed. Undated items neither increment
+ *    nor reset this counter; they are governed by `GATHER_UNDATED_MAX_PER_FEED`,
+ *    which `applyGatherWindow` already applies.
+ *  - `rawMax` raw items, dated or not - requirement 3's backstop for a feed
+ *    with no parseable dates at all, which the stale-run condition above can
+ *    never trip.
+ *
+ * The mechanism avoids the two costs this feature measured and ruled out
+ * (spec.md, "What bounding must not cost"):
+ *
+ *  - **No second `Date.parse` per item.** The date is parsed once, at the
+ *    point an item is emitted, and carried out as `publishedMs` - not
+ *    recomputed by the stop condition and not recomputed again by
+ *    `applyGatherWindow`.
+ *  - **The drain stays native.** Stopping early cancels the *source* - an
+ *    `AbortController` passed to the `fetch` that produced `response` - so
+ *    `pipeTo(new WritableStream())` keeps draining with no per-chunk JS. A
+ *    `getReader()` loop deciding per chunk was measured to cost more than
+ *    the tokenizing an early stop is meant to skip.
  */
 
 /** RSS's `<link>` void-element workaround and Atom's `<link href>` both validate against this before being trusted as a URL. */
@@ -65,14 +105,63 @@ async function drain(response: Response): Promise<void> {
 }
 
 /**
- * Parses one feed response - RSS 2.0, Atom, or both handlers finding
- * nothing (an unrecognised format) - into raw `FeedItem`s: no recency
- * window, no ranking, no D1. `gatherCandidates` in `src/workflow.ts`
- * applies `applyGatherWindow` and attaches the source name to turn these
- * into `Candidate`s.
+ * A stopping condition for `parseFeed`, threaded down from
+ * `GATHER_STALE_RUN` / `GATHER_RAW_ITEM_MAX` (src/workflow.ts). It never
+ * decides what is kept, only when to stop reading - see the module doc
+ * comment above.
  */
-export async function parseFeed(response: Response): Promise<FeedItem[]> {
-  const items: FeedItem[] = [];
+export interface ParseBound {
+  /** Aborted when either bound trips, so the remaining bytes are never tokenized. */
+  abort: AbortController;
+  /** Items at or after this are in-window. Only used to decide when to stop, never what to keep. */
+  cutoffMs: number;
+  staleRun: number;
+  rawMax: number;
+}
+
+/**
+ * Parses one feed response - RSS 2.0, Atom, or both handlers finding
+ * nothing (an unrecognised format) - into `ParsedItem`s: every item read,
+ * unfiltered, each carrying the epoch-ms of `publishedAt` parsed once at the
+ * point it is emitted. No recency window, no ranking, no D1 - `gatherCandidates`
+ * in `src/workflow.ts` applies `applyGatherWindow` and attaches the source
+ * name to turn these into `Candidate`s.
+ *
+ * With no `bound`, every item in the feed is read. With one, reading stops
+ * (and the response body is cancelled, not drained) once `bound.staleRun`
+ * consecutive dated items fall at or before `bound.cutoffMs`, or once
+ * `bound.rawMax` raw items have been read - see the module doc comment.
+ */
+export async function parseFeed(response: Response, bound?: ParseBound): Promise<ParsedItem[]> {
+  const items: ParsedItem[] = [];
+  let raw = 0;
+  let staleRun = 0;
+  let stopped = false;
+
+  const consider = (item: FeedItem): void => {
+    // Buffered chunks already in flight can still fire after `bound.abort.abort()`
+    // is called, before the underlying stream actually tears down - `stopped`
+    // is what makes those a no-op rather than a race.
+    if (stopped) return;
+
+    const parsedMs = item.publishedAt === null ? Number.NaN : Date.parse(item.publishedAt);
+    const publishedMs = Number.isNaN(parsedMs) ? null : parsedMs;
+    items.push({ ...item, publishedMs });
+
+    if (bound === undefined) return;
+    raw++;
+    if (publishedMs === null) {
+      // Undated: governed by GATHER_UNDATED_MAX_PER_FEED downstream, not by this bound.
+    } else if (publishedMs < bound.cutoffMs) {
+      staleRun++;
+    } else {
+      staleRun = 0;
+    }
+    if (staleRun >= bound.staleRun || raw >= bound.rawMax) {
+      stopped = true;
+      bound.abort.abort();
+    }
+  };
 
   // --- RSS 2.0 `<item>` state -----------------------------------------
   let rssTitle = '';
@@ -103,7 +192,7 @@ export async function parseFeed(response: Response): Promise<FeedItem[]> {
           // empty url - see the `text()` handler below for why this can't be
           // caught earlier.
           if (!URL_RE.test(rssUrl)) return;
-          items.push({
+          consider({
             url: rssUrl,
             title: rssTitle.trim(),
             publishedAt: rssPublishedAt.trim() === '' ? null : rssPublishedAt.trim(),
@@ -154,7 +243,7 @@ export async function parseFeed(response: Response): Promise<FeedItem[]> {
           // rel="self" - never gets a URL and is dropped, same as the RSS side.
           if (!URL_RE.test(atomUrl)) return;
           const publishedAt = atomPublished.trim() !== '' ? atomPublished.trim() : atomUpdated.trim();
-          items.push({
+          consider({
             url: atomUrl,
             title: atomTitle.trim(),
             publishedAt: publishedAt === '' ? null : publishedAt,
@@ -191,43 +280,53 @@ export async function parseFeed(response: Response): Promise<FeedItem[]> {
     })
     .transform(response);
 
-  await drain(rewritten);
+  try {
+    await drain(rewritten);
+  } catch {
+    // Expected exactly when `bound.abort.abort()` fired above: the aborted
+    // source errors and the native `pipeTo` drain rejects in turn. Catching
+    // it here - rather than switching to a `getReader()` loop that could
+    // avoid the throw - is what keeps the drain native; see the module doc
+    // comment for why that split is the point of this shape.
+  }
+
   return items;
 }
 
 /**
- * Applies the recency window (spec.md, "The recency window in `gather`"):
- * dated items are filtered by `windowDays`, never truncated by rank, so a
- * full arXiv announcement day survives intact; items with no parseable date
- * are kept in the feed's own order (every allowlisted feed lists newest
- * first) up to `undatedMax`. `windowDays` and `undatedMax` are passed in
- * rather than defined here - they are `GATHER_WINDOW_DAYS` and
- * `GATHER_UNDATED_MAX_PER_FEED` in `src/workflow.ts`, and this module does
- * not redefine them.
+ * Applies the recency window (spec.md, "The recency window in `gather`") -
+ * the authoritative filter. `parseFeed`'s optional bound only ever decides
+ * when to stop *reading*; this function alone decides what is *kept*, which
+ * is what makes requirement 2 testable by differential comparison rather
+ * than by inspecting the parser. Dated items are filtered by `windowDays`,
+ * never truncated by rank, so a full arXiv announcement day survives intact;
+ * items with no parseable date are kept in the feed's own order (every
+ * allowlisted feed lists newest first) up to `undatedMax`. `windowDays` and
+ * `undatedMax` are passed in rather than defined here - they are
+ * `GATHER_WINDOW_DAYS` and `GATHER_UNDATED_MAX_PER_FEED` in
+ * `src/workflow.ts`, and this module does not redefine them.
  *
- * Returns `WindowedItem[]`: this function already calls `Date.parse` on
- * every item to decide dated vs. undated, so the parsed epoch-ms is carried
- * out on the item rather than thrown away - `null` for an undated one. A
- * caller that needs it again (`gatherCandidates`'s D1 write, `shortlist`'s
- * SQL ordering) must not re-parse: a second `Date.parse` per item is a cost
- * this feature measured and ruled out (spec.md, "What bounding must not
- * cost").
+ * Reads `item.publishedMs`, already parsed once by `parseFeed` - this
+ * function calls `Date.parse` zero times. A caller that needs the value
+ * again (`gatherCandidates`'s D1 write, `shortlist`'s SQL ordering) reads
+ * `publishedMs` off the result rather than re-parsing: a second `Date.parse`
+ * per item is a cost this feature measured and ruled out (spec.md, "What
+ * bounding must not cost").
  */
 export function applyGatherWindow(
-  items: FeedItem[],
+  items: ParsedItem[],
   opts: { windowDays: number; undatedMax: number; now?: Date },
-): WindowedItem[] {
+): ParsedItem[] {
   const now = opts.now ?? new Date();
   const cutoffMs = now.getTime() - opts.windowDays * 24 * 60 * 60 * 1000;
 
-  const dated: WindowedItem[] = [];
-  const undated: WindowedItem[] = [];
+  const dated: ParsedItem[] = [];
+  const undated: ParsedItem[] = [];
   for (const item of items) {
-    const parsedMs = item.publishedAt === null ? Number.NaN : Date.parse(item.publishedAt);
-    if (Number.isNaN(parsedMs)) {
-      undated.push({ ...item, publishedMs: null });
-    } else if (parsedMs >= cutoffMs) {
-      dated.push({ ...item, publishedMs: parsedMs });
+    if (item.publishedMs === null) {
+      undated.push(item);
+    } else if (item.publishedMs >= cutoffMs) {
+      dated.push(item);
     }
     // Dated but older than the cutoff: dropped, not counted against either cap.
   }

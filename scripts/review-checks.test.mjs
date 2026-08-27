@@ -284,8 +284,8 @@ const rows = [
       mustReplace(
         dir,
         'src/lib/feed.ts',
-        "import type { FeedItem, WindowedItem } from './types';",
-        "import type { FeedItem, WindowedItem } from './types';\n\n// Mutation-row probe: 10 ms CPU per step.",
+        "import type { FeedItem, ParsedItem } from './types';",
+        "import type { FeedItem, ParsedItem } from './types';\n\n// Mutation-row probe: 10 ms CPU per step.",
       );
     },
   },
