@@ -1,5 +1,4 @@
 import { env as testEnv } from 'cloudflare:test';
-import migrationSql from '../migrations/0001_init.sql?raw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SEEN_URLS_CHUNK_SIZE } from '../src/lib/d1';
 import { loadFeeds } from '../src/lib/feeds';
@@ -19,6 +18,7 @@ import {
   summarizeArticle,
   synthesizeDraft,
 } from '../src/workflow';
+import { applySchema } from './schema';
 
 const rawEnv = testEnv as unknown as Env;
 const env: Env = {
@@ -34,25 +34,14 @@ afterEach(() => {
 });
 
 async function resetSchema(): Promise<void> {
-  for (const table of ['drafts', 'runs', 'seen_urls', 'topics']) {
+  for (const table of ['drafts', 'runs', 'run_candidates', 'seen_urls', 'topics']) {
     await env.DB.prepare(`DELETE FROM ${table}`).run();
   }
 }
 
-function statementsFrom(sql: string): string[] {
-  return sql
-    .split('\n')
-    .filter((line) => !line.trim().startsWith('--'))
-    .join('\n')
-    .split(';')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-}
-
+// Schema setup lives in ./schema.ts, shared with test/d1.test.ts.
 beforeEach(async () => {
-  for (const stmt of statementsFrom(migrationSql)) {
-    await env.DB.prepare(stmt).run();
-  }
+  await applySchema(env.DB);
   await resetSchema();
 });
 
@@ -79,6 +68,7 @@ function candidate(overrides: Partial<Candidate> = {}): Candidate {
     url: 'https://example.com/x',
     title: 'x',
     publishedAt: '2026-08-27T00:00:00Z',
+    publishedMs: null,
     sourceName: 'Test Source',
     ...overrides,
   };

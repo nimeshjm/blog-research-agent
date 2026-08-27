@@ -49,11 +49,16 @@ export interface FeedItem {
   publishedAt: string | null;
 }
 
+/** A `FeedItem` carrying the epoch-ms `applyGatherWindow` already parsed, so no caller has to `Date.parse` it a second time. */
+export type WindowedItem = FeedItem & { publishedMs: number | null };
+
 /** A candidate article discovered in a feed, before it has been read. */
 export interface Candidate {
   url: string;
   title: string;
   publishedAt: string | null;
+  /** Epoch-ms of `publishedAt` as parsed by `applyGatherWindow`, or null when undated - surfaced rather than recomputed, so `shortlist` can order in SQL. */
+  publishedMs: number | null;
   sourceName: string;
 }
 

@@ -19,6 +19,7 @@ function candidate(overrides: Partial<Candidate> = {}): Candidate {
     url: 'https://example.com/x',
     title: 'A study of agentic code review',
     publishedAt: '2026-08-27T00:00:00Z',
+    publishedMs: null,
     sourceName: 'Test Source',
     ...overrides,
   };

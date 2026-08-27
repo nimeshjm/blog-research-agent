@@ -1,9 +1,11 @@
-import type { RunOutcome, Topic, TopicStatus } from './types';
+import type { Candidate, RunOutcome, Topic, TopicStatus, WindowedItem } from './types';
 
 /**
- * Every query against the four tables in migrations/0001_init.sql. See
- * spec.md -> Design -> Data model for what each table is for; this file
- * only turns those rows into typed reads and writes.
+ * Every query against the tables in migrations/0001_init.sql and
+ * 0002_run_candidates_and_claims.sql. See spec.md -> Design -> Data model
+ * and features/002-gather-without-accumulation/plan.md, step 2, for what
+ * each table is for; this file only turns those rows into typed reads and
+ * writes.
  */
 
 interface TopicRow {
@@ -42,11 +44,15 @@ async function fetchTopicRow(db: D1Database, id: number): Promise<TopicRow | nul
  * and orphaning the first.
  */
 async function claimRow(db: D1Database, row: TopicRow): Promise<Topic | null> {
-  if (row.status === 'in_progress') return toTopic(row); // already claimed - retry recovery
+  // Already claimed - retry recovery. Does not stamp claimed_at: a retry
+  // recovering its own row must not extend the TTL of a claim it did not make.
+  if (row.status === 'in_progress') return toTopic(row);
   if (row.status !== 'queued') return null; // done/rejected: not selectable
 
   const update = await db
-    .prepare(`UPDATE topics SET status = 'in_progress' WHERE id = ? AND status = 'queued'`)
+    .prepare(
+      `UPDATE topics SET status = 'in_progress', claimed_at = datetime('now') WHERE id = ? AND status = 'queued'`,
+    )
     .bind(row.id)
     .run();
 
@@ -208,4 +214,160 @@ export async function recordRunOutcome(db: D1Database, outcome: RunOutcome): Pro
       outcome.prUrl,
     )
     .run();
+}
+
+/**
+ * Writes one feed's candidates in a single `db.batch()` of two statements -
+ * a scoped `DELETE` then an `INSERT ... SELECT ... FROM json_each(?3)` - so
+ * the row count never drives the query count. Binding one parameter per
+ * column per row would need 18+ chunked queries for arXiv cs.AI's 352
+ * candidates alone (spec.md req. 6); `json_each` unpacks the whole array
+ * inside SQLite from a single JSON parameter instead, so a gather step costs
+ * exactly two of the invocation's 50 queries whatever the feed's size. Short
+ * keys (`u`/`t`/`p`/`m`) because the payload is machine-only, not read
+ * elsewhere.
+ *
+ * The `DELETE` is scoped to `(run_id, source_name)`, not `run_id` alone: a
+ * run_id-wide delete in a per-feed step would wipe every earlier feed's rows
+ * written by the same run. Scoping it this way is what makes the step
+ * idempotent under replay without being destructive to sibling feeds - it
+ * still runs when `candidates` is empty, so a feed that went empty between
+ * attempts does not leave an earlier attempt's rows behind.
+ *
+ * Takes `WindowedItem`, not `Candidate`: `sourceName` is bound once as `?2`
+ * for the whole statement, so a caller has no reason to attach it to every
+ * item first. That spares the gather loop one object allocation per item -
+ * up to 1,154 of them on the largest feed - in exactly the loop this
+ * feature exists to make cheaper.
+ *
+ * Returns `items.length`, not `meta.changes`: `INSERT OR REPLACE`
+ * reports replacements as changes too, and the caller wants the candidate
+ * count.
+ */
+export async function writeRunCandidates(
+  db: D1Database,
+  runId: string,
+  sourceName: string,
+  items: WindowedItem[],
+): Promise<number> {
+  const payload = JSON.stringify(items.map((i) => ({ u: i.url, t: i.title, p: i.publishedAt, m: i.publishedMs })));
+
+  await db.batch([
+    db.prepare(`DELETE FROM run_candidates WHERE run_id = ? AND source_name = ?`).bind(runId, sourceName),
+    db
+      .prepare(
+        `INSERT OR REPLACE INTO run_candidates (run_id, url, title, published_at, published_ms, source_name)
+         SELECT ?1,
+                json_extract(value, '$.u'),
+                json_extract(value, '$.t'),
+                json_extract(value, '$.p'),
+                json_extract(value, '$.m'),
+                ?2
+           FROM json_each(?3)`,
+      )
+      .bind(runId, sourceName, payload),
+  ]);
+
+  return items.length;
+}
+
+interface RunCandidateRow {
+  url: string;
+  title: string;
+  published_at: string | null;
+  published_ms: number | null;
+  source_name: string;
+}
+
+/**
+ * The run's whole candidate set, capped and ordered in SQL rather than
+ * materialized and sorted in JS. `published_ms IS NULL` sorted first is
+ * SQLite's NULLS LAST idiom: undated items sort after dated ones, so they
+ * are the first `limit` drops - the same rule `dateKey`'s
+ * `NEGATIVE_INFINITY` gave undated items, now applied by the database
+ * instead of by re-parsing every candidate's date in JS. The `IS NULL` term
+ * is not load-bearing on its own - SQLite's plain `published_ms DESC`
+ * already sorts `NULL` last - it is kept as an explicit statement of that
+ * intent, not as the mechanism.
+ */
+export async function readRunCandidates(db: D1Database, runId: string, limit: number): Promise<Candidate[]> {
+  const result = await db
+    .prepare(
+      `SELECT url, title, published_at, published_ms, source_name
+         FROM run_candidates
+        WHERE run_id = ?
+        ORDER BY published_ms IS NULL, published_ms DESC
+        LIMIT ?`,
+    )
+    .bind(runId, limit)
+    .all<RunCandidateRow>();
+
+  return result.results.map((row) => ({
+    url: row.url,
+    title: row.title,
+    publishedAt: row.published_at,
+    publishedMs: row.published_ms,
+    sourceName: row.source_name,
+  }));
+}
+
+/**
+ * `run_candidates` is per-run scratch, not the cross-run dedupe key -
+ * `seen_urls` stays that. `created_at` is compared rather than joining
+ * `runs`, so a run that never wrote a `runs` row still gets its rows
+ * collected. Called once per run regardless of outcome; `retentionDays` is
+ * the caller's constant, not this file's.
+ */
+export async function pruneRunCandidates(db: D1Database, retentionDays: number): Promise<void> {
+  await db
+    .prepare(`DELETE FROM run_candidates WHERE created_at < datetime('now', '-' || ? || ' days')`)
+    .bind(retentionDays)
+    .run();
+}
+
+/**
+ * Creates the `runs` row when a run starts rather than when it ends (spec.md
+ * req. 10), so a run that dies mid-step still leaves a row behind.
+ * `INSERT OR IGNORE` on the `instance_id` primary key is replay safety: a
+ * retried first step must never reset an already-finished run's row back to
+ * `running`. `runs.status` has no `CHECK` constraint, so `'running'` needs
+ * no migration.
+ */
+export async function startRun(db: D1Database, instanceId: string): Promise<void> {
+  await db.prepare(`INSERT OR IGNORE INTO runs (instance_id, status) VALUES (?, 'running')`).bind(instanceId).run();
+}
+
+/**
+ * Separate from `startRun` because the topic is not known until
+ * `select-topic` returns, and a run that dies later, in `gather`, must still
+ * record which topic it stranded.
+ */
+export async function attachRunTopic(db: D1Database, instanceId: string, topicId: number): Promise<void> {
+  await db.prepare(`UPDATE runs SET topic_id = ? WHERE instance_id = ?`).bind(topicId, instanceId).run();
+}
+
+/**
+ * Returns a topic to `queued` once its claim has outlived `ttlHours` (spec.md
+ * req. 8/9, "Reclaiming a stranded topic") - the unattended path `claimRow`'s
+ * own retry recovery does not reach, since that only recovers a run's own
+ * `in_progress` row when it names the topic via `ResearchParams.topicId`. A
+ * row with `claimed_at IS NULL` predates this migration and is left alone
+ * rather than guessed at - though `AND claimed_at IS NOT NULL` is not what
+ * enforces that: SQL's three-valued logic already makes `claimed_at <
+ * datetime(...)` evaluate to `NULL`, never true, when `claimed_at` is
+ * `NULL`. The clause is kept as an explicit statement of that intent, not as
+ * the mechanism. `ttlHours` is the caller's constant, not this file's.
+ */
+export async function reclaimStaleTopics(db: D1Database, ttlHours: number): Promise<number> {
+  const update = await db
+    .prepare(
+      `UPDATE topics SET status = 'queued', claimed_at = NULL
+        WHERE status = 'in_progress'
+          AND claimed_at IS NOT NULL
+          AND claimed_at < datetime('now', '-' || ? || ' hours')`,
+    )
+    .bind(ttlHours)
+    .run();
+
+  return update.meta?.changes ?? 0;
 }

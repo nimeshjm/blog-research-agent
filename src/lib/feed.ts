@@ -1,4 +1,4 @@
-import type { FeedItem } from './types';
+import type { FeedItem, WindowedItem } from './types';
 
 /**
  * RSS 2.0 and Atom parsing over `HTMLRewriter`, the platform's native
@@ -203,22 +203,30 @@ export async function parseFeed(response: Response): Promise<FeedItem[]> {
  * rather than defined here - they are `GATHER_WINDOW_DAYS` and
  * `GATHER_UNDATED_MAX_PER_FEED` in `src/workflow.ts`, and this module does
  * not redefine them.
+ *
+ * Returns `WindowedItem[]`: this function already calls `Date.parse` on
+ * every item to decide dated vs. undated, so the parsed epoch-ms is carried
+ * out on the item rather than thrown away - `null` for an undated one. A
+ * caller that needs it again (`gatherCandidates`'s D1 write, `shortlist`'s
+ * SQL ordering) must not re-parse: a second `Date.parse` per item is a cost
+ * this feature measured and ruled out (spec.md, "What bounding must not
+ * cost").
  */
 export function applyGatherWindow(
   items: FeedItem[],
   opts: { windowDays: number; undatedMax: number; now?: Date },
-): FeedItem[] {
+): WindowedItem[] {
   const now = opts.now ?? new Date();
   const cutoffMs = now.getTime() - opts.windowDays * 24 * 60 * 60 * 1000;
 
-  const dated: FeedItem[] = [];
-  const undated: FeedItem[] = [];
+  const dated: WindowedItem[] = [];
+  const undated: WindowedItem[] = [];
   for (const item of items) {
     const parsedMs = item.publishedAt === null ? Number.NaN : Date.parse(item.publishedAt);
     if (Number.isNaN(parsedMs)) {
-      undated.push(item);
+      undated.push({ ...item, publishedMs: null });
     } else if (parsedMs >= cutoffMs) {
-      dated.push(item);
+      dated.push({ ...item, publishedMs: parsedMs });
     }
     // Dated but older than the cutoff: dropped, not counted against either cap.
   }

@@ -221,6 +221,18 @@ describe('applyGatherWindow()', () => {
     expect(result).toHaveLength(1);
   });
 
+  it('carries the parsed epoch-ms for a dated item, so callers never re-parse it', () => {
+    const items = [{ url: 'https://example.com/dated', title: 'Dated', publishedAt: '2026-08-20T12:00:00Z' }];
+    const result = applyGatherWindow(items, { windowDays: GATHER_WINDOW_DAYS, undatedMax: GATHER_UNDATED_MAX_PER_FEED, now });
+    expect(result[0]?.publishedMs).toBe(Date.parse('2026-08-20T12:00:00Z'));
+  });
+
+  it('sets publishedMs to null for an undated item', () => {
+    const items = [{ url: 'https://example.com/undated', title: 'Undated', publishedAt: null }];
+    const result = applyGatherWindow(items, { windowDays: GATHER_WINDOW_DAYS, undatedMax: GATHER_UNDATED_MAX_PER_FEED, now });
+    expect(result[0]?.publishedMs).toBeNull();
+  });
+
   it('mixes dated (unbounded) and undated (capped) items in one feed', () => {
     const dated = Array.from({ length: 5 }, (_, i) => ({
       url: `https://example.com/dated-${i}`,
