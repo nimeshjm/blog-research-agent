@@ -524,7 +524,7 @@ npm test
 npx wrangler deploy --dry-run
 ```
 
-`npm test` is the 10-file vitest suite under `test/`, run against real Workers bindings
+`npm test` is the nine-file vitest suite under `test/`, run against real Workers bindings
 through `@cloudflare/vitest-pool-workers`. It is a gate in both `.githooks/pre-push` and
 `ci.yml`, so it belongs in this list; an earlier draft of this plan omitted it and PR 2 was
 briefed without it. Two of its files build the schema by hand from `migrations/*.sql?raw`,
