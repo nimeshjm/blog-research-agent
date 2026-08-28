@@ -2,6 +2,12 @@ id: no-bare-step-do
 language: TypeScript
 severity: error
 message: step.do( only in src/lib/trace.ts - use tracedStep/tracerFor
+# The seam this enforces is the Worker's. `probe/` is a throwaway instrument
+# deployed as its own Worker and must not route through `tracedStep`: tracing
+# is CPU, and this rule's subject is a CPU measurement. Same shape of
+# carve-out as `span-attributes-allowlisted` walking only `src/**`.
+files:
+  - "src/**"
 ignores:
   - "**/lib/trace.ts"
 rule:
