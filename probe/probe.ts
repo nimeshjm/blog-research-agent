@@ -6,8 +6,8 @@ import type { ParsedItem, Source } from '../src/lib/types';
 /**
  * A throwaway instrument for feature 003, and nothing else. It exists to
  * answer one question the deployed Worker cannot be asked read-only: where
- * do invocation boundaries actually fall during a Workflow run, and does a
- * retry get a fresh one?
+ * do invocation boundaries actually fall during a Workflow run, does a retry
+ * get a fresh one, and does a `step.sleep` force one?
  *
  * The measurement channel is the step output. `wrangler workflows instances
  * describe` returns every completed step's persisted output, so a step that
@@ -27,6 +27,11 @@ import type { ParsedItem, Source } from '../src/lib/types';
  * inside the isolate that was already serving; `iso` alone cannot see a
  * boundary at all, because isolate reuse is real. The pair is what makes the
  * map interpretable.
+ *
+ * `ms` runs from the top of the same `run()` execution `r` names, which is
+ * what separates a `step.sleep` that suspends the instance from one that is
+ * merely an in-process await: an await keeps `r` and carries the sleep's
+ * whole duration into the next step's `ms`, a suspension does neither.
  *
  * This is deliberately NOT in `src/`. A merge to `main` deploys `src/` (see
  * `.github/workflows/deploy.yml`), and feature 003's `plan.md` is still the
@@ -53,8 +58,15 @@ interface Marker {
 }
 
 export interface ProbeParams {
-  mode: 'map' | 'retry';
+  mode: 'map' | 'retry' | 'sleep';
   feeds: Source[];
+  // `sleep` only. `everyN` counts gather steps between sleeps; `sleepFor` is a
+  // Workflows duration string ('1 second', '60 seconds') or a millisecond
+  // number. Both are optional so a `map` body stays a valid payload, and
+  // `sleep` mode is exactly `map` plus the sleeps - same gather steps, same
+  // marker shape, so its map is comparable with the runs already recorded.
+  everyN?: number;
+  sleepFor?: WorkflowSleepDuration;
 }
 
 // Copied from src/workflow.ts rather than exported from it: these are the
@@ -106,7 +118,11 @@ export class ProbeWorkflow extends WorkflowEntrypoint<unknown, ProbeParams> {
     const t0 = Date.now();
     const mark = (): Marker => ({ r, iso: isoId(), seq: SEQ++, ms: Date.now() - t0 });
 
-    const { mode, feeds } = event.payload;
+    const { mode, feeds, sleepFor = '1 second' } = event.payload;
+    // A zero would make `(i + 1) % everyN` NaN, which is never 0, so `sleep`
+    // mode would silently run as `map` and read back as "the sleep did
+    // nothing" - the exact false negative this run is trying not to produce.
+    const everyN = Math.max(1, Math.trunc(event.payload.everyN ?? 1));
 
     if (mode === 'retry') {
       // Two cheap steps first, so there is a marker to compare the retry
@@ -138,6 +154,12 @@ export class ProbeWorkflow extends WorkflowEntrypoint<unknown, ProbeParams> {
         const n = await gatherCount(source);
         return { ...mark(), n };
       });
+      if (mode === 'sleep' && (i + 1) % everyN === 0) {
+        // Same index and padding as the gather step it follows, so the pair
+        // reads as one unit in the instance view and the name stays a stable
+        // replay key.
+        await step.sleep(`s${String(i).padStart(2, '0')}:sleep`, sleepFor);
+      }
     }
   }
 }

@@ -65,10 +65,44 @@ curl -sX POST https://research-probe.<subdomain>.workers.dev \
 npx wrangler workflows instances describe probe-workflow <id>
 ```
 
-`mode` is `map` (one step per feed, in the order given) or `retry`. Reordering the
-`feeds` array is how the position of a feed is varied — putting The Pragmatic Engineer
-first is the experiment that separates "that feed is too expensive on its own" from
-"the tenth step has no budget left".
+`mode` is `map` (one step per feed, in the order given), `sleep` or `retry`. Reordering
+the `feeds` array is how the position of a feed is varied — putting The Pragmatic
+Engineer first is the experiment that separates "that feed is too expensive on its own"
+from "the tenth step has no budget left".
+
+`sleep` is `map` plus an `await step.sleep(...)` after every `everyN`th gather step, for
+`sleepFor` (a Workflows duration string, or a number of milliseconds):
+
+```bash
+-d "{\"mode\":\"sleep\",\"everyN\":1,\"sleepFor\":\"60 seconds\",\"feeds\":$(cat config/feeds.json)}"
+```
+
+The gather steps are byte-identical to `map`'s and return the same marker, so a `sleep`
+map is directly comparable with a `map` one — the only difference is the `s00:sleep`
+steps between them. `everyN` defaults to 1 and is clamped to at least 1; `sleepFor`
+defaults to one second. That question is whether `step.sleep` ends the `run()` execution
+and with it the CPU budget it has been accumulating, which `spec.md` for feature 002
+defers as "forcing an invocation boundary per gather step" and nobody has measured.
+
+Read the answer off two independent axes, which can disagree:
+
+| axis | reads |
+|---|---|
+| `r` / `iso` / `seq` across a sleep | **whether a boundary happened at all** |
+| how many feeds complete before `1102` | **whether the budget reset** |
+
+and use `ms` to name the mechanism. `ms` is measured from the top of the `run()`
+execution `r` identifies:
+
+| `r` | `seq` | `ms` after a 60 s sleep | reading |
+|---|---|---|---|
+| same | +1 | jumped by ~60,000 | the sleep was an in-process await; no boundary |
+| new | +1, continuing | back to hundreds | `run()` re-executed in the same isolate |
+| new | back to 0 | back to hundreds | `run()` re-executed in a fresh isolate |
+
+Because `map` and `sleep` share the gather loop, a payload whose `mode` is misspelled
+runs as a plain `map` and reads back exactly like "the sleep did nothing". Check the
+`s*:sleep` steps are present in the capture before believing a negative.
 
 `retry` ignores `feeds`. It runs two cheap marker steps, then a step that throws for the
 first ~25 s of instance life; with Workflows' default 10/20/40 s backoff the first two
