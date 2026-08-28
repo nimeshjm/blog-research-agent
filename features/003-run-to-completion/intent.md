@@ -6,8 +6,8 @@
 
 The pipeline has still never completed a run. Feature 002 shipped and measurably helped:
 the manually triggered run against deployed commit `c828e7d` (instance
-`ffa1add2-e4b6-4ac4-b318-97254466a2bf`, 2026-08-27 20:51 UTC) reached feed 9 of 46
-before dying, against feed 5 of 46 for the pre-002 run — candidates now persist to D1 as
+`ffa1add2-e4b6-4ac4-b318-97254466a2bf`, 2026-08-27 20:51 UTC) died on feed 10 of 46,
+against feed 5 for the pre-002 run — candidates now persist to D1 as
 they are gathered, arXiv's full announcement day is no longer truncated, the dead
 instance left a `runs` row (the first row that table has ever held, a feature 001
 requirement that until then had never once been satisfied), and its topic is recoverable
