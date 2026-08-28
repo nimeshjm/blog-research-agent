@@ -90,6 +90,14 @@ npx tsc -p probe/tsconfig.json
 
 ## Tearing it down
 
+The deployed Worker is **public and unauthenticated, and it fetches whatever URLs the
+request body names**. That is acceptable for a measurement that takes minutes; it is not
+something to leave standing. Tear it down once the captures in `probe/captures/` are
+committed:
+
 ```bash
 npx wrangler delete -c probe/wrangler.toml
 ```
+
+This also removes `probe-workflow` and its instances, so `FINDINGS.md` cites the
+committed captures rather than live readback.

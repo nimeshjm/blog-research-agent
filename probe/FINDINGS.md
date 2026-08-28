@@ -26,7 +26,12 @@ are the opposite of what this repo has assumed since feature 001.
 
 **One `r`. One `iso`. `seq` 0–8 with no gap.** Nine consecutive `step.do` calls executed
 inside a single `run()` execution, in a single isolate, with the module-scope counter
-never resetting. Not one invocation boundary occurred in nine opportunities.
+never resetting: **no replay, no isolate change, and — given the tenth step failed — no
+budget reset.**
+
+Stated that way deliberately. `r` and `iso` cannot rule out an invocation that was
+suspended and resumed, so the mechanism stays unnamed; what is measured is that whatever
+happened between those nine steps did not reset the CPU budget.
 
 `src/workflow.ts` and `.claude/skills/cf-free-tier/SKILL.md` both say one feed per step
 buys "a *chance* of a fresh invocation". Measured, it bought none.
@@ -103,14 +108,19 @@ premise is itself unverified, so this record does not assert a number.
 
 ## Reproducing
 
-Instance state is not subject to the 3-day dashboard trace retention, so all three runs
-remain readable:
+The verbatim `wrangler workflows instances describe` output for all three runs is
+committed under `probe/captures/<instance-id>.txt`. **That is the citable copy.** Live
+readback works only while the probe Worker exists:
 
 ```bash
 npx wrangler workflows instances describe probe-workflow 3b78558c-357a-4e39-b9c5-5f2647a7d1d2
 npx wrangler workflows instances describe probe-workflow 4ee0f759-5867-4bae-9696-b00e9a5d569c
 npx wrangler workflows instances describe probe-workflow a67f0fb2-ea43-4da5-a07b-c5f61b7bfec0
 ```
+
+Instance state outlives the 3-day dashboard trace retention, but not `wrangler delete`:
+tearing the probe down takes `probe-workflow` and its instances with it, which is why the
+captures are committed rather than the ids alone.
 
 Feed measurements are perishable — arXiv cs.SE returned 65 candidates today against the
 41 recorded on 2026-08-27 — so any number carried into `spec.md` must carry its date.
