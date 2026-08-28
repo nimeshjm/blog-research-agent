@@ -151,7 +151,7 @@ With `everyN: 1` a single run yields 45 sleep crossings, which is the power this
 needs: whether the instance completed is now a weak signal (section 4), but 45 crossings
 is not.
 
-**35 of the 45 crossings show no boundary at all.** They read like this:
+**40 of the 45 crossings show no boundary at all.** They read like this:
 
 | step | `r` | `iso` | `seq` | `ms` |
 |---|---|---|---|---|
@@ -167,7 +167,7 @@ sleep's own second is charged to the same `run()` clock.** That is what an in-pr
 `await` looks like and it is the opposite of a boundary: the clock at the top of `run()`
 was never reset, so nothing ended the execution the CPU budget is charged against.
 
-The other 10 crossings do carry a new `r` — and they fall at the step indices where the
+The other 5 crossings do carry a new `r` — and they fall at the step indices where the
 control did the same thing with no sleeps in it at all:
 
 | run | sleeps? | `run()` re-entered before `seq` |
@@ -222,6 +222,13 @@ correct rather than leave standing:
 - `src/workflow.ts` — "What a step boundary buys is a *chance* of a fresh invocation".
 - `.claude/skills/cf-free-tier/SKILL.md` and `CLAUDE.md` — "one feed per step ... is still
   what buys a *chance* of a fresh invocation, which is the only lever there is."
+  *(Section 4 withdraws this entry. Fresh `run()` executions do occur and they occur
+  non-deterministically, which is what "a chance" claims. And the probe runs one feed per
+  step in every mode, so it has never run the counterfactual and cannot say what that
+  choice buys either way. The sentence is **untested**, not measured false; only the "no
+  boundaries at all" reading of it was, and that reading was the over-generalisation.
+  A Stage 2 change should not edit `SKILL.md` or `CLAUDE.md` on the strength of this
+  line.)*
 
 **Still not measured:** the size of the budget. Nothing here reads a CPU figure — the
 findings are ordinal (nine fit, ten do not), not quantitative. The documented 10 ms sits
