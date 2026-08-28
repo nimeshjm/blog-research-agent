@@ -1,0 +1,7 @@
+id: no-step-retry-config
+valid:
+  - "const config = { timeout: 30 };"
+  - "tracedStep(step, 'fetch-feed', {}, async () => {});"
+invalid:
+  - "step.do(name, { retries: { limit: 3, delay: '5s' } }, fn);"
+  - "const config = { retries: { limit: 1, delay: 0 } };"

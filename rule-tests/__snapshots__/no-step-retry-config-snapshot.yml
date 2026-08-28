@@ -1,0 +1,14 @@
+id: no-step-retry-config
+snapshots:
+  'const config = { retries: { limit: 1, delay: 0 } };':
+    labels:
+    - source: 'retries: { limit: 1, delay: 0 }'
+      style: primary
+      start: 17
+      end: 48
+  'step.do(name, { retries: { limit: 3, delay: ''5s'' } }, fn);':
+    labels:
+    - source: 'retries: { limit: 3, delay: ''5s'' }'
+      style: primary
+      start: 16
+      end: 50

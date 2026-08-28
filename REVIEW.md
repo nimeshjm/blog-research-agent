@@ -47,7 +47,10 @@ The failure mode this repo is most exposed to. Reject on:
   one — Workflows packs consecutive fast steps into one invocation, so this still means
   one feed per step, one article per step. (manual)
 - The corrected CPU-per-invocation premise stays asserted everywhere in the tree, not the
-  belief this feature retired. (mechanical: `cpu-premise-is-per-invocation`)
+  belief feature 002 retired. The check catches the retired premise with or without a CPU
+  figure attached to it, and does not fire on a subrequest per-step rule that happens to
+  sit near a correct figure ([#77](https://github.com/nimeshjm/blog-research-agent/issues/77)).
+  (mechanical: `cpu-premise-is-per-invocation`)
 - More than a handful of subrequests in one step (cap is 50). (manual)
 - Inference that can exceed `NEURON_BUDGET_PER_RUN`, or a loop over articles with no
   cap on iterations. The daily allowance is 10,000 neurons total.
@@ -75,8 +78,13 @@ The failure mode this repo is most exposed to. Reject on:
 
 ## Pass 3 — Workflow step correctness (Important)
 
-- Every `step.do` body is idempotent — steps are retried on failure. A step that
-  inserts, posts, or opens a PR must be safe to run twice. (manual)
+- Every `step.do` body is idempotent. Steps are **not** retried any more — feature 003's
+  `spec.md` requirement 1, enforced by the zero-retry policy `tracedStep` passes — but
+  `run()` re-executes on replay whether or not a step body does, so a step that inserts,
+  posts, or opens a PR must still be safe to run twice. (manual)
+- The retry policy stays at that one call site. A `retries` config anywhere else under
+  `src/` sets a different policy past the seam that carries this one, silently.
+  (ast-grep: `no-step-retry-config`)
 - Step names are stable and unique within a run; a name derived from mutable state
   breaks replay. (mechanical: `step-names-unique`, `step-names-static`)
 - A `step.do` call that bypasses `tracedStep`/`tracerFor` breaks replay the same way an
@@ -112,9 +120,10 @@ The failure mode this repo is most exposed to. Reject on:
   but its exit code never fails on them, so CI cannot block a merge on a Nit. The four
   pass-5 ast-grep rules (`ai-run-only-in-llm`, `no-hardcoded-model-id`,
   `no-hardcoded-urls`, `tracing-import-seam`) carry `severity: warning`, so `lint:ast`
-  reports them and exits 0. `no-bare-step-do`, `no-secret-in-console` and
-  `scheduled-stays-thin` carry `severity: error` and fail CI, matching their Important
-  passes (3, 2, and 1). `review:checks` likewise never fails on a Nit.
+  reports them and exits 0. `no-bare-step-do`, `no-step-retry-config`,
+  `no-secret-in-console` and `scheduled-stays-thin` carry `severity: error` and fail CI,
+  matching their Important passes (3, 3, 2, and 1). `review:checks` likewise never fails
+  on a Nit.
 
 One real tension is open rather than papered over: CLAUDE.md states both seams as hard
 architectural rules — "Only `src/lib/llm.ts` may call `env.AI.run`" and "Only

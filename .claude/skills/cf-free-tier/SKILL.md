@@ -13,7 +13,11 @@ inference. These are the limits that actually bite, and what each one forces.
 | Limit | Free value | Verified |
 |---|---|---|
 | Worker CPU time | **10 ms per invocation.** A Workflow step is not its own invocation - Workflows packs consecutive fast steps into one, and only the wall-clock cap is scoped to a single step | Workers + Workflows limits docs, measured 2026-08-27 (#61) |
-| Steps per Workflow | 1,024, wall-clock unlimited per step | Workflows limits docs |
+| Steps per Workflow instance | **1,024.** Wall-clock per step is unlimited, and `step.sleep` / `sleepUntil` do not count toward the 1,024 | Workflows limits docs, read 2026-08-28 (#75) |
+| Concurrent Workflow instances | **100.** An instance waiting - `step.sleep`, a retry, `waitForEvent` - does not count. Past the limit an instance is queued, not failed | Workflows limits docs, read 2026-08-28 (#75). The page contradicts itself: its prose says 10,000 where its table says 100. This repo uses the table |
+| Workflow instance lifetime | **No ceiling.** An instance "can run forever" as long as each step stays inside the CPU limit and the step count is not reached. The 3-day Free figure is retention of completed state, not a lifetime cap | Workflows limits docs, read 2026-08-28 (#75) |
+| Workflow executions | 100,000/day, shared with the Workers daily request limit. Creation is capped at 100/sec | Workflows limits docs, read 2026-08-28 (#75) |
+| Max non-stream step result | 1 MiB | Workflows limits docs, read 2026-08-28 (#75) |
 | Cron trigger wall-clock | 15 min per run | Workers limits docs |
 | Cron triggers | 5 per account | Workers limits docs |
 | Subrequests | **50 per request/step** | Workers limits docs |
@@ -53,13 +57,21 @@ length before it reaches the model.
 `@cf/openai/gpt-oss-120b`: 31,818 neurons per million input tokens, 68,182 per million
 output. Budget every call, accumulate with `neuronsFor()` from `src/lib/llm.ts`, and stop
 the run at `NEURON_BUDGET_PER_RUN` rather than overspending. Prefer many small calls with
-bounded inputs over one large call — easier to cap, and each one retries independently.
+bounded inputs over one large call — easier to cap, and one that fails costs its own
+spend rather than the run's.
 
-**Steps are retried.** Every `step.do` body must be idempotent. A step that inserts a
-row, posts a comment, or opens a pull request must be safe to run twice.
+**Steps are not retried.** `tracedStep` (`src/lib/trace.ts`) passes
+`{ retries: { limit: 0, delay: 0 } }` at the single permitted `step.do` call site, so a
+step that throws fails its instance immediately. Measured 2026-08-28 (#75): a retry ran
+inside the same `run()` execution as the attempt that failed — same isolate, same
+module-scope counter — so a CPU failure retries into the budget that had already been
+exhausted, and 35 seconds of backoff bought nothing. Write every `step.do` body
+idempotent anyway: `run()` itself re-executes on replay even when a completed step's body
+does not, and `rules/no-step-retry-config.yml` is what keeps the policy at one site.
 
-**Workflows is in open beta.** Local behaviour under `wrangler dev` can differ from
-remote. Before concluding that code is broken, retry with `wrangler dev --remote`.
+**Workflows is GA** (since 2025-04-07); only *Python* Workflows is still beta. Local
+behaviour under `wrangler dev` can still differ from remote. Before concluding that code
+is broken, retry with `wrangler dev --remote`.
 
 ## Before adding anything
 

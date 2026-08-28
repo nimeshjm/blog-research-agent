@@ -70,9 +70,16 @@ open pull request → record run.
   Workflow, not a cron handler. Do not move logic back into `scheduled()`.
 - **10,000 neurons/day** is the whole inference budget. A run should cost ~4,300; the
   ceiling is `NEURON_BUDGET_PER_RUN`. Track spend with `neuronsFor()` and stop early.
-- **Workflow steps are retried**, so every `step.do` body must be idempotent.
-- **Workflows is in open beta.** Expect wrangler warnings; local behaviour can differ
-  from remote (`wrangler dev --remote`).
+- **Workflow steps are not retried.** `tracedStep` passes `{ retries: { limit: 0, delay:
+  0 } }` at the one permitted `step.do` call site, so a step that throws fails its run
+  immediately (feature 003, `spec.md` requirement 1). A retry was measured to run in the
+  same `run()` execution as the attempt that failed, so it inherits the exhausted CPU
+  budget and buys only backoff. `step.do` bodies stay idempotent anyway, for the other
+  reason: `run()` itself re-executes on replay, and nothing here has measured what a
+  child instance re-executes (`spec.md` requirement 7).
+- **Workflows went GA on 2025-04-07**; only *Python* Workflows is still beta. Expect
+  wrangler warnings anyway, and local behaviour can still differ from remote
+  (`wrangler dev --remote`).
 
 ## Inference rules
 

@@ -1,4 +1,9 @@
-import { tracing, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
+import {
+  tracing,
+  type WorkflowEvent,
+  type WorkflowStep,
+  type WorkflowStepConfig,
+} from 'cloudflare:workers';
 // `Span` needs no import: workers-types declares it globally
 // (`declare abstract class Span`), not inside the cloudflare:workers module.
 
@@ -21,6 +26,18 @@ import { tracing, type WorkflowEvent, type WorkflowStep } from 'cloudflare:worke
  */
 
 export type SpanAttributes = Record<string, string | number | boolean | undefined>;
+
+/**
+ * No step is ever retried (feature 003, `spec.md` requirement 1). A retry was
+ * measured to run inside the same `run()` execution as the attempt that failed
+ * - same module-scope counter, same isolate - so for a CPU failure it inherits
+ * the exhausted budget rather than getting a fresh one (`probe/FINDINGS.md`).
+ * Five minutes of backoff, then the same `1102`.
+ *
+ * `delay` is required by `WorkflowStepConfig` even though nothing waits.
+ * `rules/no-step-retry-config.yml` keeps this the only retry config in `src/`.
+ */
+const NO_RETRIES: WorkflowStepConfig = { retries: { limit: 0, delay: 0 } };
 
 // --- agent.* --------------------------------------------------------------
 // Ours. Set on every Workflow step span.
@@ -91,7 +108,9 @@ export function tracedStep<T extends Rpc.Serializable<T>>(
   body: (span: Span) => Promise<T>,
 ): Promise<T> {
   const stepAttr = name.split(':')[0] ?? name;
-  return step.do(name, () => traced(name, { ...attrs, [ATTR_STEP]: stepAttr }, body));
+  return step.do(name, NO_RETRIES, () =>
+    traced(name, { ...attrs, [ATTR_STEP]: stepAttr }, body),
+  );
 }
 
 /**

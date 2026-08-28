@@ -317,22 +317,58 @@ checks.push({
 // table has the correct assertion one row above the stale one, and a
 // paragraph-granular scan reports that as one finding starting on the
 // correct line.
+//
+// Every alternative but the last carries a CPU *figure*. That was the gap
+// feature 003 found (#75, plan.md question 4): `src/index.ts:8` said "so each
+// step gets its own CPU budget" and `src/workflow.ts:167` said "Keeps each
+// parse inside its own CPU budget", and both passed - figure-less prose
+// asserting the retired premise in the Worker entrypoint, while 002's
+// requirement 11 read as satisfied. Hence the trailing `its own CPU ...`
+// alternative, which needs no figure. It is deliberately anchored on the
+// possessive `own`: "a fresh CPU budget", "the 10 ms CPU budget" and "each
+// child holds its own budget" are all correct statements this tree makes.
 const CPU_STALE_RE =
-  /(?:10\s*ms(?:\s+of\s+CPU|\s+CPU)?[^.|]{0,50}?per[-\s]step|per[-\s]step[^.|]{0,50}?10\s*ms|10\s*ms\s+step\s+budget|(?:gets\s+)?its\s+own\s+10\s*ms|own\s+10\s*ms\s+and|step[^.|]{0,30}?inside\s+10\s*ms)/i;
+  /(?:10\s*ms(?:\s+of\s+CPU|\s+CPU)?[^.|]{0,50}?per[-\s]step|per[-\s]step[^.|]{0,50}?10\s*ms|10\s*ms\s+step\s+budget|(?:gets\s+)?its\s+own\s+10\s*ms|own\s+10\s*ms\s+and|step[^.|]{0,30}?inside\s+10\s*ms|(?:its|their)\s+own\s+CPU\s+(?:budget|time|allowance|allocation))/i;
 const CPU_CORRECT_RE = /10\s*ms[^.|]{0,40}?per[-\s]invocation/i;
+
+// #77: the 50-character gap in the first two alternatives has no notion of
+// which noun the per-step phrase attaches to, so `CLAUDE.md`'s own "50
+// subrequests per step" rule sitting near a correct "10 ms per invocation"
+// was reported as the stale premise - on prose asserting the corrected one.
+// A match is discarded when one of these nouns sits inside it, i.e. between
+// the figure and the per-step phrase: then the per-step phrase is about
+// subrequests, neurons or D1 queries, none of which this check is about.
+// Discarding on the *matched span* rather than the whole window is what keeps
+// this narrow: a genuinely stale sentence that happens to mention
+// subrequests elsewhere in the paragraph still fires.
+const CPU_STALE_OTHER_NOUN_RE = /subrequest|neuron|quer(?:y|ies)|bound param/i;
 
 // features/002-gather-without-accumulation/ quotes the wrong premise on
 // purpose, in order to correct it (its own spec.md and plan.md are the
 // record of the bug). That is the carve-out, not a gap in this check's
 // coverage.
-const CPU_PREMISE_EXCLUDE_PREFIX = 'features/002-gather-without-accumulation/';
+//
+// features/003-run-to-completion/plan.md is the same case one feature later:
+// it quotes both figure-less lines verbatim in order to say they are wrong,
+// and then quotes the phrase again while specifying this very widening. Only
+// that one file, not the whole directory as 002 got - 003's spec.md is edited
+// again in PR 4 of #75 and stays guarded. This is a weakening either way: a
+// grep cannot tell a subject from a mention, which is #77's whole complaint,
+// and the exclude is the device this file already had for it.
+const CPU_PREMISE_EXCLUDE_PREFIXES = [
+  'features/002-gather-without-accumulation/',
+  'features/003-run-to-completion/plan.md',
+];
 
 // Sentinel: the number of correct per-invocation assertions this PR actually
 // lands, measured by running this check after the PR 5 edits. A legitimate
 // future reduction (a file merged away, prose tightened further) means
 // updating this number deliberately, not lowering the bar silently - same
-// style as the `>= 8` / `>= 11` sentinels above.
-const CPU_PREMISE_CORRECT_MIN = 11;
+// style as the `>= 8` / `>= 11` sentinels above. Raised from 11 to 13 by #75's
+// PR 2: `src/index.ts` now asserts the corrected premise where it asserted the
+// retired one, and the count was re-measured after the 003 exclude above
+// rather than assumed.
+const CPU_PREMISE_CORRECT_MIN = 13;
 
 checks.push({
   id: 'cpu-premise-is-per-invocation',
@@ -343,7 +379,7 @@ checks.push({
     let correctLines = 0;
 
     for (const rel of ctx.allFiles) {
-      if (rel.startsWith(CPU_PREMISE_EXCLUDE_PREFIX)) continue;
+      if (CPU_PREMISE_EXCLUDE_PREFIXES.some((prefix) => rel.startsWith(prefix))) continue;
       if (!(rel.endsWith('.md') || rel.endsWith('.ts'))) continue;
       const text = ctx.readTextFile(rel);
       if (text === null) continue;
@@ -370,6 +406,7 @@ checks.push({
 
         const m = CPU_STALE_RE.exec(windowText);
         if (!m) continue;
+        if (CPU_STALE_OTHER_NOUN_RE.test(m[0])) continue;
         const foundLine = m.index < clean[i].length ? i + 1 : i + 2;
         if (reportedStaleLines.has(foundLine)) continue;
         reportedStaleLines.add(foundLine);
