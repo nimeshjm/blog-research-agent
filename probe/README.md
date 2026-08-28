@@ -80,25 +80,26 @@ from "the tenth step has no budget left".
 The gather steps are byte-identical to `map`'s and return the same marker, so a `sleep`
 map is directly comparable with a `map` one — the only difference is the `s00:sleep`
 steps between them. `everyN` defaults to 1 and is clamped to at least 1; `sleepFor`
-defaults to one second. That question is whether `step.sleep` ends the `run()` execution
-and with it the CPU budget it has been accumulating, which `spec.md` for feature 002
-defers as "forcing an invocation boundary per gather step" and nobody has measured.
+defaults to one second. The question it answers is whether `step.sleep` ends the `run()`
+execution and with it the CPU budget that execution has been accumulating, which feature
+002's `spec.md` defers as "forcing an invocation boundary per gather step" and nobody has
+measured.
 
-Read the answer off two independent axes, which can disagree:
+Read the answer off two axes, which can disagree — and weight them unequally:
 
-| axis | reads |
-|---|---|
-| `r` / `iso` / `seq` across a sleep | **whether a boundary happened at all** |
-| how many feeds complete before `1102` | **whether the budget reset** |
+| axis | reads | weight |
+|---|---|---|
+| `r` / `iso` / `seq` across each sleep | **whether a boundary happened** | strong: `everyN: 1` over 46 feeds gives 45 crossings per run |
+| how many feeds complete before `1102` | **whether the budget reset** | weak: `map` over the same 46 feeds both completes and dies (`FINDINGS.md` §4), so one run's outcome is a coin |
 
-and use `ms` to name the mechanism. `ms` is measured from the top of the `run()`
-execution `r` identifies:
+Use `ms` to name the mechanism. It is measured from the top of the `run()` execution `r`
+identifies, so it distinguishes a sleep that suspended nothing from one that did:
 
-| `r` | `seq` | `ms` after a 60 s sleep | reading |
+| `r` | `seq` | `ms` on the step after the sleep | reading |
 |---|---|---|---|
-| same | +1 | jumped by ~60,000 | the sleep was an in-process await; no boundary |
-| new | +1, continuing | back to hundreds | `run()` re-executed in the same isolate |
-| new | back to 0 | back to hundreds | `run()` re-executed in a fresh isolate |
+| same | +1 | grown by the sleep's own duration | an in-process await; no boundary |
+| new | +1, continuing | reset, carrying no sleep time | `run()` re-executed in the same isolate |
+| new | back to 0 | reset, carrying no sleep time | `run()` re-executed in a fresh isolate |
 
 Because `map` and `sleep` share the gather loop, a payload whose `mode` is misspelled
 runs as a plain `map` and reads back exactly like "the sleep did nothing". Check the
