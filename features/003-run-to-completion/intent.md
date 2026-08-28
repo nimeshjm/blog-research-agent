@@ -12,9 +12,9 @@ they are gathered, arXiv's full announcement day is no longer truncated, the dea
 instance left a `runs` row (the first row that table has ever held, a feature 001
 requirement that until then had never once been satisfied), and its topic is recoverable
 on its own rather than stranded. All of that is real. None of it is acceptance criterion
-5: a full 46-feed run completing. The failing run still ended the
-same way the first one did, `Worker exceeded CPU time limit` (Workers error `1102`), this
-time at `gather:Simon Willison-1`, five minutes in.
+5: a full 46-feed run completing. The failing run still ended the same way the first one
+did, `Worker exceeded CPU time limit` (Workers error `1102`): it gathered nine of the 46
+feeds, then died on the tenth, `gather:The Pragmatic Engineer-1`, five minutes in.
 
 Feature 002 also measured the lever it built — bounding the parse to stop reading once a
 feed runs a fixed number of items past the recency window — and the measurement is not
@@ -22,23 +22,38 @@ kind to it. Run against all 46 feeds, nine repetitions each, the bound achieves 
 aggregate CPU ratio, a real 20% saving. But the saving is not spread evenly: it is
 concentrated almost entirely in one feed, OpenAI's archive, where the ratio is 0.174 and
 209 of the total 254 ms saved comes from that one source now reading 71 of its 1,155
-items instead of the whole thing. The feeds now in the failing window — Simon Willison,
-The Pragmatic Engineer, DX — are ones where bounding the parse saves little or nothing,
-because they were never the ones carrying the archive-sized cost. There is no second
-OpenAI left to find. Whatever is consuming the budget in the failing window is a
-different, more evenly distributed cost, and bounding the parse does not touch it.
+items instead of the whole thing. The feeds now in the failing window are not ones where
+that shape of saving is available: The Pragmatic Engineer carries 20 items, all of them
+recent, so the stop never fires and the bound cannot help — though that is inferred from
+its item count, because `spec.md`'s per-feed table covers OpenAI, arXiv cs.AI, DX,
+Pinecone and Perplexity and has no measurement of it at all. There is no second OpenAI
+left to find, and whatever is consuming the budget where the run now dies is a cost
+bounding the parse does not touch.
 
-There is also an arithmetic fact from the same run that does not fit the platform's
-documented behaviour and has not been explained. Pre-002, three feed parses replayed in
-a single invocation failed with the same `1102` error that two passed comfortably —
-measured directly, recorded in `CLAUDE.md` and the `cf-free-tier` skill. Nothing about
-the run's own structure has changed that measurement, yet the post-002 run completed
-nine gather steps before failing. A 20% reduction in per-feed CPU cannot, on its own,
-turn a ceiling of three into a ceiling of nine. Something is already causing the Worker
-to start fresh invocations partway through this run, more often than the three-strikes
-measurement predicts, and nobody has identified what it is or whether it can be relied
-on. That gap between the measured ceiling and the observed reach is the crux of what is
-unresolved.
+The sharper puzzle in the same run is not about totals. `gather:The Pragmatic Engineer`
+failed **six** times — 21:51:09, :19, :39, 21:52:19, 21:53:39, 21:56:19, Workflows'
+default exponential backoff — with an identical `1102` on every attempt, five minutes
+end to end. In the same run, `gather:arXiv cs.AI` parsed a *larger* feed (743 KB, 352
+items, every one of them in-window so the bound never fires) and passed on its first
+attempt. Whatever is exhausted by the tenth feed is not simply the size of the tenth
+feed.
+
+Feature 002 also disposed of the only explanation anyone had offered for that pattern.
+Issue #61 proposed — flagged there as less certain and worth confirming during the spec
+— that a retry could never pass because `run()` re-executes from the top on replay and
+had to rehydrate every completed step's persisted candidates and re-run
+`candidates.push(...found)` over them. Feature 002 deleted that accumulation: `gather`
+returns an integer and `run()` accumulates nothing. The deterministic retry survived
+unchanged, five identical failures becoming six. The hypothesis is refuted and nothing
+has replaced it.
+
+What the repo does record is that a step boundary buys *something*, and specifically not
+a fresh budget — `spec.md` says exactly that, on the evidence that a local bench
+replicating the gather loop inside one invocation failed on its third feed while
+production reached its sixth step. Nobody has measured what that *something* is, when it
+happens, or whether a retry gets one. Every design this feature could reach for depends
+on the answer, which is why that, and not a shortfall of CPU in the abstract, is the crux
+of what is unresolved.
 
 The pipeline has run zero times to completion since it was built. The cron trigger that
 would run it every two days is paused (#64) precisely because an incomplete run silently
@@ -68,8 +83,12 @@ A run completes. Specifically:
 - **Cloudflare free tier, unchanged.** No paid plan. The fix lives inside the existing
   10 ms-per-invocation CPU allocation, the 50-subrequest ceiling on any one step, and
   the 10,000-neuron daily budget — none of them move.
-- **1,024 steps per Workflow instance, and an instance lifetime ceiling exist and are
-  real.** Whatever this feature settles on has to fit inside both, not just inside CPU.
+- **1,024 steps per Workflow instance.** Recorded in `.claude/skills/cf-free-tier/`
+  and in both feature specs, from documentation rather than measurement; a run uses
+  around 67 today, so nothing has tested it. An instance lifetime ceiling is assumed to
+  exist as well, but the repo records **no number and no citation** for it anywhere,
+  which makes it an open question below rather than something a design can be sized
+  against.
 - **Steps are retried.** Every `step.do` body added or changed must be safe to run
   twice; feature 002 already made the gather write path idempotent and that has to keep
   holding.
@@ -101,25 +120,34 @@ A run completes. Specifically:
 
 ## Open questions
 
-- **What is actually creating the invocation boundaries this run is already getting?**
-  The measured three-feed ceiling did not predict a nine-step reach, so some mechanism is
-  already resetting CPU budget mid-run more often than that measurement implies.
-  Resolved by measurement against the deployed Worker during Stage 2 — not by reading
-  Workflows documentation, which is what produced the premise feature 002 had to correct.
+- **What does a step boundary actually buy, and does a retry get one?** `spec.md`
+  records that it buys something short of a fresh budget, and nothing measures what. The
+  six-failure retry above makes the second half urgent: if a retry is a fresh invocation,
+  then something other than the tenth feed is consuming the tenth step's budget; if it is
+  not, retry has never been a recovery path for a CPU failure and the default backoff is
+  five wasted minutes. Resolved by an instrumented run against the deployed Worker —
+  nothing today makes invocation identity visible, and a value generated at module scope
+  and emitted per step would. Not resolved by reading Workflows documentation, which is
+  what produced the premise feature 002 had to correct.
 - **Is the number of gather steps that complete before failure stable run to run, or does
-  it vary?** One data point (nine) is not a distribution. If it varies, the boundary
-  being relied on is not deterministic and a Stage 2 design has to account for that
-  rather than target a fixed step count.
+  it vary?** One data point (nine) is not a distribution, and the two runs that exist
+  differ in code as well as in reach. If it varies, whatever creates the boundary is not
+  deterministic and a Stage 2 design cannot target a fixed step count.
 - **What is the remaining per-feed cost once the concentrated saving already taken (the
-  OpenAI archive bound) is set aside?** The feeds now in the failing window gained little
-  or nothing from bounding the parse, so their cost has a different, unmeasured shape.
-  Resolved by per-feed measurement during Stage 2, feed by feed, rather than assumed to
-  resemble OpenAI's.
-- **Does whatever Stage 2 settles on fit inside the 1,024-step and instance-lifetime
-  ceilings, alongside the wall-clock-per-invocation constraint that already governs
-  cron?** Both ceilings are real; neither has been checked against a concrete design
-  because no design exists yet.
-- **How is a Stage 2 measurement retained as evidence once made?** Cloudflare's own
-  Workers trace retention is 3 days on the free plan (#22), so a measurement taken today
-  and cited in `spec.md` next week needs to be captured somewhere durable at the time it
-  is made, not re-derived from a dashboard that will have already rolled it off.
+  OpenAI archive bound) is set aside?** The repo has no CPU measurement of The Pragmatic
+  Engineer at all — the feed that actually killed the run. That the bound cannot help it
+  is inferred from its item count, not measured. Resolved by per-feed measurement during
+  Stage 2 rather than by assuming its cost resembles OpenAI's.
+- **What is the instance lifetime ceiling, and does whatever Stage 2 settles on fit
+  inside it and the 1,024-step ceiling?** The step ceiling has a number and a source. The
+  lifetime ceiling has neither anywhere in this repo, and a run that already takes five
+  minutes to fail is close enough to a ceiling nobody can quote that the number should be
+  found and cited before anything is sized against it.
+- **How is a Stage 2 measurement retained as evidence once made?** Partly answered:
+  Workflow *instance* state is not subject to the 3-day dashboard trace retention (#22),
+  and `wrangler workflows instances describe` still returns the 2026-08-27 run's per-step
+  attempts and outputs today. What it does not return is any CPU figure, and it resolves
+  time only to the second. So a measurement that needs CPU or sub-second ordering has to
+  be captured durably at the moment it is taken. The feed measurements are perishable for
+  a separate reason — arXiv cs.SE was 41 raw items on 2026-08-27 and is not today — so a
+  number in `spec.md` must carry the date it was taken.
