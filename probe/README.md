@@ -99,5 +99,14 @@ committed:
 npx wrangler delete -c probe/wrangler.toml
 ```
 
-This also removes `probe-workflow` and its instances, so `FINDINGS.md` cites the
-committed captures rather than live readback.
+**That deletes the Worker only.** Measured 2026-08-28: after `wrangler delete` the public
+URL returns 404, but `probe-workflow` still appears in `wrangler workflows list` and its
+instances stay readable. Removing the workflow is a second, separate command, and it is
+the one that takes the instances with it:
+
+```bash
+npx wrangler workflows delete probe-workflow
+```
+
+Which is why `FINDINGS.md` cites the committed captures in `probe/captures/` rather than
+live readback: after that second command there is nothing left to read.

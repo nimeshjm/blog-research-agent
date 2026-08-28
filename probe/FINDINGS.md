@@ -118,9 +118,10 @@ npx wrangler workflows instances describe probe-workflow 4ee0f759-5867-4bae-9696
 npx wrangler workflows instances describe probe-workflow a67f0fb2-ea43-4da5-a07b-c5f61b7bfec0
 ```
 
-Instance state outlives the 3-day dashboard trace retention, but not `wrangler delete`:
-tearing the probe down takes `probe-workflow` and its instances with it, which is why the
-captures are committed rather than the ids alone.
+Instance state outlives the 3-day dashboard trace retention. It does not outlive
+`wrangler workflows delete probe-workflow`, which takes the instances with it. (Deleting
+the *Worker* alone does not — measured 2026-08-28: the URL 404s while the workflow and
+its instances remain.) Either way the captures are committed rather than the ids alone.
 
 Feed measurements are perishable — arXiv cs.SE returned 65 candidates today against the
 41 recorded on 2026-08-27 — so any number carried into `spec.md` must carry its date.
