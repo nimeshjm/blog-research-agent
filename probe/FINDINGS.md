@@ -4,9 +4,9 @@ Runs of `probe/` against the deployed `research-probe` Worker. Every number belo
 step output read back with `wrangler workflows instances describe probe-workflow <id>`,
 not a bench and not a document.
 
-Sections 1–3 are the first three runs, 2026-08-28 morning. Sections 4 onward are a
-second sitting the same day that answered feature 002's deferred question — does
-`step.sleep` force an invocation boundary — and, in the control run fired first,
+Sections 1–3 are the first three runs, 2026-08-28 morning. Sections 4–6 are a second
+sitting the same day that answered feature 002's deferred question — does `step.sleep`
+force an invocation boundary? **It does not** — and, in the control run fired first,
 **refuted section 1**. Sections 1–3 are left as they were written and annotated where
 they are now known to be wrong; the corrections are the record, not the embarrassment.
 
@@ -198,6 +198,81 @@ the budget, and a 1-second sleep does not either. The wait is not the mechanism.
 - The run **completed**, and that is deliberately not offered as evidence for anything:
   three of five control runs completed too.
 
+## 6. Nor at 60 seconds. Zero boundaries in 45 crossings
+
+`aaddf4f9-20f9-48c6-bfb1-48db00b4dbda` — same payload as run A with `sleepFor: "60
+seconds"`. 46 gather steps, 46 sleeps, 46 minutes wall clock, **completed**.
+
+| | |
+|---|---|
+| distinct `r` | **1** (`3dce6867`) |
+| distinct `iso` | **1** (`ad125917`) |
+| `seq` | 0–45, contiguous, no gap |
+| `r` transitions across 45 crossings | **0** |
+| `ms` delta per crossing | 60,074 – 60,550, every one of the 45 |
+| `ms` on the final gather step | **2,708,901** |
+
+That last number is the whole finding in one figure. `ms` is `Date.now()` minus a `t0`
+taken at the top of `run()`. **One `run()` execution stayed live for forty-five minutes
+of sleeping**, and every second of it was charged to its clock. The instance did not
+hibernate, `run()` did not re-enter, the isolate was not replaced, and the module-scope
+counter never skipped.
+
+Run B got **fewer** boundaries than the no-sleep control `ee0d3042`, which got five.
+Sleeping did not merely fail to create a boundary; this run crossed none at all while a
+run with no sleeps in it crossed five.
+
+### The answer
+
+**No. `step.sleep` does not create an invocation boundary and does not reset the CPU
+budget.** Across runs A and B, **85 of 90 sleep crossings show the same `r`, the same
+`iso`, the next `seq`, and an `ms` grown by the sleep's own duration** — an in-process
+`await`. The five that did cross fell at the step indices where the control crossed with
+no sleeps in it.
+
+The prior held. Section 2 measured that 35 seconds of retry backoff did not reset the
+budget and predicted that a sleep is the same shape of wait. It is. Waiting is not the
+mechanism, at either 1 second or 60.
+
+### What this kills
+
+**The lever feature 002 deferred, as named.** `spec.md`'s "Deferred" section reads:
+
+> **Forcing an invocation boundary per gather step** (e.g. `step.sleep`) — the heavier
+> lever ... If requirement 1 is dropped, this is what replaces it.
+
+`step.sleep` cannot force one. A feature 003 spec that adopts it would buy 46 minutes of
+wall clock per run and nothing else — and the cost is not hypothetical, it is the
+measured duration of run B.
+
+### What this does not kill, and does not measure
+
+- **Not "no boundary can be forced".** Only that `step.sleep` is not how. Boundaries
+  demonstrably exist (section 4); nothing here found their trigger, so nothing here rules
+  out some other mechanism reaching it. A spec may still pursue the lever — it may not
+  pursue it *via `step.sleep`*.
+- **Nothing past 60 seconds.** Cloudflare hibernates instances for long enough sleeps and
+  60 s is measured to be below that threshold. Where the threshold is, and whether a
+  sleep past it would reset the budget, is unmeasured. A design resting on it would be
+  resting on an inferred platform behaviour, which is the mistake feature 002 exists to
+  correct — and it would have to justify a sleep longer than a minute per feed against a
+  46-feed run.
+- **Nothing quantitative.** No CPU figure is read anywhere in this file.
+- **Not that sleeping made run B complete.** Three of five `map` controls completed with
+  no sleeps at all (section 4). Completion is a coin here and is not offered as evidence.
+- **Nothing about `step.sleepUntil`, `step.waitForEvent`, or a second Workflow instance.**
+  Untried.
+
+### One number a Stage 2 spec should not miss
+
+In runs A and `ee0d3042`, the first gather step after each boundary reports `ms` between
+4,961 and 5,010 — **constant**, whether 35 or 43 completed steps precede it. Whatever
+those ~5 seconds are, they do not grow with the number of completed steps, which is
+evidence against the natural reading that they are `run()` replaying them. It is also the
+reason a per-step forced boundary would not obviously cost O(n²) — but that is inference
+from a flat five-run series, not a measurement of replay cost, and no design should lean
+on it without measuring it.
+
 ## What this settles, and what it overturns
 
 The three sub-hypotheses for the deterministic retries all resolve:
@@ -211,7 +286,10 @@ The three sub-hypotheses for the deterministic retries all resolve:
 - *A retry does not get a fresh budget* — **confirmed** by run 2.
 
 So the CPU budget is charged cumulatively across an entire `run()` execution, nothing in
-the current architecture ever ends that execution, and a retry inherits it exhausted. The
+the current architecture ever ends that execution, and a retry inherits it exhausted.
+*(Sections 4–6 amend the middle clause: something does end that execution, sporadically
+and by a trigger this instrument cannot see. What is now measured is that neither a retry
+nor a `step.sleep` is that something.)* The
 parse bound helped for exactly the reason that now makes sense: it did not buy more
 invocations, it fit more feeds inside the only one there is. Pre-002 four feeds fitted,
 post-002 nine do.
@@ -220,6 +298,7 @@ post-002 nine do.
 correct rather than leave standing:
 
 - `src/workflow.ts` — "What a step boundary buys is a *chance* of a fresh invocation".
+  *(Withdrawn on the same grounds as the entry below — see section 4.)*
 - `.claude/skills/cf-free-tier/SKILL.md` and `CLAUDE.md` — "one feed per step ... is still
   what buys a *chance* of a fresh invocation, which is the only lever there is."
   *(Section 4 withdraws this entry. Fresh `run()` executions do occur and they occur
@@ -237,14 +316,26 @@ premise is itself unverified, so this record does not assert a number.
 
 ## Reproducing
 
-The verbatim `wrangler workflows instances describe` output for all three runs is
-committed under `probe/captures/<instance-id>.txt`. **That is the citable copy.** Live
-readback works only while the probe Worker exists:
+The verbatim `wrangler workflows instances describe` output for every run is committed
+under `probe/captures/<instance-id>.txt`. **That is the citable copy**, and after the
+teardown below it is the only one.
+
+| instance | section | mode | outcome |
+|---|---|---|---|
+| `3b78558c-357a-4e39-b9c5-5f2647a7d1d2` | 1 | `map`, 46 feeds | ❌ `1102` at feed 10 |
+| `4ee0f759-5867-4bae-9696-b00e9a5d569c` | 2 | `retry` | ✅ |
+| `a67f0fb2-ea43-4da5-a07b-c5f61b7bfec0` | 3 | `map`, 3 feeds reordered | ✅ |
+| `52a3a5b6-86bf-420f-8fc5-553a8948d53c` | 4 | `map`, 46 feeds | ✅ 46 |
+| `b7f6c1bf-97a7-4307-b733-5b513b963718` | 4 | `map`, 46 feeds | ✅ 46 |
+| `ee0d3042-0296-4cd5-91ca-1bf442650409` | 4 | `map`, 46 feeds | ✅ 46, six `run()` executions |
+| `e381a65f-7638-40c1-bed4-c85745d73535` | 4 | `map`, 46 feeds | ❌ `1102` at feed 11 |
+| `523c1723-d3ba-4076-9e63-9b227f95f3e7` | 5 | `sleep`, `everyN` 1, 1 s | ✅ 46 |
+| `aaddf4f9-20f9-48c6-bfb1-48db00b4dbda` | 6 | `sleep`, `everyN` 1, 60 s | ✅ 46, 46 min |
+
+Live readback works only while the probe Worker and its workflow exist:
 
 ```bash
-npx wrangler workflows instances describe probe-workflow 3b78558c-357a-4e39-b9c5-5f2647a7d1d2
-npx wrangler workflows instances describe probe-workflow 4ee0f759-5867-4bae-9696-b00e9a5d569c
-npx wrangler workflows instances describe probe-workflow a67f0fb2-ea43-4da5-a07b-c5f61b7bfec0
+npx wrangler workflows instances describe probe-workflow <instance-id>
 ```
 
 Instance state outlives the 3-day dashboard trace retention. It does not outlive
