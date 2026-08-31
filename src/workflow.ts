@@ -143,23 +143,22 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
       return ids;
     });
 
-    // Untested inference, load-bearing for this loop specifically (distinct
-    // from spec.md's own "a child is a fresh budget" one): calling the same
-    // literal step name once per round depends on Workflows disambiguating
-    // repeat occurrences by call order, not on the name alone. The only
-    // in-tree evidence is `WorkflowInstanceRestartOptions.from.count`'s doc
-    // comment ("1-indexed occurrence of this step name... e.g. in a loop") -
-    // suggestive, not a statement about replay caching. If names were keyed
-    // without an occurrence count, a later round would replay an earlier
-    // round's cached `{ done: false }` forever; `pollGatherChildren`'s own
-    // round cap would still convert that into a clean failure rather than a
-    // silent hang, but the poll loop itself would never observe a real
-    // completion. Acceptance criterion 2's five consecutive runs are what
-    // settle this, the same way they settle the children-are-a-fresh-budget
-    // inference.
+    // Each round gets its own step name. The step name is the replay key
+    // (CLAUDE.md), and whether Workflows disambiguates repeat occurrences of
+    // one literal name by call order is not documented - only
+    // `WorkflowInstanceRestartOptions.from.count`'s doc comment hints at it.
+    // If it does not, round 1 would replay round 0's cached `{ done: false }`
+    // forever and no run could ever observe a completion. A per-round name
+    // costs nothing (1,024 steps per instance, and a poll loop is bounded by
+    // `pollGatherChildren`'s derived cap) and removes the question entirely
+    // rather than leaving it for acceptance criterion 2 to discover.
+    //
+    // `:` so `tracedStep` still reports `agent.step` as
+    // `await-gather-children`, the same way `gather:<feed>` and
+    // `summarize:<url>` already do - the round stays out of the attribute.
     let gathered = 0;
     for (let round = 0; ; round++) {
-      const outcome: GatherPollResult = await traceStep('await-gather-children', {}, async (span) => {
+      const outcome: GatherPollResult = await traceStep(`await-gather-children:${round}`, {}, async (span) => {
         const result = await pollGatherChildren(this.env, childIds, round);
         span.setAttribute(ATTR_GATHER_CHILDREN, childIds.length);
         return result;
@@ -170,7 +169,7 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
       }
       // Costs neither a step nor concurrency (Workflows limits docs;
       // plan.md's question 1) - only ever a subrequest, spent on the next poll.
-      await step.sleep('await-gather-children-wait', GATHER_POLL_INTERVAL);
+      await step.sleep(`await-gather-children-wait:${round}`, GATHER_POLL_INTERVAL);
     }
 
     // Batched dedupe against seen_urls happens inside shortlistCandidates.
