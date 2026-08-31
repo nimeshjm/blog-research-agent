@@ -237,13 +237,20 @@ const rows = [
     mutate() {},
   },
   {
+    // Target moved from src/workflow.ts to src/summarize-workflow.ts on
+    // 2026-08-31 (#75): the summarize loop this row exercises moved into a
+    // SummarizeWorkflow child, the same way gather's own loop moved into
+    // GatherWorkflow one PR earlier. `inference-loop-has-break` was widened
+    // to scan every src file rather than only workflow.ts for exactly this
+    // reason - a file-pinned check would have gone quietly vacuous instead
+    // of catching the mutation below.
     name: 'strip the break from the summarize loop',
     expectFail: ['inference-loop-has-break'],
     mutate(dir) {
       mustReplace(
         dir,
-        'src/workflow.ts',
-        '      if (neuronsSpent + SUMMARY_NEURON_ESTIMATE > budget - SYNTHESIS_NEURON_RESERVE) break;\n\n',
+        'src/summarize-workflow.ts',
+        '    if (neuronsSpent + SUMMARY_NEURON_ESTIMATE > neuronBudget) break;\n\n',
         '',
       );
     },
@@ -638,6 +645,17 @@ const rows = [
         "ATTR_GATHER_CHILD_INDEX, ATTR_SOURCES_GATHERED, tracerForRenamed } from './lib/trace'",
       );
       mustReplace(dir, 'src/gather-workflow.ts', 'tracerFor(step, event)', 'tracerForRenamed(step, event)');
+      // Extended 2026-08-31 (#75): SummarizeWorkflow is a third file with its
+      // own tracerFor(step, event) call, the same staleness the comment
+      // above already names - left unrenamed, its step-name calls alone
+      // would still clear the sentinel.
+      mustReplace(
+        dir,
+        'src/summarize-workflow.ts',
+        "ATTR_SUMMARIZE_CHILD_INDEX, ATTR_SUMMARIZE_SKIP_REASON, tracerFor } from './lib/trace'",
+        "ATTR_SUMMARIZE_CHILD_INDEX, ATTR_SUMMARIZE_SKIP_REASON, tracerForRenamed } from './lib/trace'",
+      );
+      mustReplace(dir, 'src/summarize-workflow.ts', 'tracerFor(step, event)', 'tracerForRenamed(step, event)');
     },
   },
   // -------------------------------------------------------------------------

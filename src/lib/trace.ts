@@ -56,7 +56,7 @@ export const ATTR_WORKFLOW_NAME = 'agent.workflow.name';
 export const ATTR_NEURONS = 'agent.neurons';
 /**
  * Low-cardinality enum naming why a `summarize:*` step skipped an article
- * (see `SummarizeSkipReason` in `workflow.ts`). Set only on a skip. The
+ * (see `SummarizeSkipReason` in `summarize-workflow.ts`). Set only on a skip. The
  * higher-detail diagnostics (HTTP status, a truncated fetch-error message)
  * live in that step's *output*, not here - a span attribute is enforced
  * fields-only by `span-attributes-allowlisted`, and a step's return value,
@@ -68,6 +68,10 @@ export const ATTR_SUMMARIZE_SKIP_REASON = 'agent.summarize.skip_reason';
 export const ATTR_GATHER_CHILDREN = 'agent.gather.children';
 /** 0-based position among the parent's children, on a child's own `gather:*` span - see `GatherParams.index`'s doc comment. */
 export const ATTR_GATHER_CHILD_INDEX = 'agent.gather.child_index';
+/** Number of SummarizeWorkflow children, on the parent's `create-summarize-children` / `await-summarize-children` spans (feature 003, extended 2026-08-31 (#75)). */
+export const ATTR_SUMMARIZE_CHILDREN = 'agent.summarize.children';
+/** 0-based position among the parent's children, on a child's own `summarize:*` span - see `SummarizeParams.index`'s doc comment. */
+export const ATTR_SUMMARIZE_CHILD_INDEX = 'agent.summarize.child_index';
 
 // --- gen_ai.* ---------------------------------------------------------------
 // Matches AI Gateway's own exporter conventions, so the two line up if that

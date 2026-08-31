@@ -102,12 +102,27 @@ Feed volumes are perishable — arXiv cs.SE returned 41 raw items on 2026-08-27 
 3. **A child instance parses at most `GATHER_FEEDS_PER_CHILD` feeds**, a value in
    `wrangler.toml` and nowhere else, sized so that a child completes with margin against
    the observed failure range rather than at its edge.
+
+   **Extended 2026-08-31 (#75), alongside requirement 2's own amendment.** A summarize
+   child processes at most `SUMMARIZE_ARTICLES_PER_CHILD` shortlisted candidates, the
+   same value shape one requirement earlier, sized against the same 50-subrequest ceiling
+   (`createSummarizeChildren`'s comment in `src/workflow.ts`) rather than the feed count.
 4. **A failed child fails the run**, visibly. It does not silently contribute zero
    candidates. This is the deliberate opposite of the dead-feed rule, which stays: a feed
    that cannot be fetched still contributes zero without failing anything.
 5. **The parent's own CPU cost does not grow with the number of children.** It holds
    counts, never candidates — the same rule feature 002 applied to `gather` within one
    instance, applied again one level up.
+
+   **Extended 2026-08-31 (#75).** A summarize child cannot return a bare count the way a
+   gather child does — `synthesize` needs the summaries themselves, not just how many
+   there are. The reading this requirement is held to is the *size* claim, not the literal
+   word: a step's output must not grow with the number of feeds or the number of
+   children, whatever shape it takes. It holds under that reading because the parent's
+   `await-summarize-children` step output is bounded by `SHORTLIST_TOP_N` (15 candidates,
+   fixed regardless of the allowlist's size or how many children the run happens to split
+   into) — see `createSummarizeChildren`'s comment for the 1 MiB arithmetic this stays
+   two orders of magnitude under.
 6. **The design does not depend on where the failure boundary falls.** Requirement 3's
    value may be tuned from measurement, but no requirement here asserts that N feeds fit
    and N+1 do not. The failure is not deterministic (fact 1), so any design keyed to a
@@ -254,6 +269,17 @@ margin rather than fitted to two data points.
    in-parent gather produces for the same inputs.
 8. The parent's step outputs are integers, never candidate arrays — feature 002's
    criterion 6, applied to the parent/child seam.
+
+   **Extended 2026-08-31 (#75).** Two of the parent's own step outputs were never
+   literally integers even before this extension: `create-gather-children` and
+   `create-summarize-children` both output `string[]` (child ids), not an integer — that
+   was already true when this criterion was written and is not a regression. What it
+   guards against is a candidate (or now a summary) array whose size scales with the feed
+   allowlist or the child count. `await-summarize-children`'s own output is an object
+   carrying a `summaries: ArticleSummary[]` capped at `SHORTLIST_TOP_N`, which is bounded
+   for the same reason requirement 5's amendment gives — sized once against `SHORTLIST_TOP_N`,
+   not against feed count or child count, and small enough in practice that the `create-*`
+   steps' own id arrays are a closer comparison than "an integer" ever was.
 
 ## Risks and mitigations
 

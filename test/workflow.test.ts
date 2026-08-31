@@ -3,19 +3,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SEEN_URLS_CHUNK_SIZE, startRun, writeRunCandidates } from '../src/lib/d1';
 import { loadFeeds } from '../src/lib/feeds';
 import { InvalidDraftError } from '../src/lib/mdx';
-import type { ArticleSummary, Candidate, Draft, Env, GatherParams, Topic } from '../src/lib/types';
+import type { ArticleSummary, Candidate, Draft, Env, GatherParams, SummarizeParams, Topic } from '../src/lib/types';
 import {
   createGatherChildren,
+  createSummarizeChildren,
   DUPLICATE_TOKEN_THRESHOLD,
   isGrounded,
   openPullRequest,
   pollGatherChildren,
+  pollSummarizeChildren,
   proposeTopic,
   selectTopic,
   SHORTLIST_MAX_CANDIDATES,
   SHORTLIST_TOP_N,
   shortlistCandidates,
-  summarizeArticle,
   synthesizeDraft,
   TOPIC_CLAIM_TTL_HOURS,
 } from '../src/workflow';
@@ -234,13 +235,16 @@ describe('pollGatherChildren()', () => {
   // concrete child count, the way test/workflow.test.ts's STALE_AGE_HOURS /
   // LIVE_AGE_HOURS pin TOPIC_CLAIM_TTL_HOURS - not the round number above,
   // which only proves "a large round eventually fails" and would stay green
-  // even if the derivation inverted.
-  it('at 5 children (GATHER_FEEDS_PER_CHILD default), the derived cap is round 6, not a fixed round count', async () => {
+  // even if the derivation inverted. GATHER_POLL_SUBREQUEST_BUDGET dropped
+  // from 30 to 10 on 2026-08-31 (#75) once summarize's own poll loop started
+  // sharing the parent's 50-subrequest invocation - see that constant's
+  // comment in src/workflow.ts.
+  it('at 5 children (GATHER_FEEDS_PER_CHILD default), the derived cap is round 2, not a fixed round count', async () => {
     const { fake, gatherEnv, ids } = await createChildren(5);
     for (const id of ids) fake.setStatus(id, { status: 'running' });
 
-    await expect(pollGatherChildren(gatherEnv, ids, 5)).resolves.toEqual({ done: false, total: 0 });
-    await expect(pollGatherChildren(gatherEnv, ids, 6)).rejects.toThrow(/still not complete after 6 polls/);
+    await expect(pollGatherChildren(gatherEnv, ids, 1)).resolves.toEqual({ done: false, total: 0 });
+    await expect(pollGatherChildren(gatherEnv, ids, 2)).rejects.toThrow(/still not complete after 2 polls/);
   });
 
   it('validates a complete child\'s output rather than casting it - a non-count output fails the step', async () => {
@@ -248,6 +252,194 @@ describe('pollGatherChildren()', () => {
     fake.setStatus(ids[0]!, { status: 'complete', output: 'not-a-count' });
 
     await expect(pollGatherChildren(gatherEnv, ids, 0)).rejects.toThrow(/non-count/);
+  });
+});
+
+/**
+ * Same shape as `fakeGatherWorkflow()` above, generalized nowhere further
+ * than that function was - a summarize child's output is an object
+ * (`{ summaries, neuronsSpent }`), not an integer, so this fake's default
+ * completed status carries one rather than `0`.
+ */
+function fakeSummarizeWorkflow(): {
+  binding: Env['SUMMARIZE_WORKFLOW'];
+  created: Map<string, SummarizeParams>;
+  setStatus: (id: string, status: InstanceStatus) => void;
+} {
+  const created = new Map<string, SummarizeParams>();
+  const statuses = new Map<string, InstanceStatus>();
+
+  const binding = {
+    createBatch: async (options: WorkflowInstanceCreateOptions<SummarizeParams>[]) => {
+      for (const o of options) {
+        if (o.id !== undefined && created.has(o.id)) {
+          throw new Error(`Workflow instance ${o.id} already exists`);
+        }
+      }
+      for (const o of options) {
+        if (o.id === undefined) continue;
+        created.set(o.id, o.params as SummarizeParams);
+        if (!statuses.has(o.id)) statuses.set(o.id, { status: 'complete', output: { summaries: [], neuronsSpent: 0 } });
+      }
+      return options.map((o) => ({ id: o.id }) as unknown as WorkflowInstance);
+    },
+    get: async (id: string) => {
+      if (!created.has(id)) throw new Error(`Workflow instance ${id} does not exist`);
+      return {
+        id,
+        status: async () => statuses.get(id) ?? { status: 'complete', output: { summaries: [], neuronsSpent: 0 } },
+      } as unknown as WorkflowInstance;
+    },
+  } as unknown as Env['SUMMARIZE_WORKFLOW'];
+
+  return { binding, created, setStatus: (id, status) => statuses.set(id, status) };
+}
+
+describe('createSummarizeChildren()', () => {
+  it('chunks the shortlist into SUMMARIZE_ARTICLES_PER_CHILD-sized groups with deterministic ids and a proportional budget slice', async () => {
+    const fake = fakeSummarizeWorkflow();
+    const summarizeEnv: Env = { ...env, SUMMARIZE_WORKFLOW: fake.binding, SUMMARIZE_ARTICLES_PER_CHILD: '3' };
+    const shortlist = Array.from({ length: 7 }, (_, i) => candidate({ url: `https://example.com/${i}`, title: `Article ${i}` }));
+
+    const ids = await createSummarizeChildren(summarizeEnv, 'parent-1', shortlist, topic(), 700);
+
+    expect(ids).toEqual(['parent-1-s0', 'parent-1-s1', 'parent-1-s2']);
+    expect(fake.created.get('parent-1-s0')?.candidates).toHaveLength(3);
+    expect(fake.created.get('parent-1-s1')?.candidates).toHaveLength(3);
+    expect(fake.created.get('parent-1-s2')?.candidates).toHaveLength(1);
+    // 700 total across 7 candidates is 100/candidate - each child's slice is
+    // proportional to how many candidates it carries, not an even split by
+    // child count, and the three slices sum back to the whole 700.
+    expect(fake.created.get('parent-1-s0')?.neuronBudget).toBeCloseTo(300);
+    expect(fake.created.get('parent-1-s2')?.neuronBudget).toBeCloseTo(100);
+    expect(fake.created.get('parent-1-s2')?.index).toBe(2);
+    // topic is carried through unchanged so the child can call summarizeArticle.
+    expect(fake.created.get('parent-1-s0')?.topic).toEqual(topic());
+  });
+
+  it('is idempotent on replay: a second call against an already-created id set does not throw and returns the same ids', async () => {
+    const fake = fakeSummarizeWorkflow();
+    const summarizeEnv: Env = { ...env, SUMMARIZE_WORKFLOW: fake.binding, SUMMARIZE_ARTICLES_PER_CHILD: '3' };
+    const shortlist = Array.from({ length: 4 }, (_, i) => candidate({ url: `https://example.com/${i}` }));
+
+    const first = await createSummarizeChildren(summarizeEnv, 'parent-replay', shortlist, topic(), 400);
+    const second = await createSummarizeChildren(summarizeEnv, 'parent-replay', shortlist, topic(), 400);
+
+    expect(second).toEqual(first);
+    expect(fake.created.size).toBe(2); // not doubled
+  });
+
+  it('an empty shortlist creates no children', async () => {
+    const fake = fakeSummarizeWorkflow();
+    const summarizeEnv: Env = { ...env, SUMMARIZE_WORKFLOW: fake.binding, SUMMARIZE_ARTICLES_PER_CHILD: '5' };
+
+    const ids = await createSummarizeChildren(summarizeEnv, 'parent-empty', [], topic(), 500);
+
+    expect(ids).toEqual([]);
+  });
+
+  it('a genuine creation failure (not a duplicate id) still throws', async () => {
+    const failing: Env['SUMMARIZE_WORKFLOW'] = {
+      createBatch: async () => {
+        throw new Error('quota exceeded');
+      },
+      get: async () => {
+        throw new Error('Workflow instance does not exist');
+      },
+    } as unknown as Env['SUMMARIZE_WORKFLOW'];
+    const summarizeEnv: Env = { ...env, SUMMARIZE_WORKFLOW: failing, SUMMARIZE_ARTICLES_PER_CHILD: '5' };
+
+    await expect(
+      createSummarizeChildren(summarizeEnv, 'parent-fail', [candidate()], topic(), 500),
+    ).rejects.toThrow('quota exceeded');
+  });
+});
+
+describe('pollSummarizeChildren()', () => {
+  async function createChildrenFor(
+    count: number,
+  ): Promise<{ fake: ReturnType<typeof fakeSummarizeWorkflow>; summarizeEnv: Env; ids: string[] }> {
+    const fake = fakeSummarizeWorkflow();
+    const summarizeEnv: Env = { ...env, SUMMARIZE_WORKFLOW: fake.binding, SUMMARIZE_ARTICLES_PER_CHILD: '1' };
+    const shortlist = Array.from({ length: count }, (_, i) => candidate({ url: `https://example.com/${i}` }));
+    const ids = await createSummarizeChildren(summarizeEnv, 'parent-poll', shortlist, topic(), 100 * count);
+    return { fake, summarizeEnv, ids };
+  }
+
+  it('concatenates every complete child\'s summaries and sums their neuron spend once every child is complete', async () => {
+    const { fake, summarizeEnv, ids } = await createChildrenFor(2);
+    const a = summary({ url: 'https://example.com/a' });
+    const b = summary({ url: 'https://example.com/b' });
+    fake.setStatus(ids[0]!, { status: 'complete', output: { summaries: [a], neuronsSpent: 200 } });
+    fake.setStatus(ids[1]!, { status: 'complete', output: { summaries: [b], neuronsSpent: 150 } });
+
+    const result = await pollSummarizeChildren(summarizeEnv, ids, 0);
+
+    expect(result).toEqual({ done: true, summaries: [a, b], neuronsSpent: 350 });
+  });
+
+  it('returns done: false while any child has not reached complete', async () => {
+    const { fake, summarizeEnv, ids } = await createChildrenFor(2);
+    fake.setStatus(ids[0]!, { status: 'complete', output: { summaries: [], neuronsSpent: 0 } });
+    fake.setStatus(ids[1]!, { status: 'running' });
+
+    const result = await pollSummarizeChildren(summarizeEnv, ids, 0);
+
+    expect(result).toEqual({ done: false, summaries: [], neuronsSpent: 0 });
+  });
+
+  it('fails (visibly) the moment a child is errored, rather than contributing zero silently', async () => {
+    const { fake, summarizeEnv, ids } = await createChildrenFor(2);
+    fake.setStatus(ids[0]!, { status: 'errored', error: { name: 'Error', message: 'boom' } });
+    fake.setStatus(ids[1]!, { status: 'complete', output: { summaries: [], neuronsSpent: 0 } });
+
+    await expect(pollSummarizeChildren(summarizeEnv, ids, 0)).rejects.toThrow(/errored/);
+  });
+
+  it('fails when a child is terminated', async () => {
+    const { fake, summarizeEnv, ids } = await createChildrenFor(1);
+    fake.setStatus(ids[0]!, { status: 'terminated' });
+
+    await expect(pollSummarizeChildren(summarizeEnv, ids, 0)).rejects.toThrow(/terminated/);
+  });
+
+  it('fails rather than hangs once the poll round cap is reached', async () => {
+    const { fake, summarizeEnv, ids } = await createChildrenFor(1);
+    fake.setStatus(ids[0]!, { status: 'running' });
+
+    await expect(pollSummarizeChildren(summarizeEnv, ids, 1000)).rejects.toThrow(/still not complete/);
+  });
+
+  // Pins the cap's arithmetic (SUMMARIZE_POLL_SUBREQUEST_BUDGET / children)
+  // at a concrete child count - see createGatherChildren's sibling test for
+  // why this is pinned rather than left to "a large round eventually fails".
+  it('at 3 children (SUMMARIZE_ARTICLES_PER_CHILD default over SHORTLIST_TOP_N), the derived cap is round 5, not a fixed round count', async () => {
+    const { fake, summarizeEnv, ids } = await createChildrenFor(3);
+    for (const id of ids) fake.setStatus(id, { status: 'running' });
+
+    await expect(pollSummarizeChildren(summarizeEnv, ids, 4)).resolves.toEqual({ done: false, summaries: [], neuronsSpent: 0 });
+    await expect(pollSummarizeChildren(summarizeEnv, ids, 5)).rejects.toThrow(/still not complete after 5 polls/);
+  });
+
+  it('validates a complete child\'s output rather than casting it - a malformed output fails the step', async () => {
+    const { fake, summarizeEnv, ids } = await createChildrenFor(1);
+    fake.setStatus(ids[0]!, { status: 'complete', output: 'not-an-object' });
+
+    await expect(pollSummarizeChildren(summarizeEnv, ids, 0)).rejects.toThrow(/non-object/);
+  });
+
+  it('validates the summaries array element shape rather than casting it', async () => {
+    const { fake, summarizeEnv, ids } = await createChildrenFor(1);
+    fake.setStatus(ids[0]!, { status: 'complete', output: { summaries: [{ url: 'x' }], neuronsSpent: 0 } });
+
+    await expect(pollSummarizeChildren(summarizeEnv, ids, 0)).rejects.toThrow(/malformed summaries/);
+  });
+
+  it('validates neuronsSpent rather than casting it', async () => {
+    const { fake, summarizeEnv, ids } = await createChildrenFor(1);
+    fake.setStatus(ids[0]!, { status: 'complete', output: { summaries: [], neuronsSpent: 'lots' } });
+
+    await expect(pollSummarizeChildren(summarizeEnv, ids, 0)).rejects.toThrow(/non-count neuronsSpent/);
   });
 });
 
@@ -673,7 +865,7 @@ describe('proposeTopic()', () => {
 });
 
 // ---------------------------------------------------------------------------
-// summarizeArticle() / synthesizeDraft() / isGrounded() / openPullRequest()
+// synthesizeDraft() / isGrounded() / openPullRequest()
 // ---------------------------------------------------------------------------
 
 /**
@@ -695,10 +887,6 @@ function chatFixture(content: string, finishReason = 'stop'): unknown {
     choices: [{ message: { content }, finish_reason: finishReason }],
     usage: { prompt_tokens: 100, completion_tokens: 50 },
   };
-}
-
-function articleResponse(bodyHtml: string): Response {
-  return new Response(`<html><body>${bodyHtml}</body></html>`, { headers: { 'content-type': 'text/html' } });
 }
 
 /** Trimmed copy of the real src/content.config.ts - see test/mdx.test.ts's copy for provenance. */
@@ -728,110 +916,6 @@ function summary(overrides: Partial<ArticleSummary> = {}): ArticleSummary {
     ...overrides,
   };
 }
-
-describe('summarizeArticle()', () => {
-  it('fetches, extracts, and parses a well-formed map response', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => articleResponse('<p>Real article prose about agentic code review.</p>')),
-    );
-    const aiEnv = envWithAi(
-      chatFixture(JSON.stringify({ summary: 'It works.', relevance: 0.7, claims: ['c1'], attributablePractice: 'Practice X' })),
-    );
-
-    const result = await summarizeArticle(aiEnv, candidate({ url: 'https://example.com/a', title: 'Article A' }), topic());
-
-    expect(result.summary).toEqual({
-      url: 'https://example.com/a',
-      title: 'Article A',
-      summary: 'It works.',
-      relevance: 0.7,
-      claims: ['c1'],
-      attributablePractice: 'Practice X',
-    });
-    expect(result.neurons).toBeGreaterThan(0);
-  });
-
-  it('returns skipReason: fetch-threw (with a truncated error message) when the fetch throws', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => {
-        throw new Error('network down');
-      }),
-    );
-    const result = await summarizeArticle(envWithAi(chatFixture('{}')), candidate(), topic());
-    expect(result.summary).toBeNull();
-    expect(result.neurons).toBe(0);
-    expect(result.skipReason).toBe('fetch-threw');
-    expect(result.errorMessage).toBe('network down');
-    expect(result.status).toBeUndefined();
-  });
-
-  it('caps errorMessage at 100 chars for a fetch throw with a long message', async () => {
-    const longMessage = 'x'.repeat(200);
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => {
-        throw new Error(longMessage);
-      }),
-    );
-    const result = await summarizeArticle(envWithAi(chatFixture('{}')), candidate(), topic());
-    expect(result.skipReason).toBe('fetch-threw');
-    expect(result.errorMessage).toHaveLength(100);
-    expect(result.errorMessage).toBe(longMessage.slice(0, 100));
-  });
-
-  it('returns skipReason: http-error (with the status) on a non-2xx fetch', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 404 })));
-    const result = await summarizeArticle(envWithAi(chatFixture('{}')), candidate(), topic());
-    expect(result.summary).toBeNull();
-    expect(result.neurons).toBe(0);
-    expect(result.skipReason).toBe('http-error');
-    expect(result.status).toBe(404);
-    expect(result.errorMessage).toBeUndefined();
-  });
-
-  it('returns skipReason: empty-extract when the article body extracts to nothing', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => articleResponse('<script>only script content</script>')));
-    const result = await summarizeArticle(envWithAi(chatFixture('{}')), candidate(), topic());
-    expect(result.summary).toBeNull();
-    expect(result.neurons).toBe(0);
-    expect(result.skipReason).toBe('empty-extract');
-    expect(result.status).toBeUndefined();
-    expect(result.errorMessage).toBeUndefined();
-  });
-
-  it('returns skipReason: unparseable (but still reports spent neurons) when the model response is not parseable JSON', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => articleResponse('<p>Article prose.</p>')));
-    const aiEnv = envWithAi(chatFixture('I think the article is about... (reasoning-fallback prose, not JSON)'));
-
-    const result = await summarizeArticle(aiEnv, candidate(), topic());
-
-    expect(result.summary).toBeNull();
-    expect(result.neurons).toBeGreaterThan(0);
-    expect(result.skipReason).toBe('unparseable');
-  });
-
-  it('returns skipReason: truncated when the completion was truncated (finish_reason: length)', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => articleResponse('<p>Article prose.</p>')));
-    const aiEnv = envWithAi(chatFixture('{"summary": "cut off h', 'length'));
-
-    const result = await summarizeArticle(aiEnv, candidate(), topic());
-    expect(result.summary).toBeNull();
-    expect(result.skipReason).toBe('truncated');
-  });
-
-  it('distinguishes truncated from unparseable - both skip before a summary but for different reasons', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => articleResponse('<p>Article prose.</p>')));
-
-    const truncated = await summarizeArticle(envWithAi(chatFixture('{"summary": "cut off h', 'length')), candidate(), topic());
-    const unparseable = await summarizeArticle(envWithAi(chatFixture('not json at all')), candidate(), topic());
-
-    expect(truncated.skipReason).toBe('truncated');
-    expect(unparseable.skipReason).toBe('unparseable');
-    expect(truncated.skipReason).not.toBe(unparseable.skipReason);
-  });
-});
 
 describe('synthesizeDraft()', () => {
   const summaries = [summary({ url: 'https://example.com/a' }), summary({ url: 'https://example.com/b', title: 'Article B' })];

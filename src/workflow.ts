@@ -11,7 +11,6 @@ import {
   recordRunOutcome,
   startRun,
 } from './lib/d1';
-import { extractArticleText } from './lib/extract';
 import { fetchFeedItems } from './lib/feed-fetch';
 import { loadFeeds } from './lib/feeds';
 import {
@@ -25,8 +24,9 @@ import {
 import type { GithubConfig } from './lib/github';
 import { createLlm, neuronsFor } from './lib/llm';
 import { blogPostPath, renderMdx, validateAgainstContentConfig, validateDraft } from './lib/mdx';
-import { buildMapMessages, buildReduceMessages, normaliseCitations, parseMapResponse, parseReduceResponse } from './lib/prompts';
+import { buildReduceMessages, normaliseCitations, parseReduceResponse } from './lib/prompts';
 import type { ReduceParseFailure } from './lib/prompts';
+import { createChildBatch, pollChildBatch } from './lib/workflow-children';
 import type {
   ArticleSummary,
   Candidate,
@@ -37,6 +37,8 @@ import type {
   ResearchParams,
   RunOutcome,
   Source,
+  SummarizeParams,
+  SummarizePollResult,
   Topic,
 } from './lib/types';
 import {
@@ -47,7 +49,7 @@ import {
   ATTR_SOURCES_GATHERED,
   ATTR_SOURCES_SHORTLISTED,
   ATTR_SOURCES_USED,
-  ATTR_SUMMARIZE_SKIP_REASON,
+  ATTR_SUMMARIZE_CHILDREN,
   ATTR_TOPIC_ID,
   tracerFor,
 } from './lib/trace';
@@ -62,13 +64,19 @@ import {
  * ceiling - Workflows packs consecutive fast steps into one invocation
  * instead of starting fresh at each one. Gather runs in `GatherWorkflow`
  * children rather than the parent's own steps for exactly this reason
- * (feature 003, spec.md's "Gather in child instances"):
- * 46 feeds' worth of fetches and D1 writes exhausted the parent's own
- * 50-subrequest budget before a single article could be fetched (#75, run
- * `0199648c`) - see `createGatherChildren`'s comment for the arithmetic. The
- * ~15 remaining article-summarizing steps still stay one fetch-and-parse per
- * step; a step boundary is a *chance* of a fresh invocation, never a
- * guarantee, and it is the only lever there is.
+ * (feature 003, spec.md's "Gather in child instances"): 46 feeds' worth of
+ * fetches and D1 writes exhausted the parent's own 50-subrequest budget
+ * before a single article could be fetched (#75, run `0199648c`) - see
+ * `createGatherChildren`'s comment for the arithmetic.
+ *
+ * Article summarization runs in `SummarizeWorkflow` children for the same
+ * reason (requirement 2, extended 2026-08-31 after run `6f75e460` moved
+ * gather out and the parent still failed its 15th article on `Too many
+ * subrequests by single Worker invocation.`): the ~15 shortlisted articles'
+ * fetches and model calls no longer run in this invocation either - see
+ * `createSummarizeChildren`'s comment for the arithmetic, including the 1
+ * MiB step-result sizing that lets a child return the summaries themselves
+ * rather than a side channel.
  *
  * No step is retried (spec.md requirement 1; `tracedStep`'s zero-retry
  * policy). Every step body stays idempotent anyway, because `run()` itself
@@ -204,26 +212,34 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
       return;
     }
 
-    // 3. Map: one article per step. CPU is charged per invocation and a step
-    //    boundary is not a fresh budget, so keeping a single parse to a step is
-    //    the only lever there is. It also bounds spend per article rather than
-    //    per run: the budget check is between calls, so a run may overshoot by
-    //    at most one article call.
-    const summaries: ArticleSummary[] = [];
-    for (const candidate of shortlist) {
-      if (neuronsSpent + SUMMARY_NEURON_ESTIMATE > budget - SYNTHESIS_NEURON_RESERVE) break;
+    // 3. Map: summarization runs in SummarizeWorkflow children, never the
+    //    parent's own steps (spec.md requirement 2, extended 2026-08-31) -
+    //    see the class doc comment above and `createSummarizeChildren`'s
+    //    comment for why and for the subrequest and 1 MiB arithmetic. Same
+    //    create/poll/validate shape as gather; `budget - neuronsSpent -
+    //    SYNTHESIS_NEURON_RESERVE` is what used to gate the parent's own
+    //    per-article loop and is now split across children instead (see
+    //    createSummarizeChildren's comment).
+    const summarizeChildIds = await traceStep('create-summarize-children', {}, async (span) => {
+      const ids = await createSummarizeChildren(this.env, event.instanceId, shortlist, topic, budget - neuronsSpent - SYNTHESIS_NEURON_RESERVE);
+      span.setAttribute(ATTR_SUMMARIZE_CHILDREN, ids.length);
+      return ids;
+    });
 
-      // `agent.step` on this span is the `summarize` prefix. `candidate.url`
-      // stays out of every span attribute - REVIEW.md pass 2 forbids a URL
-      // there - even though it still passes through to step.do unchanged,
-      // because that is the replay key.
-      const result = await traceStep(`summarize:${candidate.url}`, {}, async (span) => {
-        const outcome = await summarizeArticle(this.env, candidate, topic);
-        if (outcome.skipReason !== undefined) span.setAttribute(ATTR_SUMMARIZE_SKIP_REASON, outcome.skipReason);
-        return outcome;
+    // Per-round step names, same reason as `await-gather-children` above.
+    let summaries: ArticleSummary[] = [];
+    for (let round = 0; ; round++) {
+      const outcome: SummarizePollResult = await traceStep(`await-summarize-children:${round}`, {}, async (span) => {
+        const result = await pollSummarizeChildren(this.env, summarizeChildIds, round);
+        span.setAttribute(ATTR_SUMMARIZE_CHILDREN, summarizeChildIds.length);
+        return result;
       });
-      neuronsSpent += result.neurons;
-      if (result.summary !== null) summaries.push(result.summary);
+      if (outcome.done) {
+        summaries = outcome.summaries;
+        neuronsSpent += outcome.neuronsSpent;
+        break;
+      }
+      await step.sleep(`await-summarize-children-wait:${round}`, SUMMARIZE_POLL_INTERVAL);
     }
 
     if (!isGrounded(summaries)) {
@@ -293,8 +309,6 @@ export function isGrounded(summaries: ArticleSummary[]): boolean {
   return summaries.length >= MIN_SOURCES && practices.length >= MIN_PRACTICES;
 }
 
-/** Conservative per-article estimate used for the budget gate - see spec.md's cost table (measured, #18). */
-const SUMMARY_NEURON_ESTIMATE = 300;
 /**
  * Headroom the budget gate reserves for the synthesis call, so it is never
  * the call `run()` skips (spec.md req. 6). This PR measured a real
@@ -308,12 +322,6 @@ const SUMMARY_NEURON_ESTIMATE = 300;
  */
 const SYNTHESIS_NEURON_RESERVE = 500;
 
-/**
- * `maxTokens` for the map call. Matches what `plan.md` step 2's probe used
- * (4,096) - the 203/223-neuron measurements in spec.md's cost table were
- * taken at this ceiling, so raising it materially would need remeasuring.
- */
-const MAP_MAX_TOKENS = 4096;
 /**
  * `maxTokens` for the synthesis call. `@cf/openai/gpt-oss-120b` spends
  * reasoning tokens before content ones (issue #18), and the reduce prompt
@@ -517,28 +525,18 @@ async function fetchFeedTitles(feedUrl: string): Promise<string[]> {
  * design already spends freely (`step.sleep` costs neither a step nor
  * concurrency).
  *
- * **This does not make the parent's own remaining invocation safe.**
- * `shortlist` (~8 D1 queries at the current windowed candidate count),
- * `summarize` (up to 15 x a fetch to an arbitrary article domain + an AI
- * call = up to 30, before any of *those* fetches redirect) and
- * `open-pull-request` (7 GitHub calls) alone already sum past 50 before a
- * single poll subrequest is counted - unchanged by this feature, because
- * spec.md requirement 2 only requires that no *feed* be parsed in the
- * parent's invocation. Whether that remaining work survives a single
- * invocation still depends on an invocation boundary landing between it and
- * `shortlist`, exactly as the whole run did before this feature - this
- * design removes gather's ~92-subrequest contribution to that gamble, the
- * largest and most reliably-triggering one measured, but does not close it.
+ * **This does not make the parent's own remaining invocation safe on its
+ * own.** See `createSummarizeChildren`'s comment below for the fixed-cost
+ * recount now that summarize has joined gather in leaving this invocation
+ * (extended 2026-08-31, #75) - this function's own contribution is what that
+ * recount assumes gone.
  *
  * Ids are deterministic (`${parentInstanceId}-g${index}`), which is what
  * makes this step idempotent on replay: `run()` re-executes from the top on
  * every replay (fact 2, spec.md), so a second call here must not create a
- * different set of children. `createBatch` throws when *any* supplied id
- * already exists (`index.d.ts`, contradicting plan.md's "createBatch skips
- * existing ids outright" - see this PR's report) rather than skipping only
- * those - so a duplicate-id failure is verified against reality
- * (`childExists`), never assumed: a genuinely different failure (bad
- * params, a quota) must still surface.
+ * different set of children. `createChildBatch` (src/lib/workflow-children.ts)
+ * is what verifies a duplicate-id failure against reality rather than
+ * assuming it - see that function's own comment.
  *
  * Returns child ids as plain strings, never a `WorkflowInstance` - the
  * platform's own examples return one from a step body, while the docs
@@ -555,38 +553,7 @@ export async function createGatherChildren(env: Env, parentInstanceId: string, s
     params: { runId: parentInstanceId, sources: chunk, index } satisfies GatherParams,
   }));
 
-  try {
-    await env.GATHER_WORKFLOW.createBatch(options);
-  } catch (err) {
-    const alreadyExist = await Promise.all(options.map((o) => childExists(env, o.id)));
-    if (!alreadyExist.every(Boolean)) throw err;
-  }
-
-  return options.map((o) => o.id);
-}
-
-/**
- * Calls `.status()`, not just `.get()`: `index.d.ts` documents `get` as
- * returning "a handle to an *existing* instance" but does not say whether
- * that existence check is eager (in `get`) or lazy (deferred to the first
- * real call on the handle) - measured under vitest-pool-workers, a
- * nonexistent id throws from `.status()`, not from `.get()` itself. Calling
- * only `get()` here would make this always return `true` under a lazy
- * implementation, which would turn "verified against reality" into
- * "assumed" exactly where `createGatherChildren`'s doc comment says it
- * isn't - a genuinely different `createBatch` failure would then be
- * swallowed instead of rethrown, and the run would fail later, at
- * `await-gather-children`, with an opaque `instance.not_found` instead of
- * the real cause.
- */
-async function childExists(env: Env, id: string): Promise<boolean> {
-  try {
-    const instance = await env.GATHER_WORKFLOW.get(id);
-    await instance.status();
-    return true;
-  } catch {
-    return false;
-  }
+  return createChildBatch(env.GATHER_WORKFLOW, options);
 }
 
 /**
@@ -596,67 +563,41 @@ async function childExists(env: Env, id: string): Promise<boolean> {
  * (Workflows limits docs; plan.md's question 1) - but it also does not force
  * a fresh invocation (`probe/FINDINGS.md` §4-6), so consecutive poll rounds
  * can land in the very same invocation as every round before them, sharing
- * its 50-subrequest ceiling with everything else the parent does. 30 s
- * trades round-trip latency for fewer rounds against that shared budget -
- * see `GATHER_POLL_MAX_ROUNDS` for the arithmetic this cadence has to
- * respect.
+ * its 50-subrequest ceiling with everything else the parent does, including
+ * `await-summarize-children`'s own poll loop now that it exists.
  */
 const GATHER_POLL_INTERVAL = '30 seconds';
 /**
- * The poll backstop is a subrequest budget, not a round count. One round
- * costs one subrequest per child (spec.md), and rounds can accumulate in one
- * invocation (`GATHER_POLL_INTERVAL`'s comment) - a *fixed* round cap would
- * let `children x rounds` blow past 50 on its own before the cap ever fired,
- * so a genuinely stuck run would die on the platform's own opaque "Too many
- * subrequests by single Worker invocation." instead of this function's
- * clearly-labelled one. 30 is a deliberately small slice of the 50: it
- * leaves the rest for whatever else that invocation is doing, and at the
- * `GATHER_FEEDS_PER_CHILD = 10` default (5 children) it allows 6 rounds -
- * 3 minutes at `GATHER_POLL_INTERVAL`, far past what gathering ~10 simple
- * RSS feeds should take. More children (a smaller `GATHER_FEEDS_PER_CHILD`)
- * automatically get fewer rounds before this fires, which is the right
- * direction: more children is already more poll subrequests per round.
+ * The poll backstop is a subrequest budget, not a round count (`pollChildBatch`'s
+ * own comment). **Reduced from 30 to 10 on 2026-08-31 (#75).** 30 was sized
+ * as "a deliberately small slice of the 50" when this was the *only* poll
+ * loop in the parent; `SUMMARIZE_POLL_SUBREQUEST_BUDGET` now shares that
+ * same invocation, and 30 + 30 sums past the 50 both backstops are meant to
+ * stay clear of. See `createSummarizeChildren`'s comment for the full
+ * recount (~21 fixed + this + summarize's = ~46 of 50). 10 still gives real
+ * margin specifically for gather: run `6f75e460` measured all five children
+ * completing in 5-8 seconds, so at the `GATHER_FEEDS_PER_CHILD = 10` default
+ * (5 children) `floor(10 / 5) = 2` rounds - one retry after one 30 s sleep -
+ * is generous against a measured few-second convergence, not tight against
+ * it.
  */
-const GATHER_POLL_SUBREQUEST_BUDGET = 30;
+const GATHER_POLL_SUBREQUEST_BUDGET = 10;
 
 /**
- * One `await-gather-children` round: reads every child's `status()`.
- * `InstanceStatus.output` is typed `unknown` - `validateGatherOutput` below
- * checks it rather than casting it, per plan.md's question 3's rule for exactly this
- * value. A child that is `errored` or `terminated` fails this step
- * immediately (spec.md requirement 4: a failed child fails the run,
- * visibly - the deliberate opposite of a single dead *feed* inside a child,
- * which still contributes zero without failing anything). While any child
- * is still `queued`/`running`/`paused`/`waiting`, this returns `done: false`
- * so `run()`'s poll loop sleeps and calls it again - there is no blocking
- * join on a child instance (plan.md's question 3).
+ * One `await-gather-children` round, via `pollChildBatch`
+ * (src/lib/workflow-children.ts). `InstanceStatus.output` is typed
+ * `unknown` - `validateGatherOutput` below checks it rather than casting it,
+ * per plan.md's question 3's rule for exactly this value.
  */
 export async function pollGatherChildren(env: Env, childIds: string[], round: number): Promise<GatherPollResult> {
-  const statuses = await Promise.all(childIds.map((id) => env.GATHER_WORKFLOW.get(id).then((instance) => instance.status())));
-
-  statuses.forEach((s, i) => {
-    if (s.status === 'errored' || s.status === 'terminated') {
-      throw new Error(`gather child ${childIds[i]} ${s.status}`);
-    }
+  const outcome = await pollChildBatch(env.GATHER_WORKFLOW, childIds, round, GATHER_POLL_SUBREQUEST_BUDGET, 'gather', (outputs) => {
+    let total = 0;
+    outputs.forEach((output, i) => {
+      total += validateGatherOutput(output, childIds[i] ?? `#${i}`);
+    });
+    return total;
   });
-
-  if (statuses.some((s) => s.status !== 'complete')) {
-    // Derived from childIds.length, not a fixed constant - see
-    // GATHER_POLL_SUBREQUEST_BUDGET's own comment for why a fixed round
-    // count would let this backstop be beaten to the punch by the platform's
-    // own subrequest error.
-    const maxRounds = Math.max(1, Math.floor(GATHER_POLL_SUBREQUEST_BUDGET / childIds.length));
-    if (round >= maxRounds) {
-      throw new Error(`await-gather-children: ${childIds.length} children still not complete after ${maxRounds} polls`);
-    }
-    return { done: false, total: 0 };
-  }
-
-  let total = 0;
-  statuses.forEach((s, i) => {
-    total += validateGatherOutput(s.output, childIds[i] ?? `#${i}`);
-  });
-  return { done: true, total };
+  return outcome.done ? { done: true, total: outcome.result } : { done: false, total: 0 };
 }
 
 /** `InstanceStatus.output` is `unknown` - this is what actually enforces a child's "returns its candidate count" contract, per plan.md's question 3 ("validates rather than casts"). */
@@ -735,88 +676,197 @@ export async function shortlistCandidates(env: Env, runId: string, topic: Topic)
 }
 
 /**
- * Every way `summarizeArticle` can skip an article without failing the run.
- * Machine-readable so a `describe`d step output (or the `agent.summarize.skip_reason`
- * span attribute) can say *which* early return fired instead of collapsing
- * all of them into one indistinguishable `summary: null` - the gap that made
- * a real run (525a5386-deb0-4d4b-8242-d4246462884e, 2026-08-31) where all 15
- * `summarize` steps skipped look identical whether that was one shared cause
- * or 15 unrelated ones.
+ * Chunks `shortlist` into `SUMMARIZE_ARTICLES_PER_CHILD`-sized groups and
+ * creates one `SummarizeWorkflow` child per chunk (spec.md requirement 2,
+ * extended 2026-08-31 (#75)). Deterministic ids (`${parentInstanceId}-s${index}`)
+ * and duplicate-id recovery are `createChildBatch`'s job
+ * (src/lib/workflow-children.ts) - the same idempotency-on-replay mechanism
+ * `createGatherChildren` uses, generalized rather than copied when this
+ * became the second caller.
+ *
+ * **The subrequest arithmetic `SUMMARIZE_ARTICLES_PER_CHILD` is sized
+ * against** (wrangler.toml): `summarizeArticle` (src/summarize-workflow.ts)
+ * costs one article `fetch` plus one `env.AI.run` call per candidate - two
+ * Workers subrequests, the same "any fetch and any D1, KV or AI binding
+ * call" rule `GATHER_FEEDS_PER_CHILD`'s comment cites. At
+ * `SUMMARIZE_ARTICLES_PER_CHILD = 5` that floor is 10 of a child's 50 -
+ * *more* margin than gather's 20-of-50, deliberately: an article's domain is
+ * whatever the allowlist's feeds happen to link to that day, not a fixed,
+ * previously-fetched RSS host, so it is more likely to redirect or be slow
+ * than the 46-feed allowlist gather already has data on. At
+ * `SHORTLIST_TOP_N = 15` this gives `ceil(15 / 5) = 3` children.
+ *
+ * **The parent's remaining invocation, recomputed now that summarize joins
+ * gather in leaving it** (this function's own reason for existing):
+ * `start-run` (1) + `select-topic` (~3-4: reclaim, claim, attach) +
+ * `load-sources` (0) + `create-gather-children` (1) + `shortlist` (~4 at the
+ * 264-candidate count run `6f75e460` measured: one `readRunCandidates` plus
+ * `findSeenUrls` chunked at 100 - `ceil(264/100) = 3`) + `create-summarize-
+ * children` (1) + `synthesize` (1 AI call) + `open-pull-request` (7 GitHub
+ * calls) + `record-success` (2) is **~21 fixed subrequests**, leaving ~29 of
+ * the parent's 50 for both poll loops combined - not 30 each, which is why
+ * `GATHER_POLL_SUBREQUEST_BUDGET` (10) and `SUMMARIZE_POLL_SUBREQUEST_BUDGET`
+ * (15) sum to 25 rather than each independently claiming "a small slice of
+ * the 50" the way the first one did when it was the only poll loop. See
+ * those constants' own comments for the round-count consequence. This still
+ * does not make the parent's remaining invocation *safe* - `shortlist` alone
+ * can cost far more than 4 at `SHORTLIST_MAX_CANDIDATES`'s 4,000-row ceiling
+ * - only smaller than before, by exactly the ~30 subrequests summarize no
+ * longer spends here.
+ *
+ * **The neuron budget is split, not shared - and the split bounds slices,
+ * not spend.** `availableBudget` (this function's own parameter, `run()`'s
+ * `budget - neuronsSpent - SYNTHESIS_NEURON_RESERVE`) is divided across
+ * children in proportion to how many candidates each chunk carries, so the
+ * sum of every child's `neuronBudget` **slice** equals `availableBudget`
+ * exactly. Children run concurrently with no shared state, so without this
+ * split every child would see the *same* full `availableBudget` and their
+ * combined spend could reach `availableBudget * childCount` - the split
+ * closes that.
+ *
+ * It does not close the smaller overshoot the old single-loop gate always
+ * had: each child's own gate (`runSummarize`, src/summarize-workflow.ts) is
+ * a pre-flight check against `SUMMARY_NEURON_ESTIMATE`, an estimate, not the
+ * call's real cost - a call that spends more than the estimate can carry a
+ * child's own actual spend past its slice by that difference, same as the
+ * old parent loop could overshoot the whole run's budget by at most one
+ * article call. Splitting into children changes *how many times* that can
+ * happen in one run - up to once per child (3, at the current config)
+ * rather than once total - not whether it can happen at all. At the
+ * measured ~1-2 neuron cost per map call against a 300-neuron estimate
+ * (`SUMMARY_NEURON_ESTIMATE`'s own comment) this is nowhere near the budget
+ * in practice; it is stated here so a future change to the estimate or the
+ * model doesn't quietly rely on a bound that was never actually enforced.
+ *
+ * **A slice below `SUMMARY_NEURON_ESTIMATE` summarizes nothing, not
+ * fewer.** The gate is `neuronsSpent + SUMMARY_NEURON_ESTIMATE >
+ * neuronBudget`, checked before the *first* candidate too, so a child whose
+ * slice never reaches the estimate breaks on iteration one. At this
+ * config's default (`NEURON_BUDGET_PER_RUN = 6000`, `SHORTLIST_TOP_N = 15`,
+ * 3 children) each slice is ~1,833 - far above the 300-neuron floor - but a
+ * much smaller `NEURON_BUDGET_PER_RUN` could split into slices too thin for
+ * any child to summarize even one article, where the old shared-budget loop
+ * would have summarized a couple. Worth remembering before lowering that var.
+ *
+ * Returns child ids as plain strings, per plan.md's question 3 - the same
+ * reason `createGatherChildren` does.
  */
-export type SummarizeSkipReason = 'fetch-threw' | 'http-error' | 'empty-extract' | 'truncated' | 'unparseable';
+export async function createSummarizeChildren(
+  env: Env,
+  parentInstanceId: string,
+  shortlist: Candidate[],
+  topic: Topic,
+  availableBudget: number,
+): Promise<string[]> {
+  const chunkSize = Number(env.SUMMARIZE_ARTICLES_PER_CHILD);
+  const chunks: Candidate[][] = [];
+  for (let i = 0; i < shortlist.length; i += chunkSize) chunks.push(shortlist.slice(i, i + chunkSize));
 
-/**
- * `errorMessage` and `status` are diagnostics for the *step output* only -
- * `wrangler workflows instances describe` persists whatever `summarizeArticle`
- * returns, which is the only channel that survived to read the deployed run
- * this type was added for. They must never reach a span attribute: CLAUDE.md
- * forbids an error message (or a URL) there, constructor name only via
- * `error.type` - see `ATTR_SUMMARIZE_SKIP_REASON`'s comment in `trace.ts` for
- * why the step output is a different, permitted channel.
- */
-export interface SummarizeResult {
-  summary: ArticleSummary | null;
-  neurons: number;
-  skipReason?: SummarizeSkipReason;
-  /** Set only for `skipReason: 'http-error'`. */
-  status?: number;
-  /** Set only for `skipReason: 'fetch-threw'`, capped so a huge message can't bloat the step output. */
-  errorMessage?: string;
+  const totalCandidates = shortlist.length;
+  const options = chunks.map((chunk, index) => ({
+    id: `${parentInstanceId}-s${index}`,
+    params: {
+      candidates: chunk,
+      topic,
+      neuronBudget: totalCandidates === 0 ? 0 : (availableBudget * chunk.length) / totalCandidates,
+      index,
+    } satisfies SummarizeParams,
+  }));
+
+  return createChildBatch(env.SUMMARIZE_WORKFLOW, options);
 }
 
-const ERROR_MESSAGE_MAX_LEN = 100;
-
-/** A Cloudflare subrequest-limit failure surfaces as a plain `Error` - the message, not the constructor, carries the signal. */
-function truncatedMessage(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err);
-  return message.length > ERROR_MESSAGE_MAX_LEN ? message.slice(0, ERROR_MESSAGE_MAX_LEN) : message;
-}
+/**
+ * Poll interval for `await-summarize-children`. Deliberately double
+ * `GATHER_POLL_INTERVAL`'s 30 s: `step.sleep` costs no subrequest, no step,
+ * and no concurrency (`GATHER_POLL_INTERVAL`'s own comment), so lengthening
+ * it is the cheap lever for wall-clock margin and does not touch the
+ * subrequest arithmetic `SUMMARIZE_POLL_SUBREQUEST_BUDGET` sizes.
+ *
+ * It exists because gather's margin does not transfer: gather's 5 children
+ * measured 5-8 s to converge (run `6f75e460`) against 2 rounds x 30 s = 60 s,
+ * roughly 8x. A summarize child does a fetch to an arbitrary article domain
+ * *and* a `gpt-oss-120b` call at `MAP_MAX_TOKENS = 4096` per candidate,
+ * neither of which this repo has measured the latency of - a reasoning
+ * model at that ceiling taking 10-30 s per call is not a pessimistic guess.
+ * At 30 s intervals, 5 candidates/child x up to ~30 s each could approach or
+ * exceed the poll allowance on its own, before any redirect or slow
+ * article. 60 s keeps the round count `SUMMARIZE_POLL_SUBREQUEST_BUDGET`
+ * derives unchanged while roughly doubling the wall-clock each round buys -
+ * criterion 2's five consecutive runs are what actually settles whether
+ * this margin is enough, not this arithmetic.
+ */
+const SUMMARIZE_POLL_INTERVAL = '60 seconds';
+/**
+ * The poll backstop is a subrequest budget, not a round count
+ * (`pollChildBatch`'s own comment) - see `createSummarizeChildren`'s
+ * arithmetic for why 15, not 30, is this loop's share of the parent's 50.
+ * At the `SUMMARIZE_ARTICLES_PER_CHILD = 5` default (3 children over
+ * `SHORTLIST_TOP_N = 15`) this allows `floor(15 / 3) = 5` rounds - 5 minutes
+ * at `SUMMARIZE_POLL_INTERVAL`, not the 2.5 minutes a 30 s interval would
+ * give the same round count.
+ */
+const SUMMARIZE_POLL_SUBREQUEST_BUDGET = 15;
 
 /**
- * One fetch, streamed extraction (`src/lib/extract.ts`), one `Llm` call.
- * Returns `summary: null` - never throws for anything short of the `Llm`
- * call itself failing - so one bad article (unfetchable, unextractable, or a
- * response that doesn't parse as the expected JSON) cannot fail the run
- * (spec.md risk table). `neurons` is still reported on every path that
- * actually spent them, so the budget gate in `run()` stays accurate even
- * when the article was a bust.
+ * One `await-summarize-children` round: reads every child's `status()` via
+ * `pollChildBatch` (src/lib/workflow-children.ts), then combines every
+ * complete child's validated output. `InstanceStatus.output` is typed
+ * `unknown` - `validateSummarizeOutput` below checks it rather than casting
+ * it. A child that is `errored` or `terminated` fails this step immediately
+ * (spec.md requirement 4). While any child is still incomplete, this
+ * returns `done: false, summaries: [], neuronsSpent: 0` - both fields are
+ * meaningless until `done` is true, matching `GatherPollResult`'s own
+ * contract.
  */
-export async function summarizeArticle(env: Env, candidate: Candidate, topic: Topic): Promise<SummarizeResult> {
-  let response: Response;
-  try {
-    response = await fetch(candidate.url);
-  } catch (err) {
-    return { summary: null, neurons: 0, skipReason: 'fetch-threw', errorMessage: truncatedMessage(err) };
+export async function pollSummarizeChildren(env: Env, childIds: string[], round: number): Promise<SummarizePollResult> {
+  const outcome = await pollChildBatch(
+    env.SUMMARIZE_WORKFLOW,
+    childIds,
+    round,
+    SUMMARIZE_POLL_SUBREQUEST_BUDGET,
+    'summarize',
+    (outputs) => {
+      const summaries: ArticleSummary[] = [];
+      let neuronsSpent = 0;
+      outputs.forEach((output, i) => {
+        const validated = validateSummarizeOutput(output, childIds[i] ?? `#${i}`);
+        summaries.push(...validated.summaries);
+        neuronsSpent += validated.neuronsSpent;
+      });
+      return { summaries, neuronsSpent };
+    },
+  );
+  return outcome.done ? { done: true, ...outcome.result } : { done: false, summaries: [], neuronsSpent: 0 };
+}
+
+function isArticleSummary(v: unknown): v is ArticleSummary {
+  if (typeof v !== 'object' || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.url === 'string' &&
+    typeof o.title === 'string' &&
+    typeof o.summary === 'string' &&
+    typeof o.relevance === 'number' &&
+    Array.isArray(o.claims) &&
+    o.claims.every((c) => typeof c === 'string') &&
+    (o.attributablePractice === null || typeof o.attributablePractice === 'string')
+  );
+}
+
+/** `InstanceStatus.output` is `unknown` - this is what actually enforces a summarize child's "returns its summaries and neuron spend" contract, per plan.md's question 3 ("validates rather than casts"), the same rule `validateGatherOutput` applies to a gather child's count. */
+function validateSummarizeOutput(output: unknown, childId: string): { summaries: ArticleSummary[]; neuronsSpent: number } {
+  if (typeof output !== 'object' || output === null) {
+    throw new Error(`summarize child ${childId} returned a non-object output`);
   }
-  if (!response.ok) return { summary: null, neurons: 0, skipReason: 'http-error', status: response.status };
-
-  const articleText = await extractArticleText(response);
-  if (articleText === '') return { summary: null, neurons: 0, skipReason: 'empty-extract' };
-
-  const llm = createLlm(env);
-  const result = await llm.complete({
-    messages: buildMapMessages(topic, candidate, articleText),
-    maxTokens: MAP_MAX_TOKENS,
-  });
-  const neurons = neuronsFor(result);
-
-  // A truncated completion's text (if any survived) is not trustworthy JSON
-  // - skip parsing it rather than risk parseMapResponse accepting a
-  // partial/malformed object by accident.
-  if (result.finishReason === 'length') return { summary: null, neurons, skipReason: 'truncated' };
-
-  // Never throws on a rejection (see parseMapResponse's doc comment). The
-  // parser's own finer-grained reason is still discarded: one bad article
-  // must not fail the run, and distinguishing it from a truncated completion
-  // is as far as this caller needs to go - unlike synthesizeDraft, which does
-  // throw and reports its ReduceParseFailure below.
-  const parsed = parseMapResponse(result.text);
-  if (!parsed.ok) return { summary: null, neurons, skipReason: 'unparseable' };
-
-  return {
-    summary: { url: candidate.url, title: candidate.title, ...parsed.value },
-    neurons,
-  };
+  const o = output as Record<string, unknown>;
+  if (!Array.isArray(o.summaries) || !o.summaries.every(isArticleSummary)) {
+    throw new Error(`summarize child ${childId} returned a malformed summaries array`);
+  }
+  if (typeof o.neuronsSpent !== 'number' || !Number.isFinite(o.neuronsSpent) || o.neuronsSpent < 0) {
+    throw new Error(`summarize child ${childId} returned a non-count neuronsSpent`);
+  }
+  return { summaries: o.summaries, neuronsSpent: o.neuronsSpent };
 }
 
 /** kebab-case, ASCII-only, matching mdx.ts's `SLUG_RE`. Falls back to a topic-id-based slug if a title yields nothing usable. */
