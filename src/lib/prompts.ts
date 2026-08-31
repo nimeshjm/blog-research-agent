@@ -282,18 +282,35 @@ type JsonObjectResult = { ok: true; value: Record<string, unknown> } | { ok: fal
  * shadow the outer JSON.
  */
 function tryParseJsonObject(text: string): JsonObjectResult {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
+  for (const candidate of [text, stripCodeFence(text), unwrapFencedBlock(text)]) {
+    let parsed: unknown;
     try {
-      parsed = JSON.parse(stripCodeFence(text));
+      parsed = JSON.parse(candidate);
     } catch {
-      return { ok: false, reason: 'invalid-json' };
+      continue;
     }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false, reason: 'not-an-object' };
+    }
+    return { ok: true, value: parsed as Record<string, unknown> };
   }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { ok: false, reason: 'not-an-object' };
-  }
-  return { ok: true, value: parsed as Record<string, unknown> };
+  return { ok: false, reason: 'invalid-json' };
+}
+
+/**
+ * Last resort: a fence that does not wrap the whole response, because the
+ * model prefaced it with prose. `stripCodeFence`'s anchoring is what stops an
+ * inner fence shadowing the outer JSON, but it also rejects a response the
+ * unanchored regex used to accept - and this model demonstrably ignores the
+ * prompt's "no other text" instruction elsewhere (it was told to cite as
+ * markdown links and did not), so that tolerance is worth keeping.
+ *
+ * Safe only because it is tried last: a response that is already valid JSON
+ * never reaches here, so this can no longer shadow anything. Greedy to the
+ * *last* fence rather than the first, so a fenced payload whose own content
+ * carries fences comes back whole.
+ */
+function unwrapFencedBlock(text: string): string {
+  const fenced = /```(?:json)?\s*([\s\S]*)```/.exec(text.trim());
+  return fenced?.[1]?.trim() ?? '';
 }

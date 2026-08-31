@@ -311,6 +311,29 @@ describe('parseReduceResponse()', () => {
       value: { title: 't', description: 'd', tags: [], body },
     });
   });
+  // #75: the model prefaced its JSON with prose despite the prompt's "no other
+  // text" instruction. The unanchored regex used to absorb this by accident;
+  // the anchored one does not, so a last-resort candidate keeps it working.
+  it('parses a fenced object the model prefaced with prose', () => {
+    const text = 'Here is the JSON you asked for:\n```json\n{"title":"t","description":"d","tags":["a"],"body":"b"}\n```';
+    const result = parseReduceResponse(text);
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.value.title).toBe('t');
+  });
+
+  it('parses prose-prefaced JSON whose body carries its own code fence', () => {
+    const body = 'Run this:\n```bash\ngit worktree add /tmp/x main\n```\n';
+    const text = `Sure thing:\n\`\`\`json\n${JSON.stringify({ title: 't', description: 'd', tags: ['a'], body })}\n\`\`\``;
+    const result = parseReduceResponse(text);
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.value.body).toBe(body);
+  });
+
+  it('still reports invalid-json when the prose carries no JSON at all', () => {
+    const result = parseReduceResponse('I cannot produce that.\n```bash\nls -la\n```');
+    expect(result).toEqual({ ok: false, reason: 'invalid-json' });
+  });
+
 });
 
 // Regression coverage for #75 / production run 972cea0c: the model cited every
