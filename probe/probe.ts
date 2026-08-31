@@ -60,8 +60,10 @@ interface Marker {
   iso: string;
   seq: number;
   ms: number;
-  // `noretry-cpu` / `cpu` only: the burn's sum, so the loop cannot be elided.
+  // `noretry-cpu` / `cpu` only: the burn's sum, so the loop cannot be elided,
+  // and the iteration count it was asked for.
   sink?: number;
+  iters?: number;
 }
 
 export interface ProbeParams {
@@ -74,6 +76,9 @@ export interface ProbeParams {
   // marker shape, so its map is comparable with the runs already recorded.
   everyN?: number;
   sleepFor?: WorkflowSleepDuration;
+  // `noretry-cpu` / `cpu` only: iterations of the burn loop. Ramped across runs
+  // to find where the ceiling actually is, since 5e8 turned out to be under it.
+  iters?: number;
 }
 
 export const MODES = ['map', 'retry', 'sleep', 'noretry', 'noretry-cpu', 'cpu'] as const;
@@ -93,9 +98,9 @@ const NO_RETRIES: WorkflowStepConfig = { retries: { limit: 0, delay: 0 } };
  * than a race with whatever else the invocation is doing. The sum is returned
  * so nothing can eliminate the loop.
  */
-function burnCpu(): number {
+function burnCpu(iters: number): number {
   let x = 0;
-  for (let i = 0; i < 500_000_000; i++) x += Math.sqrt(i);
+  for (let i = 0; i < iters; i++) x += Math.sqrt(i);
   return x;
 }
 
@@ -203,7 +208,8 @@ export class ProbeWorkflow extends WorkflowEntrypoint<unknown, ProbeParams> {
           throw new Error('probe: deliberate failure, retries off');
         });
       } else {
-        await doStep(`${prefix}:burns`, async () => ({ ...mark(), sink: burnCpu() }));
+        const iters = event.payload.iters ?? 500_000_000;
+        await doStep(`${prefix}:burns`, async () => ({ ...mark(), iters, sink: burnCpu(iters) }));
       }
 
       await doStep(`${prefix}:after`, async () => mark());

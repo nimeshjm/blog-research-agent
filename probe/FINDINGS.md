@@ -322,6 +322,10 @@ whether the policy reaches that too. It did not get that far: no `1102` was prod
 Whether a CPU kill honours `retries` is **untested**, and `spec.md` acceptance criterion
 4 — one attempt row on `research-workflow` itself — stays open for PR 4's captures.
 
+*(Amended by 7.2: the ramp in 7.1 did eventually produce a real `1102`, and it too got
+exactly one attempt row. So the policy is measured to cover a CPU kill; what stays open
+is only that criterion 4 names `research-workflow`, not the probe.)*
+
 ### 7.1 A single `run()` execution absorbed ~700 ms of arithmetic without a `1102`
 
 The instrument for the paragraph above: `noretry-cpu` and `cpu` are the same two markers
@@ -351,6 +355,28 @@ Neither `wrangler.toml` declares a `[limits]` block and both use
 probe and production is ruled out. The remaining candidate this instrument cannot see is
 the account plan.
 
+**A ramp, and what it is not.** Redeployed with the iteration count as a payload field
+(`b1e14d18`), the same burn was run at larger sizes:
+
+| instance | mode | `iters` | burn |
+|---|---|---|---|
+| `b90a43b6` / `ed80e52c` | `cpu` / `noretry-cpu` | 5x10^8 | ✅ survived, twice |
+| `da873328` | `noretry-cpu` | 1x10^9 | ❌ `Worker exceeded CPU time limit` |
+| `b292794e` | `noretry-cpu` | 2x10^9 | ❌ same |
+| `0c23546e` | `noretry-cpu` | 5x10^9 | ❌ same |
+| `a32b6d53` | `noretry-cpu` | 5x10^10 | ❌ same |
+
+**This is not a CPU figure and must not be read as one.** The identical 5x10^8 loop cost
+695 ms in one isolate and 149 ms in another — 4.6x — so iteration count does not map to
+CPU consumed, and "somewhere between 5x10^8 and 10^9" is a JIT-dependent ordinal
+threshold, not a ceiling. This instrument has never read a CPU number and still has not.
+What it establishes is one-directional and enough: **an invocation survived 5x10^8
+iterations of arithmetic**, which no reading of a 10 ms ceiling permits.
+
+Nor does the burn transfer to production's failure. `parseFeed` allocates, builds strings
+and pressures GC; a tight floating-point loop over a flat heap does not. A threshold
+measured on `Math.sqrt` says nothing about where `parseFeed` dies.
+
 **This contradicts a load-bearing premise in the tree.** `CLAUDE.md` and
 `.claude/skills/cf-free-tier/SKILL.md` say, measured 2026-08-27 under #61: one feed parse
 in an invocation passes, two pass, three fail with `1102`. Four days later one invocation
@@ -363,6 +389,36 @@ production's `1102` has a cause other than accumulated arithmetic CPU.
 identical input, so a clean completion now is directly comparable against committed
 evidence. Until that is run, feature 003's children design rests on a premise this
 section puts in question, and `plan.md`'s PR 3 should not start.
+
+### 7.2 A real `1102` gets one attempt too
+
+Section 7 could not answer whether the policy reaches a *platform* kill rather than a
+thrown `Error`, because the burn it had was under the ceiling. 7.1's ramp supplies the
+missing failure. Every instance that died did so with `Worker exceeded CPU time limit` —
+production's `1102`, produced deliberately — and under `{ retries: { limit: 0, delay: 0 } }`:
+
+| instance | `iters` | attempt rows on the burn step | instance |
+|---|---|---|---|
+| `da873328` | 1x10^9 | **1** | ❌ Errored |
+| `b292794e` | 2x10^9 | **1** | ❌ Errored |
+| `0c23546e` | 5x10^9 | **1** | ❌ Errored |
+| `a32b6d53` | 5x10^10 | **1** | ❌ Errored |
+
+Four for four. **The policy covers a CPU kill, not only a thrown error**, which is the
+case `spec.md` requirement 1 exists for. Counted off the burn step's own attempt table in
+each capture — a `grep` for the error string also matches the instance header line and
+returns 2 for a single-attempt step.
+
+**The control did not reproduce, and that is recorded rather than left implied.**
+`2831f91e` is the same 5x10^9 burn under the platform default. It shows one attempt row
+and stayed `Running` rather than retrying promptly or terminating. Production's run in
+[#75](https://github.com/nimeshjm/blog-research-agent/issues/75) got six attempts across
+five minutes on a real `1102`; this control got one and then sat. So the table above says
+what the policy does, and **nothing here establishes what the default would have done to
+the same step** — the contrast with `retry`'s clean 1-against-3 in section 7 is not
+available on the CPU side.
+
+Times in this section are as `wrangler` prints them, which is local (UTC+1), not UTC.
 
 ## What this settles, and what it overturns
 
@@ -431,6 +487,11 @@ teardown below it is the only one.
 | `f95f58da-ee6c-4059-8e31-728db3ace65a` | 7 | `retry` (control) | ✅ 3 attempts |
 | `ed80e52c-9204-49f3-b9cd-13301e5e0846` | 7.1 | `noretry-cpu` | ✅ no `1102` |
 | `b90a43b6-bcd6-4c8d-89b5-37031c265891` | 7.1 | `cpu` (control) | ✅ no `1102` |
+| `da873328-5052-488f-9217-d1223b2ff597` | 7.1, 7.2 | `noretry-cpu`, 1x10^9 | ❌ `1102`, 1 attempt |
+| `b292794e-10c9-466c-820c-c239c72bf4e2` | 7.1, 7.2 | `noretry-cpu`, 2x10^9 | ❌ `1102`, 1 attempt |
+| `0c23546e-368e-42c4-94c7-b00694fbc7d1` | 7.1, 7.2 | `noretry-cpu`, 5x10^9 | ❌ `1102`, 1 attempt |
+| `a32b6d53-f0d5-4d65-8c6f-8ec88712bb73` | 7.1, 7.2 | `noretry-cpu`, 5x10^10 | ❌ `1102`, 1 attempt |
+| `2831f91e-f016-4fd6-98d0-a88f113dacc7` | 7.2 | `cpu` (control), 5x10^9 | ⚠ 1 attempt, then stayed `Running` |
 
 Live readback works only while the probe Worker and its workflow exist:
 

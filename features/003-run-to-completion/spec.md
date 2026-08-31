@@ -147,11 +147,15 @@ The markers completing is what rules out the "total attempts" reading; one row a
 three is the policy being honoured. **The recorded fallback to `{ limit: 1, delay: 0 }`
 is not needed and is withdrawn.**
 
-This is *not* acceptance criterion 4, which asks for an attempt row on
-`research-workflow` itself. The probe's failing step throws an `Error`; production's
-failure is `1102`, a platform CPU kill, and whether a CPU kill honours `retries` is
-untested — the probe's two CPU runs never produced one (below). Criterion 4 stays open
-for PR 4's captures.
+**And it covers a `1102`, not only a thrown error.** Four probe instances made to exceed
+the CPU limit deliberately (`FINDINGS.md` §7.2, `da873328` / `b292794e` / `0c23546e` /
+`a32b6d53`) each produced exactly one attempt row and errored the instance. That is the
+case requirement 1 exists for. The default-config control did not reproduce — it took one
+attempt and then sat `Running` — so this measures what the policy does, not what the
+default would have done.
+
+This is still *not* acceptance criterion 4, which names `research-workflow` itself.
+Criterion 4 stays open for PR 5's captures.
 
 ### Gather in child instances
 
@@ -229,7 +233,7 @@ margin rather than fitted to two data points.
 
 | risk | mitigation |
 |---|---|
-| **The premise the whole feature is built on may no longer hold.** Measured 2026-08-31 (`FINDINGS.md` §7.1): a single `run()` execution absorbed 5x10^8 arithmetic iterations — roughly 700 ms, two orders of magnitude past the documented 10 ms — in one isolate with no boundary and **no `1102`**. Four days earlier the same account was measured to fail on the third feed parse in an invocation. Both cannot be true of the same platform. | **Not mitigated. This is a stop, not a risk to carry.** If the ceiling in force is not 10 ms, gather in child instances solves a problem that may not exist, and PR 3 is the wrong next PR. The cheap decisive follow-up is `map` mode over the same 46 feeds: §1 and §4 record that as a coin flip on identical input, so a clean completion now is directly comparable against committed evidence. Neither `wrangler.toml` declares `[limits]`, so a per-script `cpu_ms` difference is already ruled out; the account plan is the remaining candidate and this instrument cannot see it. |
+| **The premise the whole feature is built on may no longer hold.** Measured 2026-08-31 (`FINDINGS.md` §7.1): a single `run()` execution absorbed 5x10^8 arithmetic iterations in one isolate with no boundary and **no `1102`**, twice. That is ordinal, not a CPU figure — the identical loop cost 695 ms in one isolate and 149 ms in another, and a `Math.sqrt` loop does not transfer to `parseFeed`'s allocation and GC behaviour. What it does establish is one-directional: an invocation survived work that no reading of a 10 ms ceiling permits. Four days earlier the same account was measured to fail on the third feed parse in an invocation. Both cannot be true of the same platform. | **Not mitigated. This is a stop, not a risk to carry.** If the ceiling in force is not 10 ms, gather in child instances solves a problem that may not exist, and PR 3 is the wrong next PR. The cheap decisive follow-up is `map` mode over the same 46 feeds, on the real parse path: §1 and §4 record that as a coin flip on identical input, so a run now is directly comparable against committed evidence in a way the synthetic burn is not. Neither `wrangler.toml` declares `[limits]`, so a per-script `cpu_ms` difference is already ruled out; the account plan is the remaining candidate and this instrument cannot see it. |
 | **A child instance is not a fresh CPU budget either.** This is the load-bearing inference in the whole design and it is **untested**. | Nothing measured it. It is adopted because it is the only remaining candidate with a mechanism story, and because `step.sleep` and retry are both measured *not* to be one. Criterion 2 is a repeated real run precisely because it is what decides — the same shape feature 002 used, and the same reason. If children do not help, the spec is wrong and the finding is worth as much as the fix would have been. |
 | **Free-tier limits on concurrent or daily Workflow instances are not recorded anywhere in this repo.** A design that creates ten instances per run may hit a ceiling nobody has cited. | `plan.md` must find and cite the number before choosing `GATHER_FEEDS_PER_CHILD`, and the design tolerates sequential children if concurrency is capped — children are independent, so running them one at a time costs wall-clock and nothing else. |
 | **Turning retries off removes a real recovery path** on the D1 and GitHub steps. | Accepted, and stated in the design section rather than buried. `fetchFeedItems` already insulates the gather path. Re-examine if a run fails on a step that would have recovered. |

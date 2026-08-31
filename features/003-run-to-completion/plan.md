@@ -90,7 +90,7 @@ step-result cap. `output` is typed `unknown`, so the parent validates rather tha
 
 **There is no blocking join.** Cloudflare documents that a parent "will not block waiting
 for the child Workflow to complete". Polling is the only documented mechanism, which is
-why work order step 3 has a poll loop rather than an await.
+why work order step 4 has a poll loop rather than an await.
 
 **Do not return a `WorkflowInstance` from a step body.** The docs' own examples do, while
 the same docs say objects containing functions cannot be serialized. Return
@@ -127,13 +127,13 @@ touch the same regex and each needs its own mutation row.
 
 ## Files
 
-### PR 1 — `75-plan-md` (Part 1 of 4)
+### PR 1 — `75-plan-md` (Part 1 of 5)
 
 | file | change |
 |---|---|
 | `features/003-run-to-completion/plan.md` | this file; replaces the unfilled template |
 
-### PR 2 — `75-no-retries` (Part 2 of 4)
+### PR 2 — `75-no-retries` (Part 2 of 5)
 
 | file | change |
 |---|---|
@@ -149,7 +149,22 @@ touch the same regex and each needs its own mutation row.
 | `test/trace.test.ts` | the policy is passed, with the exact shape |
 | `REVIEW.md` | pass 1 and pass 3 markers naming the new check ids |
 
-### PR 3 — `75-gather-children` (Part 3 of 4)
+### PR 3 — `75-verify-no-retries` (Part 3 of 5)
+
+Not in the original table. Work order step 2 gates PR 3 on verifying the retry policy on
+a deployed Worker, and that verification produced both a record and a finding large
+enough to be reviewable on its own.
+
+| file | change |
+|---|---|
+| `probe/probe.ts` | `noretry`, `noretry-cpu` and `cpu` modes; an unrecognised mode is now a 400 rather than a silent fall-through to `map` |
+| `probe/README.md` | the new modes, and the per-mode pass conditions, which differ and must not be swapped |
+| `probe/FINDINGS.md` | §7: which reading of `limit` held. §7.1: the CPU premise this feature is built on, measured not to hold |
+| `probe/captures/` | the instances, verbatim |
+| `features/003-run-to-completion/spec.md` | the measured reading, and the CPU finding as a stop in the risk table |
+| `features/003-run-to-completion/plan.md` | this entry, and `M` 4 → 5 |
+
+### PR 4 — `75-gather-children` (Part 4 of 5)
 
 | file | change |
 |---|---|
@@ -162,16 +177,22 @@ touch the same regex and each needs its own mutation row.
 | `test/workflow.test.ts` | parent creates the right children, sums counts, fails on a failed child |
 | `test/gather-workflow.test.ts` | new: the child's own behaviour |
 
-### PR 4 — `75-five-runs` (Part 4 of 4, closes the tracking issue)
+### PR 5 — `75-five-runs` (Part 5 of 5, closes the tracking issue)
 
 | file | change |
 |---|---|
 | `features/003-run-to-completion/spec.md` | the measured record of the five runs; `GATHER_FEEDS_PER_CHILD`'s final value and why |
-| `wrangler.toml` | that value, if step 4 tunes it |
+| `wrangler.toml` | that value, if step 5 tunes it |
 | `probe/captures/` | the five instance captures, committed as evidence |
 
-The PR exists whatever the runs show, so `M = 4` never has to be revised — the same
-device feature 002 used for its PR 6.
+The PR exists whatever the runs show, so its own existence never depends on the result —
+the same device feature 002 used for its PR 6.
+
+**`M` was revised anyway, 4 → 5, and by the case the device does not cover.** It protects
+against a PR whose *result* is unknown; it does not protect against a step of the work
+order turning out to need a PR of its own. Work order step 2's platform verification did,
+so it is PR 3 and the two implementation PRs shifted down. Recorded here rather than
+backdated, because the point of fixing `M` is that changing it is visible.
 
 ## Work order
 
@@ -202,8 +223,22 @@ though nothing will wait.
 **One row is the pass.** Six is the current behaviour and means the policy was ignored.
 Zero completed steps at all means `0` was read as "no attempts" — fall back to
 `{ limit: 1, delay: 0 }` and record which reading held, in `spec.md`. Do not proceed to
-step 3 until this is settled: building children on a Worker that still retries would make
-five consecutive runs take half an hour of backoff to fail.
+the children until this is settled: building them on a Worker that still retries would
+make five consecutive runs take half an hour of backoff to fail.
+
+**This became step 3 and PR 3.** It was measured on the probe rather than on
+`research-workflow`, because answering it on production would have meant shipping a fault
+injector in `src/`. `limit` is "maximum retries": one attempt row against a same-sitting
+control's three, with the steps before it completing. See `probe/FINDINGS.md` §7 and
+`spec.md`. The fallback is withdrawn.
+
+### 3. Verify the policy on the platform — PR 3
+
+The block above, carried out. It also produced a finding this plan did not anticipate and
+which now gates step 4: `FINDINGS.md` §7.1 measures one `run()` execution absorbing
+5x10^8 arithmetic iterations with no `1102`, four days after the same account was measured
+to fail on the third feed parse in an invocation. If the ceiling in force is not 10 ms,
+step 4 solves a problem that may not exist. `spec.md`'s risk table records it as a stop.
 
 **A new guard, because the seam is only a seam while nothing bypasses it.**
 `no-bare-step-do` stops a second `step.do`; nothing stops someone passing a *different*
@@ -220,7 +255,7 @@ a row that passes with its guard removed is dead, so remove each and confirm red
 retried, but `run()` still re-executes, so `step.do` bodies stay idempotent for the
 reason `spec.md` requirement 7 gives. Rewrite the rule to say that rather than deleting it.
 
-### 3. Gather in children — PR 3
+### 4. Gather in children — PR 4
 
 **The child.** `src/gather-workflow.ts`:
 
@@ -266,7 +301,7 @@ roughly 10 polls + the existing ~11 = far inside 1,024. Concurrency: 10 of 100.
 new spans, added to the allowlist in `src/lib/trace.ts` so
 `span-attributes-allowlisted` passes. Keep to the ~8-per-span rule: attributes are CPU.
 
-### 4. Five runs, and the record — PR 4
+### 5. Five runs, and the record — PR 5
 
 Deploy, then trigger five runs **consecutively**, each to a terminal state, capturing
 `wrangler workflows instances describe` for the parent and at least one child of each.
@@ -323,9 +358,9 @@ guard, confirm the check goes red, restore, confirm green. Record the pair in th
 | # | how |
 |---|---|
 | 1 | the command block above |
-| 2 | five consecutive deployed runs, captures committed (work order 4) |
+| 2 | five consecutive deployed runs, captures committed (work order 5) |
 | 3 | `grep -rn 'step\.do(' src/` returns only `src/lib/trace.ts`; a bare call inserted into `src/workflow.ts` fails `lint:ast` |
-| 4 | one attempt row in `describe` for a deliberately failing step (work order 2) |
+| 4 | one attempt row in `describe` for a deliberately failing step (work order 3). Measured on the probe, not on `research-workflow`, so this criterion stays open for PR 5 |
 | 5 | terminate a child mid-run; parent errors, `runs` row status is not a success |
 | 6 | re-run a child against a written `run_id`; `SELECT count(*)` unchanged |
 | 7 | vitest parity case: shortlist from children == shortlist from the current path, same inputs |
