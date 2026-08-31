@@ -64,6 +64,10 @@ export const ATTR_NEURONS = 'agent.neurons';
  * CLAUDE.md's message-in-an-attribute rule was never about.
  */
 export const ATTR_SUMMARIZE_SKIP_REASON = 'agent.summarize.skip_reason';
+/** Number of GatherWorkflow children, on the parent's `create-gather-children` / `await-gather-children` spans (feature 003). */
+export const ATTR_GATHER_CHILDREN = 'agent.gather.children';
+/** 0-based position among the parent's children, on a child's own `gather:*` span - see `GatherParams.index`'s doc comment. */
+export const ATTR_GATHER_CHILD_INDEX = 'agent.gather.child_index';
 
 // --- gen_ai.* ---------------------------------------------------------------
 // Matches AI Gateway's own exporter conventions, so the two line up if that

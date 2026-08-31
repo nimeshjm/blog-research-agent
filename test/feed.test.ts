@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { applyGatherWindow, parseFeed } from '../src/lib/feed';
 import type { ParseBound } from '../src/lib/feed';
 import type { ParsedItem } from '../src/lib/types';
-import { GATHER_UNDATED_MAX_PER_FEED, GATHER_WINDOW_DAYS } from '../src/workflow';
+import { GATHER_UNDATED_MAX_PER_FEED, GATHER_WINDOW_DAYS } from '../src/gather-workflow';
 
 /**
  * `applyGatherWindow` reads `publishedMs`; it no longer parses `publishedAt`

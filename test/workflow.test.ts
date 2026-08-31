@@ -3,13 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SEEN_URLS_CHUNK_SIZE, startRun, writeRunCandidates } from '../src/lib/d1';
 import { loadFeeds } from '../src/lib/feeds';
 import { InvalidDraftError } from '../src/lib/mdx';
-import type { ArticleSummary, Candidate, Draft, Env, Topic } from '../src/lib/types';
+import type { ArticleSummary, Candidate, Draft, Env, GatherParams, Topic } from '../src/lib/types';
 import {
+  createGatherChildren,
   DUPLICATE_TOKEN_THRESHOLD,
-  gatherCandidates,
-  GATHER_UNDATED_MAX_PER_FEED,
   isGrounded,
   openPullRequest,
+  pollGatherChildren,
   proposeTopic,
   selectTopic,
   SHORTLIST_MAX_CANDIDATES,
@@ -87,100 +87,167 @@ function topic(overrides: Partial<Topic> = {}): Topic {
   };
 }
 
-describe('gatherCandidates()', () => {
-  const runId = 'run-gather';
+/**
+ * A stateful fake of the `GATHER_WORKFLOW` binding surface `createGatherChildren`
+ * and `pollGatherChildren` touch - `createBatch` (create-time) and `get` (poll-time).
+ * `createBatch` throws when *any* supplied id already exists, matching
+ * `index.d.ts`'s documented behaviour (`WorkflowInstanceCreateOptions` /
+ * `Workflow.createBatch`) - not plan.md's "skips existing ids outright",
+ * which this fake deliberately does NOT implement, so a test against it
+ * would fail if `createGatherChildren` ever came to rely on that wrong
+ * premise instead of verifying via `get`.
+ */
+function fakeGatherWorkflow(): {
+  binding: Env['GATHER_WORKFLOW'];
+  created: Map<string, GatherParams>;
+  setStatus: (id: string, status: InstanceStatus) => void;
+} {
+  const created = new Map<string, GatherParams>();
+  const statuses = new Map<string, InstanceStatus>();
 
-  it('applies the recency window, attaches the source name, and persists to run_candidates', async () => {
-    const now = new Date();
-    const inWindow = new Date(now.getTime() - 5 * 24 * 60 * 60 * 1000).toUTCString();
-    const outOfWindow = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000).toUTCString();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        new Response(
-          rssFeed([
-            { title: 'Recent', url: 'https://example.com/recent', pubDate: inWindow },
-            { title: 'Old', url: 'https://example.com/old', pubDate: outOfWindow },
-          ]),
-        ),
-      ),
+  const binding = {
+    createBatch: async (options: WorkflowInstanceCreateOptions<GatherParams>[]) => {
+      for (const o of options) {
+        if (o.id !== undefined && created.has(o.id)) {
+          throw new Error(`Workflow instance ${o.id} already exists`);
+        }
+      }
+      for (const o of options) {
+        if (o.id === undefined) continue;
+        created.set(o.id, o.params as GatherParams);
+        if (!statuses.has(o.id)) statuses.set(o.id, { status: 'complete', output: 0 });
+      }
+      return options.map((o) => ({ id: o.id }) as unknown as WorkflowInstance);
+    },
+    get: async (id: string) => {
+      if (!created.has(id)) throw new Error(`Workflow instance ${id} does not exist`);
+      return { id, status: async () => statuses.get(id) ?? { status: 'complete', output: 0 } } as unknown as WorkflowInstance;
+    },
+  } as unknown as Env['GATHER_WORKFLOW'];
+
+  return { binding, created, setStatus: (id, status) => statuses.set(id, status) };
+}
+
+describe('createGatherChildren()', () => {
+  it('chunks sources into GATHER_FEEDS_PER_CHILD-sized groups with deterministic ids', async () => {
+    const fake = fakeGatherWorkflow();
+    const gatherEnv: Env = { ...env, GATHER_WORKFLOW: fake.binding, GATHER_FEEDS_PER_CHILD: '3' };
+    const sources = Array.from({ length: 7 }, (_, i) => ({ name: `Feed ${i}`, feedUrl: `https://feed.test.example/${i}.xml` }));
+
+    const ids = await createGatherChildren(gatherEnv, 'parent-1', sources);
+
+    expect(ids).toEqual(['parent-1-g0', 'parent-1-g1', 'parent-1-g2']);
+    expect(fake.created.get('parent-1-g0')?.sources).toHaveLength(3);
+    expect(fake.created.get('parent-1-g1')?.sources).toHaveLength(3);
+    expect(fake.created.get('parent-1-g2')?.sources).toHaveLength(1);
+    // runId on every child is the PARENT's instance id, not a child-specific one.
+    expect(fake.created.get('parent-1-g0')?.runId).toBe('parent-1');
+    expect(fake.created.get('parent-1-g2')?.index).toBe(2);
+  });
+
+  it('is idempotent on replay: a second call against an already-created id set does not throw and returns the same ids', async () => {
+    const fake = fakeGatherWorkflow();
+    const gatherEnv: Env = { ...env, GATHER_WORKFLOW: fake.binding, GATHER_FEEDS_PER_CHILD: '3' };
+    const sources = Array.from({ length: 4 }, (_, i) => ({ name: `Feed ${i}`, feedUrl: `https://feed.test.example/${i}.xml` }));
+
+    const first = await createGatherChildren(gatherEnv, 'parent-replay', sources);
+    // createBatch would throw here for real (index.d.ts: "if a provided id
+    // exists, an error will be thrown") - this proves that is recovered
+    // rather than propagated.
+    const second = await createGatherChildren(gatherEnv, 'parent-replay', sources);
+
+    expect(second).toEqual(first);
+    expect(fake.created.size).toBe(2); // not doubled
+  });
+
+  it('a genuine creation failure (not a duplicate id) still throws', async () => {
+    const failing: Env['GATHER_WORKFLOW'] = {
+      createBatch: async () => {
+        throw new Error('quota exceeded');
+      },
+      get: async () => {
+        throw new Error('Workflow instance does not exist');
+      },
+    } as unknown as Env['GATHER_WORKFLOW'];
+    const gatherEnv: Env = { ...env, GATHER_WORKFLOW: failing, GATHER_FEEDS_PER_CHILD: '10' };
+
+    await expect(createGatherChildren(gatherEnv, 'parent-fail', [{ name: 'F', feedUrl: 'https://feed.test.example/f.xml' }])).rejects.toThrow(
+      'quota exceeded',
     );
+  });
+});
 
-    const count = await gatherCandidates(env, runId, { name: 'Fixture', feedUrl: 'https://feed.test.example/x.xml' });
+describe('pollGatherChildren()', () => {
+  async function createChildren(
+    count: number,
+  ): Promise<{ fake: ReturnType<typeof fakeGatherWorkflow>; gatherEnv: Env; ids: string[] }> {
+    const fake = fakeGatherWorkflow();
+    const gatherEnv: Env = { ...env, GATHER_WORKFLOW: fake.binding, GATHER_FEEDS_PER_CHILD: '1' };
+    const sources = Array.from({ length: count }, (_, i) => ({ name: `Feed ${i}`, feedUrl: `https://feed.test.example/${i}.xml` }));
+    const ids = await createGatherChildren(gatherEnv, 'parent-poll', sources);
+    return { fake, gatherEnv, ids };
+  }
 
-    expect(count).toBe(1);
-    const rows = await env.DB.prepare(`SELECT url, title, source_name FROM run_candidates WHERE run_id = ?`)
-      .bind(runId)
-      .all<{ url: string; title: string; source_name: string }>();
-    expect(rows.results).toEqual([{ url: 'https://example.com/recent', title: 'Recent', source_name: 'Fixture' }]);
+  it('sums each complete child output once every child is complete', async () => {
+    const { fake, gatherEnv, ids } = await createChildren(2);
+    fake.setStatus(ids[0]!, { status: 'complete', output: 3 });
+    fake.setStatus(ids[1]!, { status: 'complete', output: 4 });
+
+    const result = await pollGatherChildren(gatherEnv, ids, 0);
+
+    expect(result).toEqual({ done: true, total: 7 });
   });
 
-  it('a full day of dated items is not truncated', async () => {
-    const items = Array.from({ length: 352 }, (_, i) => ({
-      title: `Paper ${i}`,
-      url: `https://arxiv.example/abs/${i}`,
-      pubDate: new Date().toUTCString(),
-    }));
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(rssFeed(items))));
+  it('returns done: false while any child has not reached complete', async () => {
+    const { fake, gatherEnv, ids } = await createChildren(2);
+    fake.setStatus(ids[0]!, { status: 'complete', output: 3 });
+    fake.setStatus(ids[1]!, { status: 'running' });
 
-    const count = await gatherCandidates(env, runId, { name: 'arXiv cs.AI (fixture)', feedUrl: 'https://feed.test.example/arxiv.xml' });
+    const result = await pollGatherChildren(gatherEnv, ids, 0);
 
-    expect(count).toBe(352);
+    expect(result).toEqual({ done: false, total: 0 });
   });
 
-  it(`caps undated items at ${GATHER_UNDATED_MAX_PER_FEED}`, async () => {
-    const items = Array.from({ length: GATHER_UNDATED_MAX_PER_FEED + 10 }, (_, i) => ({
-      title: `Undated ${i}`,
-      url: `https://example.com/undated-${i}`,
-    }));
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(rssFeed(items))));
+  it('fails (visibly) the moment a child is errored, rather than contributing zero silently', async () => {
+    const { fake, gatherEnv, ids } = await createChildren(2);
+    fake.setStatus(ids[0]!, { status: 'errored', error: { name: 'Error', message: 'boom' } });
+    fake.setStatus(ids[1]!, { status: 'complete', output: 1 });
 
-    const count = await gatherCandidates(env, runId, { name: 'Fixture', feedUrl: 'https://feed.test.example/undated.xml' });
-
-    expect(count).toBe(GATHER_UNDATED_MAX_PER_FEED);
+    await expect(pollGatherChildren(gatherEnv, ids, 0)).rejects.toThrow(/errored/);
   });
 
-  it('a dead feed (non-2xx) contributes zero candidates rather than failing the step', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
-    const count = await gatherCandidates(env, runId, { name: 'Dead feed', feedUrl: 'https://feed.test.example/dead.xml' });
-    expect(count).toBe(0);
+  it('fails when a child is terminated', async () => {
+    const { fake, gatherEnv, ids } = await createChildren(1);
+    fake.setStatus(ids[0]!, { status: 'terminated' });
+
+    await expect(pollGatherChildren(gatherEnv, ids, 0)).rejects.toThrow(/terminated/);
   });
 
-  it('a network error contributes zero candidates rather than failing the step', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => {
-        throw new Error('network down');
-      }),
-    );
-    const count = await gatherCandidates(env, runId, { name: 'Unreachable', feedUrl: 'https://feed.test.example/unreachable.xml' });
-    expect(count).toBe(0);
+  it('fails rather than hangs once the poll round cap is reached', async () => {
+    const { fake, gatherEnv, ids } = await createChildren(1);
+    fake.setStatus(ids[0]!, { status: 'running' });
+
+    await expect(pollGatherChildren(gatherEnv, ids, 1000)).rejects.toThrow(/still not complete/);
   });
 
-  it('a re-run against the same run_id leaves the row count unchanged (acceptance criterion 8)', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        new Response(
-          rssFeed([
-            { title: 'A', url: 'https://example.com/repeat-a', pubDate: new Date().toUTCString() },
-            { title: 'B', url: 'https://example.com/repeat-b', pubDate: new Date().toUTCString() },
-          ]),
-        ),
-      ),
-    );
-    const source = { name: 'Repeatable', feedUrl: 'https://feed.test.example/repeatable.xml' };
+  // Pins the cap's arithmetic (GATHER_POLL_SUBREQUEST_BUDGET / children) at a
+  // concrete child count, the way test/workflow.test.ts's STALE_AGE_HOURS /
+  // LIVE_AGE_HOURS pin TOPIC_CLAIM_TTL_HOURS - not the round number above,
+  // which only proves "a large round eventually fails" and would stay green
+  // even if the derivation inverted.
+  it('at 5 children (GATHER_FEEDS_PER_CHILD default), the derived cap is round 6, not a fixed round count', async () => {
+    const { fake, gatherEnv, ids } = await createChildren(5);
+    for (const id of ids) fake.setStatus(id, { status: 'running' });
 
-    // writeRunCandidates itself is proven idempotent at the row level in
-    // test/d1.test.ts; this proves the same property through gatherCandidates'
-    // own step body (fetch + parse + window + write), not just the write.
-    await gatherCandidates(env, runId, source);
-    await gatherCandidates(env, runId, source);
+    await expect(pollGatherChildren(gatherEnv, ids, 5)).resolves.toEqual({ done: false, total: 0 });
+    await expect(pollGatherChildren(gatherEnv, ids, 6)).rejects.toThrow(/still not complete after 6 polls/);
+  });
 
-    const rows = await env.DB.prepare(`SELECT COUNT(*) as n FROM run_candidates WHERE run_id = ? AND source_name = ?`)
-      .bind(runId, source.name)
-      .first<{ n: number }>();
-    expect(rows?.n).toBe(2);
+  it('validates a complete child\'s output rather than casting it - a non-count output fails the step', async () => {
+    const { fake, gatherEnv, ids } = await createChildren(1);
+    fake.setStatus(ids[0]!, { status: 'complete', output: 'not-a-count' });
+
+    await expect(pollGatherChildren(gatherEnv, ids, 0)).rejects.toThrow(/non-count/);
   });
 });
 

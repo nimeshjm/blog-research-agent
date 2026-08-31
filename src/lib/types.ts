@@ -3,6 +3,8 @@ export interface Env {
   AI: Ai;
   DB: D1Database;
   RESEARCH_WORKFLOW: Workflow<ResearchParams>;
+  /** feature 003: the child Workflow gather runs in, not the parent's own steps. See src/gather-workflow.ts. */
+  GATHER_WORKFLOW: Workflow<GatherParams>;
 
   BLOG_REPO: string;
   BLOG_BASE_BRANCH: string;
@@ -12,6 +14,8 @@ export interface Env {
   NEURON_BUDGET_PER_RUN: string;
   /** Base URL for the GitHub REST client (src/lib/github.ts). Keeps that file free of a URL literal. */
   GITHUB_API_BASE: string;
+  /** How many feeds one GatherWorkflow child parses. See its own comment in src/workflow.ts for the subrequest arithmetic this is sized against. */
+  GATHER_FEEDS_PER_CHILD: string;
 
   /** Set with `wrangler secret put GITHUB_TOKEN`. Never in wrangler.toml. */
   GITHUB_TOKEN: string;
@@ -114,6 +118,32 @@ export interface ResearchParams {
   triggeredAt: string;
   /** Set to skip topic selection and research a specific queue row. */
   topicId?: number;
+}
+
+/**
+ * `GatherWorkflow`'s input (feature 003, spec.md's "Gather in child
+ * instances"). One instance per chunk of `GATHER_FEEDS_PER_CHILD` feeds.
+ */
+export interface GatherParams {
+  /**
+   * The PARENT's Workflow instance id, deliberately not the child's own -
+   * children write into the parent's `run_candidates` rows under this id, so
+   * `shortlist` (keyed on the run/parent id) needs no change at all.
+   */
+  runId: string;
+  sources: Source[];
+  /** 0-based position among the parent's children. Carried only for the `agent.gather.child_index` span attribute - never used to derive a step name (that stays the static `gather:<feed name>` literal). */
+  index: number;
+}
+
+/**
+ * Outcome of one `await-gather-children` poll round (src/workflow.ts).
+ * `done: false` means at least one child has not yet reached `complete`;
+ * `total` is meaningless until `done` is true.
+ */
+export interface GatherPollResult {
+  done: boolean;
+  total: number;
 }
 
 /** Recorded in the `runs` table for observability and budget tracking. */

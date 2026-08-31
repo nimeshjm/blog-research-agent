@@ -425,8 +425,8 @@ const rows = [
       mustReplace(
         dir,
         'src/workflow.ts',
-        "import {\n  ATTR_NEURONS_BUDGET,",
-        "import {\n  ATTR_NEURONS_BUDGET,\n  traced,",
+        "import {\n  ATTR_GATHER_CHILDREN,",
+        "import {\n  ATTR_GATHER_CHILDREN,\n  traced,",
       );
     },
   },
@@ -448,8 +448,8 @@ const rows = [
       mustReplace(
         dir,
         'src/workflow.ts',
-        "import {\n  ATTR_NEURONS_BUDGET,",
-        "import {\n  ATTR_NEURONS_BUDGET,\n  traced,",
+        "import {\n  ATTR_GATHER_CHILDREN,",
+        "import {\n  ATTR_GATHER_CHILDREN,\n  traced,",
       );
     },
   },
@@ -627,6 +627,17 @@ const rows = [
       mustReplace(dir, 'src/lib/trace.ts', 'export function tracerFor(', 'export function tracerForRenamed(');
       mustReplace(dir, 'src/workflow.ts', 'tracerFor,\n} from', 'tracerForRenamed,\n} from');
       mustReplace(dir, 'src/workflow.ts', 'tracerFor(step, event)', 'tracerForRenamed(step, event)');
+      // feature 003 (#75) gave GatherWorkflow its own tracerFor(step, event)
+      // call in a second file - left unrenamed, its step-name calls alone
+      // would still clear the sentinel and this row would stop proving what
+      // its name says.
+      mustReplace(
+        dir,
+        'src/gather-workflow.ts',
+        "ATTR_GATHER_CHILD_INDEX, ATTR_SOURCES_GATHERED, tracerFor } from './lib/trace'",
+        "ATTR_GATHER_CHILD_INDEX, ATTR_SOURCES_GATHERED, tracerForRenamed } from './lib/trace'",
+      );
+      mustReplace(dir, 'src/gather-workflow.ts', 'tracerFor(step, event)', 'tracerForRenamed(step, event)');
     },
   },
   // -------------------------------------------------------------------------

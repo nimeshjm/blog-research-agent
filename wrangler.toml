@@ -52,6 +52,16 @@ NEURON_BUDGET_PER_RUN = "6000"
 # Base URL for src/lib/github.ts's REST client. Kept here, not a literal in
 # that file, so no-hardcoded-urls has nothing to flag.
 GITHUB_API_BASE = "https://api.github.com"
+# How many feeds one GatherWorkflow child parses (feature 003, spec.md
+# requirement 3). Sized against the 50-subrequest-per-invocation ceiling
+# (#75, run `0199648c`), not CPU (spec.md's amendment: that rationale is
+# dead): gatherCandidates costs one fetch plus one D1 batch() call per feed,
+# two Workers subrequests, so 10 feeds is 20 of 50 - comfortable margin
+# against a boundary nobody has measured to fall mid-child. See
+# createGatherChildren's comment in src/workflow.ts for the full arithmetic,
+# including the parent-side polling trade this number does NOT optimize for.
+# 46 feeds / 10 gives 5 children.
+GATHER_FEEDS_PER_CHILD = "10"
 
 # Secrets (never put these here - use `wrangler secret put <NAME>`):
 #   GITHUB_TOKEN  fine-grained PAT, contents:write + pull_requests:write,
@@ -69,6 +79,14 @@ database_id = "e6ca4edb-ab56-45e1-a862-257741d5231f"
 name = "research-workflow"
 binding = "RESEARCH_WORKFLOW"
 class_name = "ResearchWorkflow"
+
+# feature 003: gather's own Workflow, so its fetches and D1 writes get a
+# fresh 50-subrequest budget instead of sharing the parent's. See
+# GATHER_FEEDS_PER_CHILD above and src/gather-workflow.ts.
+[[workflows]]
+name = "gather-workflow"
+binding = "GATHER_WORKFLOW"
+class_name = "GatherWorkflow"
 
 [observability]
 enabled = true
