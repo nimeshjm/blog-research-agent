@@ -130,6 +130,29 @@ attempt two will fail the run instead. The gather path is insulated from that by
 `fetchFeedItems`; the D1 and GitHub paths are not. That is the trade the directive makes
 and it should be re-examined if a run starts failing on a step that would have recovered.
 
+**Which reading of `limit` held — measured 2026-08-31, after PR #82 deployed.**
+`plan.md` question 2 recorded an ambiguity the docs do not settle: `limit` is "the total
+number of attempts to make for a step" on one page and "maximum number of retries per
+step" on another, and under the first reading `0` would mean the step never runs at all.
+It is the second. Two probe instances triggered within a second of each other
+(`probe/FINDINGS.md` §7, captures `3f5770ac` and `f95f58da`):
+
+| | `{ retries: { limit: 0, delay: 0 } }` | platform default (control) |
+|---|---|---|
+| the two steps before the failing one | both completed | both completed |
+| attempt rows on the failing step | **1** | **3** |
+| instance | errored in 0 s | completed after 30 s of backoff |
+
+The markers completing is what rules out the "total attempts" reading; one row against
+three is the policy being honoured. **The recorded fallback to `{ limit: 1, delay: 0 }`
+is not needed and is withdrawn.**
+
+This is *not* acceptance criterion 4, which asks for an attempt row on
+`research-workflow` itself. The probe's failing step throws an `Error`; production's
+failure is `1102`, a platform CPU kill, and whether a CPU kill honours `retries` is
+untested — the probe's two CPU runs never produced one (below). Criterion 4 stays open
+for PR 4's captures.
+
 ### Gather in child instances
 
 The parent workflow keeps `select-topic`, `load-sources`, `shortlist`, synthesis and the
@@ -206,6 +229,7 @@ margin rather than fitted to two data points.
 
 | risk | mitigation |
 |---|---|
+| **The premise the whole feature is built on may no longer hold.** Measured 2026-08-31 (`FINDINGS.md` §7.1): a single `run()` execution absorbed 5x10^8 arithmetic iterations — roughly 700 ms, two orders of magnitude past the documented 10 ms — in one isolate with no boundary and **no `1102`**. Four days earlier the same account was measured to fail on the third feed parse in an invocation. Both cannot be true of the same platform. | **Not mitigated. This is a stop, not a risk to carry.** If the ceiling in force is not 10 ms, gather in child instances solves a problem that may not exist, and PR 3 is the wrong next PR. The cheap decisive follow-up is `map` mode over the same 46 feeds: §1 and §4 record that as a coin flip on identical input, so a clean completion now is directly comparable against committed evidence. Neither `wrangler.toml` declares `[limits]`, so a per-script `cpu_ms` difference is already ruled out; the account plan is the remaining candidate and this instrument cannot see it. |
 | **A child instance is not a fresh CPU budget either.** This is the load-bearing inference in the whole design and it is **untested**. | Nothing measured it. It is adopted because it is the only remaining candidate with a mechanism story, and because `step.sleep` and retry are both measured *not* to be one. Criterion 2 is a repeated real run precisely because it is what decides — the same shape feature 002 used, and the same reason. If children do not help, the spec is wrong and the finding is worth as much as the fix would have been. |
 | **Free-tier limits on concurrent or daily Workflow instances are not recorded anywhere in this repo.** A design that creates ten instances per run may hit a ceiling nobody has cited. | `plan.md` must find and cite the number before choosing `GATHER_FEEDS_PER_CHILD`, and the design tolerates sequential children if concurrency is capped — children are independent, so running them one at a time costs wall-clock and nothing else. |
 | **Turning retries off removes a real recovery path** on the D1 and GitHub steps. | Accepted, and stated in the design section rather than buried. `fetchFeedItems` already insulates the gather path. Re-examine if a run fails on a step that would have recovered. |
