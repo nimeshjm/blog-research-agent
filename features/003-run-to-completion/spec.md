@@ -150,9 +150,9 @@ is not needed and is withdrawn.**
 **And it covers a `1102`, not only a thrown error.** Four probe instances made to exceed
 the CPU limit deliberately (`FINDINGS.md` §7.2, `da873328` / `b292794e` / `0c23546e` /
 `a32b6d53`) each produced exactly one attempt row and errored the instance. That is the
-case requirement 1 exists for. The default-config control did not reproduce — it took one
-attempt and then sat `Running` — so this measures what the policy does, not what the
-default would have done.
+case requirement 1 exists for. The default-config control did not reproduce — one attempt, then
+`Running` for at least 14 minutes with no second attempt — so this measures what the
+policy does, not what the default would have done.
 
 This is still *not* acceptance criterion 4, which names `research-workflow` itself.
 Criterion 4 stays open for PR 5's captures.

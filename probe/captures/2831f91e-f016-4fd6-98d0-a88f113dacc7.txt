@@ -9,7 +9,7 @@ Status:                ▶ Running
 Trigger:               🔗 Binding
 Queued:                31/08/2026, 11:16:39
 Start:                 31/08/2026, 11:16:40
-Duration:              53 minutes
+Duration:              52 minutes
 Last Successful Step:  cpu:before-2-1
 Steps:
 
@@ -42,9 +42,9 @@ Steps:
   Name:        cpu:burns-1
   Type:        🎯 Step
   Start:       31/08/2026, 11:16:40
-  Duration:    53 minutes
+  Duration:    52 minutes
   Success:     ▶ Running
-  Retries At:  31/08/2026, 11:16:50 (in 7 minutes from now)
+  Retries At:  31/08/2026, 11:16:50 (in 8 minutes from now)
   Output:      null
 ┌──────────────────────┬──────────────────────┬───────────┬──────────┬────────────────────────────────────────┐
 │ Start                │ End                  │ Duration  │ State    │ Error                                  │

@@ -410,8 +410,9 @@ each capture — a `grep` for the error string also matches the instance header 
 returns 2 for a single-attempt step.
 
 **The control did not reproduce, and that is recorded rather than left implied.**
-`2831f91e` is the same 5x10^9 burn under the platform default. It shows one attempt row
-and stayed `Running` rather than retrying promptly or terminating. Production's run in
+`2831f91e` is the same 5x10^9 burn under the platform default. It took one attempt and
+then stayed `Running` for **at least 14 minutes** with no second attempt row and no
+terminal state — polled once a minute throughout. Production's run in
 [#75](https://github.com/nimeshjm/blog-research-agent/issues/75) got six attempts across
 five minutes on a real `1102`; this control got one and then sat. So the table above says
 what the policy does, and **nothing here establishes what the default would have done to
