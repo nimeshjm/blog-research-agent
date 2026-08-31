@@ -143,7 +143,9 @@ and it should be re-examined if a run starts failing on a step that would have r
 >
 > Read every CPU justification below as the reason this was *first* proposed, not as the
 > reason it is still wanted. Requirement 6 (the design must not depend on the per-child
-> feed count) and acceptance criterion 2 are unaffected.
+> feed count) is unaffected. Acceptance criterion 2 was **not** unaffected and has been
+> rewritten — see it for why its original wording would have passed the very run that
+> exposed all of this.
 
 
 The parent workflow keeps `select-topic`, `load-sources`, `shortlist`, synthesis and the
@@ -194,7 +196,26 @@ margin rather than fitted to two data points.
 1. `npx wrangler deploy --dry-run` resolves every binding; `npm run typecheck`,
    `lint:ast`, `lint:ts`, `review:checks` and every mutation table pass.
 2. **Five consecutive runs against the deployed Worker each gather all 46 feeds and reach
-   `shortlist`, with no step reporting `Worker exceeded CPU time limit`.**
+   a successful terminal state — a `runs` row with `status = 'succeeded'` and a non-null
+   `pr_url` — with no step failing on a platform limit and no `summarize` step recording
+   a `fetch-threw` skip.**
+
+   **Rewritten 2026-08-31 (#75). The original wording would have graded a failing run a
+   pass**, and it is worth being exact about how, because the same trap will be there for
+   the next criterion someone writes against a symptom.
+
+   It read: *"gather all 46 feeds and reach `shortlist`, with no step reporting `Worker
+   exceeded CPU time limit`."* Run `0199648c` gathered all 46 feeds, reached `shortlist`,
+   and reported no CPU error — and then skipped every one of its 15 articles with `Too
+   many subrequests by single Worker invocation.`, spent zero neurons, and recorded
+   `insufficient_sources`. Two independent faults: the named error is no longer the one
+   that occurs, and `shortlist` is upstream of where the run now dies.
+
+   So the criterion is stated against the **outcome** rather than a symptom. A run that
+   opens a pull request cannot have been starved of CPU, subrequests or articles,
+   whatever the platform's failure message says next month. The `fetch-threw` clause is
+   the one symptom kept, because #85 made it self-reporting and because a run can reach
+   `succeeded` on a thin set of articles without it being visible in the `runs` row.
 
    Five, not one, and consecutive, not five of seven. Feature 002's criterion 5 was a
    single real run, and fact 1 makes a single run a coin: three of five identical probe
@@ -225,7 +246,7 @@ margin rather than fitted to two data points.
 | **Turning retries off removes a real recovery path** on the D1 and GitHub steps. | Accepted, and stated in the design section rather than buried. `fetchFeedItems` already insulates the gather path. Re-examine if a run fails on a step that would have recovered. |
 | **Polling children costs subrequests and parent CPU.** | One subrequest per child per poll, in a parent step that parses nothing. The parent's cost is counts and status reads; requirement 5 is what keeps it that way. |
 | **The failure is non-deterministic, so a green run proves less than it looks.** | Criterion 2 requires five consecutive, with the arithmetic stated. This risk is the reason that criterion is not "a run completes". |
-| **Per-feed CPU cost is still unmeasured**, so `GATHER_FEEDS_PER_CHILD` cannot be derived. | Requirement 6 keeps the design independent of the number. The value is chosen with margin in `plan.md`, and criterion 2 is what validates it. |
+| **Per-feed subrequest cost, not CPU, is what sizes `GATHER_FEEDS_PER_CHILD`** — corrected 2026-08-31 (#75); CPU is no longer the binding resource. | Requirement 6 keeps the design independent of the number. Unlike CPU, this one *is* measurable ahead of a run: a feed costs one fetch plus its D1 write. Criterion 2 still validates the choice. |
 
 ## Divergences from `intent.md`
 
