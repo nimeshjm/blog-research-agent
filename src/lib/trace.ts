@@ -54,6 +54,16 @@ export const ATTR_INSTANCE_ID = 'agent.workflow.instance_id';
 export const ATTR_WORKFLOW_NAME = 'agent.workflow.name';
 /** Per-call neuron cost, set in `llm.ts` from the existing `neuronsFor()`. */
 export const ATTR_NEURONS = 'agent.neurons';
+/**
+ * Low-cardinality enum naming why a `summarize:*` step skipped an article
+ * (see `SummarizeSkipReason` in `workflow.ts`). Set only on a skip. The
+ * higher-detail diagnostics (HTTP status, a truncated fetch-error message)
+ * live in that step's *output*, not here - a span attribute is enforced
+ * fields-only by `span-attributes-allowlisted`, and a step's return value,
+ * read via `wrangler workflows instances describe`, is a separate channel
+ * CLAUDE.md's message-in-an-attribute rule was never about.
+ */
+export const ATTR_SUMMARIZE_SKIP_REASON = 'agent.summarize.skip_reason';
 
 // --- gen_ai.* ---------------------------------------------------------------
 // Matches AI Gateway's own exporter conventions, so the two line up if that

@@ -37,6 +37,7 @@ import {
   ATTR_SOURCES_GATHERED,
   ATTR_SOURCES_SHORTLISTED,
   ATTR_SOURCES_USED,
+  ATTR_SUMMARIZE_SKIP_REASON,
   ATTR_TOPIC_ID,
   tracerFor,
 } from './lib/trace';
@@ -178,8 +179,10 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
       // stays out of every span attribute - REVIEW.md pass 2 forbids a URL
       // there - even though it still passes through to step.do unchanged,
       // because that is the replay key.
-      const result = await traceStep(`summarize:${candidate.url}`, {}, async () => {
-        return summarizeArticle(this.env, candidate, topic);
+      const result = await traceStep(`summarize:${candidate.url}`, {}, async (span) => {
+        const outcome = await summarizeArticle(this.env, candidate, topic);
+        if (outcome.skipReason !== undefined) span.setAttribute(ATTR_SUMMARIZE_SKIP_REASON, outcome.skipReason);
+        return outcome;
       });
       neuronsSpent += result.neurons;
       if (result.summary !== null) summaries.push(result.summary);
@@ -604,6 +607,44 @@ export async function shortlistCandidates(env: Env, runId: string, topic: Topic)
 }
 
 /**
+ * Every way `summarizeArticle` can skip an article without failing the run.
+ * Machine-readable so a `describe`d step output (or the `agent.summarize.skip_reason`
+ * span attribute) can say *which* early return fired instead of collapsing
+ * all of them into one indistinguishable `summary: null` - the gap that made
+ * a real run (525a5386-deb0-4d4b-8242-d4246462884e, 2026-08-31) where all 15
+ * `summarize` steps skipped look identical whether that was one shared cause
+ * or 15 unrelated ones.
+ */
+export type SummarizeSkipReason = 'fetch-threw' | 'http-error' | 'empty-extract' | 'truncated' | 'unparseable';
+
+/**
+ * `errorMessage` and `status` are diagnostics for the *step output* only -
+ * `wrangler workflows instances describe` persists whatever `summarizeArticle`
+ * returns, which is the only channel that survived to read the deployed run
+ * this type was added for. They must never reach a span attribute: CLAUDE.md
+ * forbids an error message (or a URL) there, constructor name only via
+ * `error.type` - see `ATTR_SUMMARIZE_SKIP_REASON`'s comment in `trace.ts` for
+ * why the step output is a different, permitted channel.
+ */
+export interface SummarizeResult {
+  summary: ArticleSummary | null;
+  neurons: number;
+  skipReason?: SummarizeSkipReason;
+  /** Set only for `skipReason: 'http-error'`. */
+  status?: number;
+  /** Set only for `skipReason: 'fetch-threw'`, capped so a huge message can't bloat the step output. */
+  errorMessage?: string;
+}
+
+const ERROR_MESSAGE_MAX_LEN = 100;
+
+/** A Cloudflare subrequest-limit failure surfaces as a plain `Error` - the message, not the constructor, carries the signal. */
+function truncatedMessage(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.length > ERROR_MESSAGE_MAX_LEN ? message.slice(0, ERROR_MESSAGE_MAX_LEN) : message;
+}
+
+/**
  * One fetch, streamed extraction (`src/lib/extract.ts`), one `Llm` call.
  * Returns `summary: null` - never throws for anything short of the `Llm`
  * call itself failing - so one bad article (unfetchable, unextractable, or a
@@ -612,21 +653,17 @@ export async function shortlistCandidates(env: Env, runId: string, topic: Topic)
  * actually spent them, so the budget gate in `run()` stays accurate even
  * when the article was a bust.
  */
-export async function summarizeArticle(
-  env: Env,
-  candidate: Candidate,
-  topic: Topic,
-): Promise<{ summary: ArticleSummary | null; neurons: number }> {
+export async function summarizeArticle(env: Env, candidate: Candidate, topic: Topic): Promise<SummarizeResult> {
   let response: Response;
   try {
     response = await fetch(candidate.url);
-  } catch {
-    return { summary: null, neurons: 0 };
+  } catch (err) {
+    return { summary: null, neurons: 0, skipReason: 'fetch-threw', errorMessage: truncatedMessage(err) };
   }
-  if (!response.ok) return { summary: null, neurons: 0 };
+  if (!response.ok) return { summary: null, neurons: 0, skipReason: 'http-error', status: response.status };
 
   const articleText = await extractArticleText(response);
-  if (articleText === '') return { summary: null, neurons: 0 };
+  if (articleText === '') return { summary: null, neurons: 0, skipReason: 'empty-extract' };
 
   const llm = createLlm(env);
   const result = await llm.complete({
@@ -638,14 +675,15 @@ export async function summarizeArticle(
   // A truncated completion's text (if any survived) is not trustworthy JSON
   // - skip parsing it rather than risk parseMapResponse accepting a
   // partial/malformed object by accident.
-  if (result.finishReason === 'length') return { summary: null, neurons };
+  if (result.finishReason === 'length') return { summary: null, neurons, skipReason: 'truncated' };
 
-  // Never throws on a rejection (see parseMapResponse's doc comment) and the
-  // specific reason is discarded rather than surfaced: one bad article must
-  // not fail the run, so there is no caller here to hand a diagnosis to -
-  // unlike synthesizeDraft, which does throw and reports it below.
+  // Never throws on a rejection (see parseMapResponse's doc comment). The
+  // parser's own finer-grained reason is still discarded: one bad article
+  // must not fail the run, and distinguishing it from a truncated completion
+  // is as far as this caller needs to go - unlike synthesizeDraft, which does
+  // throw and reports its ReduceParseFailure below.
   const parsed = parseMapResponse(result.text);
-  if (!parsed.ok) return { summary: null, neurons };
+  if (!parsed.ok) return { summary: null, neurons, skipReason: 'unparseable' };
 
   return {
     summary: { url: candidate.url, title: candidate.title, ...parsed.value },
