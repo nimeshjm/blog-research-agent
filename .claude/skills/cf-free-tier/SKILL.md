@@ -20,7 +20,7 @@ inference. These are the limits that actually bite, and what each one forces.
 | Max non-stream step result | 1 MiB | Workflows limits docs, read 2026-08-28 (#75) |
 | Cron trigger wall-clock | 15 min per run | Workers limits docs |
 | Cron triggers | 5 per account | Workers limits docs |
-| Subrequests | **50 per request/step** | Workers limits docs |
+| Subrequests | **50 per invocation** — shared across every step the runtime packs into one | Workers limits docs; measured 2026-08-31 (#75), run `0199648c` |
 | Requests | 100,000/day | Workers limits docs |
 | Workers AI | **10,000 neurons/day** | Workers AI pricing |
 | D1 | 10 DBs, 500 MB each, **50 queries/invocation**, **100 bound params/query** | D1 limits docs |
@@ -46,8 +46,12 @@ outer boundary with no per-unit reprieve. A Workflow gives every step a wall-clo
 exemption and the *chance* of a fresh CPU budget described above. Moving logic back into
 the handler is the single most likely way to break this agent.
 
-**One fetch per step.** 50 subrequests per step sounds generous until a redirect chain
-counts against it. Keep it to one primary fetch and its redirects.
+**One fetch per step, and count the whole run anyway.** The 50 is per *invocation*, and
+consecutive steps share one. Run `0199648c` (2026-08-31) spent it on 46 gather steps
+and then failed all 15 article fetches with `Too many subrequests by single Worker
+invocation.` D1, KV and AI binding calls count too, as does every redirect. One fetch
+per step is necessary and not sufficient: if a run needs more than ~50 subrequests
+end to end, it needs more than one invocation, which today means a child instance.
 
 **Prefer streaming parsers.** Use `HTMLRewriter` for HTML rather than regex over a full
 body — it streams and keeps large documents out of the CPU budget. Cap extracted text

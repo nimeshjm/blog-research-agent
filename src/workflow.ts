@@ -105,8 +105,10 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
       return;
     }
 
-    // 2. One step per feed. 50 subrequests per step on the free plan, so a
-    //    single feed fetch per step leaves generous headroom for redirects.
+    // 2. One step per feed. The free plan's 50 subrequests are per invocation,
+    //    not per step (#75, run `0199648c`), so one fetch per step bounds this
+    //    loop's share but does not bound the run: 46 of these exhausted the
+    //    budget before a single article could be fetched.
     //    Parsing only - dedupe is batched in `shortlist`, because a per-item
     //    seen_urls query would blow both the 10 ms CPU and the 50-query budget.
     //    Each gather applies GATHER_WINDOW_DAYS before returning. That is not
