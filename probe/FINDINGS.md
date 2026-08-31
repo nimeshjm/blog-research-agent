@@ -352,26 +352,43 @@ and it is the only step in this reading that is not read off a capture.
 
 Neither `wrangler.toml` declares a `[limits]` block and both use
 `compatibility_date = "2025-01-01"`, so a per-script `cpu_ms` difference between the
-probe and production is ruled out. The remaining candidate this instrument cannot see is
-the account plan.
+probe and production is ruled out. The account plan was the other candidate and it is
+**Free**, checked in the dashboard on 2026-08-31 — so that is ruled out too. What remains
+is that the documented 10 ms is not what is enforced per invocation: a burst allowance
+above the steady-state average would fit both this and production's `1102`, but this
+instrument cannot see the mechanism and this document does not assert one.
 
 **A ramp, and what it is not.** Redeployed with the iteration count as a payload field
 (`b1e14d18`), the same burn was run at larger sizes:
 
-| instance | mode | `iters` | burn |
-|---|---|---|---|
-| `b90a43b6` / `ed80e52c` | `cpu` / `noretry-cpu` | 5x10^8 | ✅ survived, twice |
-| `da873328` | `noretry-cpu` | 1x10^9 | ❌ `Worker exceeded CPU time limit` |
-| `b292794e` | `noretry-cpu` | 2x10^9 | ❌ same |
-| `0c23546e` | `noretry-cpu` | 5x10^9 | ❌ same |
-| `a32b6d53` | `noretry-cpu` | 5x10^10 | ❌ same |
+| instance | mode | `iters` | burn step to next marker | burn |
+|---|---|---|---|---|
+| `671c04db` | `noretry-cpu` | 1x10^8 | 24 ms | ✅ |
+| `904a7f11` | `noretry-cpu` | 2x10^8 | 41 ms | ✅ |
+| `b90a43b6` | `cpu` | 5x10^8 | 149 ms | ✅ |
+| `ed80e52c` | `noretry-cpu` | 5x10^8 | 695 ms | ✅ |
+| `db004cbd` | `noretry-cpu` | 5x10^8 | 114 ms | ✅ |
+| `da873328` | `noretry-cpu` | 1x10^9 | — | ❌ `Worker exceeded CPU time limit` |
+| `b292794e` | `noretry-cpu` | 2x10^9 | — | ❌ same |
+| `0c23546e` | `noretry-cpu` | 5x10^9 | — | ❌ same |
+| `a32b6d53` | `noretry-cpu` | 5x10^10 | — | ❌ same |
 
-**This is not a CPU figure and must not be read as one.** The identical 5x10^8 loop cost
-695 ms in one isolate and 149 ms in another — 4.6x — so iteration count does not map to
-CPU consumed, and "somewhere between 5x10^8 and 10^9" is a JIT-dependent ordinal
-threshold, not a ceiling. This instrument has never read a CPU number and still has not.
-What it establishes is one-directional and enough: **an invocation survived 5x10^8
-iterations of arithmetic**, which no reading of a 10 ms ceiling permits.
+**A confound, found and closed.** The first two 5x10^8 survivals ran on a build where the
+iteration count was a literal; every death ran on the redeployed build where it comes from
+the payload. That is not a clean ramp — the difference could have been what V8 does with a
+constant loop bound rather than the size. `db004cbd` is 5x10^8 on the **same build as the
+deaths** and it survived, so the threshold is size and the confound is closed. `904a7f11`
+and `671c04db` extend the same build downward and scale linearly (24 / 41 / 114 ms for
+1 / 2 / 5 x10^8), which is what a real loop looks like and an elided one does not. Each
+`sink` is the correct sum for its own `iters`.
+
+**Still not a CPU figure, but no longer only ordinal.** The deltas are wall-clock and
+include the burn step's own output persistence, so they are an upper bound on burn CPU;
+and the same 5x10^8 loop took 695 ms in a cold isolate against 114-149 ms in warm ones, so
+a single reading means little. The defensible statement is a range: **the ceiling in force
+sits above ~115 ms of arithmetic and below ~230 ms** — an order of magnitude above the
+documented 10 ms, and three orders below the 30 s a paid plan would give. The account was
+confirmed **Free** on 2026-08-31, so plan is not the explanation.
 
 Nor does the burn transfer to production's failure. `parseFeed` allocates, builds strings
 and pressures GC; a tight floating-point loop over a flat heap does not. A threshold
@@ -493,6 +510,9 @@ teardown below it is the only one.
 | `0c23546e-368e-42c4-94c7-b00694fbc7d1` | 7.1, 7.2 | `noretry-cpu`, 5x10^9 | ❌ `1102`, 1 attempt |
 | `a32b6d53-f0d5-4d65-8c6f-8ec88712bb73` | 7.1, 7.2 | `noretry-cpu`, 5x10^10 | ❌ `1102`, 1 attempt |
 | `2831f91e-f016-4fd6-98d0-a88f113dacc7` | 7.2 | `cpu` (control), 5x10^9 | ⚠ 1 attempt, then stayed `Running` |
+| `db004cbd-b456-445e-a769-969d67c3a30f` | 7.1 | `noretry-cpu`, 5x10^8, payload build | ✅ closes the build confound |
+| `904a7f11-a06d-433e-bd63-cbecb6c052c2` | 7.1 | `noretry-cpu`, 2x10^8 | ✅ 41 ms |
+| `671c04db-3a60-4900-a5dd-ef8bb7bf0c67` | 7.1 | `noretry-cpu`, 1x10^8 | ✅ 24 ms |
 
 Live readback works only while the probe Worker and its workflow exist:
 
