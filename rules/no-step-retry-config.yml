@@ -1,0 +1,17 @@
+id: no-step-retry-config
+language: TypeScript
+severity: error
+message: retry config only in src/lib/trace.ts - every step goes through tracedStep's NO_RETRIES
+# Same carve-out as `no-bare-step-do.yml`, and for the same reason: `src/lib/trace.ts`
+# is the one permitted `step.do` call site, so it is the one place a retry policy may
+# be written. `probe/` is a throwaway instrument outside `src/**` and measures retries
+# deliberately. Feature 003 turned retries off (spec.md requirement 1); this rule is
+# what stops the policy being reintroduced past the seam that carries it.
+files:
+  - "src/**"
+ignores:
+  - "**/lib/trace.ts"
+rule:
+  pattern:
+    context: "({ retries: $CFG })"
+    selector: pair

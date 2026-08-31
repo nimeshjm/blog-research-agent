@@ -164,9 +164,11 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
       return;
     }
 
-    // 3. Map: one step per article. Keeps each parse inside its own CPU budget
-    //    and bounds spend per article rather than per run. The budget check is
-    //    between calls, so a run may overshoot by at most one article call.
+    // 3. Map: one article per step. CPU is charged per invocation and a step
+    //    boundary is not a fresh budget, so keeping a single parse to a step is
+    //    the only lever there is. It also bounds spend per article rather than
+    //    per run: the budget check is between calls, so a run may overshoot by
+    //    at most one article call.
     const summaries: ArticleSummary[] = [];
     for (const candidate of shortlist) {
       if (neuronsSpent + SUMMARY_NEURON_ESTIMATE > budget - SYNTHESIS_NEURON_RESERVE) break;

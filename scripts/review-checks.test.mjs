@@ -330,6 +330,46 @@ const rows = [
     },
   },
   {
+    name: 'reintroduce the premise with no CPU figure at all ("its own CPU budget") in a .ts comment',
+    expectFail: ['cpu-premise-is-per-invocation'],
+    expectFindingMatch: {
+      'cpu-premise-is-per-invocation': /stale per-step CPU premise/,
+    },
+    mutate(dir) {
+      // The gap #75 found: every other alternative in CPU_STALE_RE needs a CPU
+      // figure, so `src/index.ts` and `src/workflow.ts` asserted the retired
+      // premise in prose for two features without firing anything. No "10 ms"
+      // here on purpose - with the figure-less alternative removed from
+      // CPU_STALE_RE this row goes green, which is what makes it a guard.
+      mustReplace(
+        dir,
+        'src/lib/feed.ts',
+        "import type { FeedItem, ParsedItem } from './types';",
+        "import type { FeedItem, ParsedItem } from './types';\n\n// Mutation-row probe: each step gets its own CPU budget.",
+      );
+    },
+  },
+  {
+    name: 'a subrequest per-step phrase next to a correct CPU figure must NOT fire (#77)',
+    expectFail: [],
+    mutate(dir) {
+      // Verbatim the line that fired while feature 003's intent.md was being
+      // written (#77): the CPU figure on it already says per-invocation, and
+      // the per-step phrase belongs to CLAUDE.md's own 50-subrequest rule. The
+      // 50-character window cannot tell which noun the per-step attaches to,
+      // so the fix is to discard a match with a subrequest/neuron/query token
+      // inside it. Remove CPU_STALE_OTHER_NOUN_RE and this row goes red - the
+      // only direction of this check a row can assert, since the finding it
+      // guards against is a false one.
+      mustReplace(
+        dir,
+        'CLAUDE.md',
+        '## Repeated mistakes',
+        'Mutation-row probe: the\n10 ms-per-invocation CPU allocation, the 50-subrequest-per-step ceiling, and the\nneuron budget.\n\n## Repeated mistakes',
+      );
+    },
+  },
+  {
     name: 'force-track .dev.vars in the git index',
     expectFail: ['dev-vars-untracked'],
     mutate(dir) {

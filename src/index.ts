@@ -5,8 +5,10 @@ export { ResearchWorkflow } from './workflow';
 
 /**
  * Cron only starts a Workflow instance; all orchestration lives in the
- * Workflow so each step gets its own CPU budget. Keep this handler trivial -
- * the free plan allows 10 ms of CPU per cron invocation.
+ * Workflow because a cron invocation is capped at 15 minutes of wall-clock and
+ * a Workflow step is not. CPU is 10 ms per invocation on either side and a step
+ * boundary is not a fresh budget, so the Workflow buys wall-clock, not CPU.
+ * Keep this handler trivial.
  *
  * `create()` is wrapped in a span via `traced()` from `src/lib/trace.ts` -
  * this file never imports `tracing` itself. The instance id is only known
