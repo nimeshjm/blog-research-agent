@@ -551,7 +551,9 @@ export function chunkSourcesByVolume(sources: Source[], weights: Map<string, num
   const bins: { load: number; sources: Source[] }[] = Array.from({ length: childCount }, () => ({ load: 0, sources: [] }));
 
   const weightOf = (s: Source): number => weights.get(s.name) ?? DEFAULT_SOURCE_WEIGHT;
-  const ordered = [...sources].sort((a, b) => weightOf(b) - weightOf(a) || a.name.localeCompare(b.name));
+  // `<`, not `localeCompare`: collation is locale- and ICU-dependent, and
+  // these chunks key child ids that have to survive replay byte-identically.
+  const ordered = [...sources].sort((a, b) => weightOf(b) - weightOf(a) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
   for (const source of ordered) {
     let target = -1;
