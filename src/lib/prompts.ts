@@ -54,26 +54,52 @@ export function buildMapMessages(topic: Topic, candidate: Candidate, articleText
 export type MapResult = Pick<ArticleSummary, 'summary' | 'relevance' | 'claims' | 'attributablePractice'>;
 
 /**
- * A model response that isn't parseable JSON in the expected shape returns
- * `null` rather than throwing - `@cf/openai/gpt-oss-120b`'s reasoning
- * fallback (llm.ts's `normalise()`) can hand back prose instead of JSON
- * when the completion was cut short, and one bad article must not fail a
- * run (spec.md risk table).
+ * Every way `tryParseJsonObject` or a field check can reject a response,
+ * named so a caller can tell them apart without the parser throwing - see
+ * `MapParseResult`'s doc comment.
  */
-export function parseMapResponse(text: string): MapResult | null {
-  const obj = tryParseJsonObject(text);
-  if (obj === null) return null;
+export type MapParseFailure =
+  | 'invalid-json'
+  | 'not-an-object'
+  | 'summary-invalid'
+  | 'relevance-invalid'
+  | 'claims-invalid'
+  | 'attributablePractice-invalid';
 
-  if (typeof obj.summary !== 'string') return null;
-  if (typeof obj.relevance !== 'number' || !Number.isFinite(obj.relevance)) return null;
-  if (!Array.isArray(obj.claims) || !obj.claims.every((c) => typeof c === 'string')) return null;
-  if (obj.attributablePractice !== null && typeof obj.attributablePractice !== 'string') return null;
+/**
+ * A model response that isn't parseable JSON in the expected shape resolves
+ * to `{ ok: false }` rather than throwing - `@cf/openai/gpt-oss-120b`'s
+ * reasoning fallback (llm.ts's `normalise()`) can hand back prose instead of
+ * JSON when the completion was cut short, and one bad article must not fail
+ * a run (spec.md risk table). `reason` is diagnostics only: it does not
+ * change which inputs are accepted or rejected, only what a caller can say
+ * about a rejection. `keys` (present only once the text actually parsed to
+ * an object) is a caller's only way to see what shape the model actually
+ * sent without re-parsing untrusted text at the call site.
+ */
+export type MapParseResult = { ok: true; value: MapResult } | { ok: false; reason: MapParseFailure; keys?: readonly string[] };
+
+export function parseMapResponse(text: string): MapParseResult {
+  const parsed = tryParseJsonObject(text);
+  if (!parsed.ok) return parsed;
+  const obj = parsed.value;
+  const keys = Object.keys(obj);
+
+  if (typeof obj.summary !== 'string') return { ok: false, reason: 'summary-invalid', keys };
+  if (typeof obj.relevance !== 'number' || !Number.isFinite(obj.relevance)) return { ok: false, reason: 'relevance-invalid', keys };
+  if (!Array.isArray(obj.claims) || !obj.claims.every((c) => typeof c === 'string')) return { ok: false, reason: 'claims-invalid', keys };
+  if (obj.attributablePractice !== null && typeof obj.attributablePractice !== 'string') {
+    return { ok: false, reason: 'attributablePractice-invalid', keys };
+  }
 
   return {
-    summary: obj.summary,
-    relevance: obj.relevance,
-    claims: obj.claims as string[],
-    attributablePractice: obj.attributablePractice as string | null,
+    ok: true,
+    value: {
+      summary: obj.summary,
+      relevance: obj.relevance,
+      claims: obj.claims as string[],
+      attributablePractice: obj.attributablePractice as string | null,
+    },
   };
 }
 
@@ -106,8 +132,10 @@ author's name is the worst outcome you can produce.
 
 Shape: name who this is for and why it matters to them, ground the argument in the
 sourced material, generalise from it to the principle, then say what to do about it -
-concretely enough to act on. Cite sources inline as markdown links using the URLs given
-below; every factual claim needs one. If a practice rests on one paper or one company's
+concretely enough to act on. Cite sources inline as markdown links in the form [a short
+description](https://example.com/paper), using the URLs given below; every factual claim
+needs one. Never wrap a bare URL in brackets like 【https://example.com/paper】 - that is
+not a link and will not render as one. If a practice rests on one paper or one company's
 report, say so rather than implying it is settled industry consensus.
 
 Style: address the reader as "you"/"your", not "engineering leaders" in the third person.
@@ -154,40 +182,135 @@ export interface ReduceResult {
   body: string;
 }
 
-/** Same non-throwing contract as `parseMapResponse` - see its doc comment. */
-export function parseReduceResponse(text: string): ReduceResult | null {
-  const obj = tryParseJsonObject(text);
-  if (obj === null) return null;
+/** Every way a reduce response can be rejected - see `ReduceParseResult`'s doc comment. */
+export type ReduceParseFailure =
+  | 'invalid-json'
+  | 'not-an-object'
+  | 'title-invalid'
+  | 'description-invalid'
+  | 'tags-invalid'
+  | 'body-invalid';
 
-  if (typeof obj.title !== 'string' || obj.title.trim() === '') return null;
-  if (typeof obj.description !== 'string' || obj.description.trim() === '') return null;
-  if (!Array.isArray(obj.tags) || !obj.tags.every((t) => typeof t === 'string')) return null;
-  if (typeof obj.body !== 'string' || obj.body.trim() === '') return null;
+/** Same non-throwing contract as `parseMapResponse` - see its doc comment. */
+export type ReduceParseResult = { ok: true; value: ReduceResult } | { ok: false; reason: ReduceParseFailure; keys?: readonly string[] };
+
+export function parseReduceResponse(text: string): ReduceParseResult {
+  const parsed = tryParseJsonObject(text);
+  if (!parsed.ok) return parsed;
+  const obj = parsed.value;
+  const keys = Object.keys(obj);
+
+  if (typeof obj.title !== 'string' || obj.title.trim() === '') return { ok: false, reason: 'title-invalid', keys };
+  if (typeof obj.description !== 'string' || obj.description.trim() === '') return { ok: false, reason: 'description-invalid', keys };
+  if (!Array.isArray(obj.tags) || !obj.tags.every((t) => typeof t === 'string')) return { ok: false, reason: 'tags-invalid', keys };
+  if (typeof obj.body !== 'string' || obj.body.trim() === '') return { ok: false, reason: 'body-invalid', keys };
 
   return {
-    title: obj.title,
-    description: obj.description,
-    tags: obj.tags as string[],
-    body: obj.body,
+    ok: true,
+    value: {
+      title: obj.title,
+      description: obj.description,
+      tags: obj.tags as string[],
+      body: obj.body,
+    },
   };
+}
+
+/** A citation the model wrote as a bracket-wrapped bare URL rather than the markdown link REDUCE_SYSTEM_PROMPT asks for. */
+const BRACKETED_CITATION_RE = /【([^】]*)】/g;
+const BARE_URL_RE = /^https?:\/\/\S+$/;
+
+/**
+ * Rewrites `【<url>】` citations into markdown links. A production completion
+ * (#75, run `972cea0c`) ignored REDUCE_SYSTEM_PROMPT's citation instruction
+ * and emitted every source as CJK lenticular brackets around a bare URL
+ * instead - a prompt is a request, not a guarantee, so this makes the shape
+ * a guarantee the same way `synthesizeDraft`'s deterministic source list
+ * does (see this file's comment above `REDUCE_SYSTEM_PROMPT`): compute it in
+ * TypeScript rather than hope the model complies. Link text is never
+ * invented - a URL matching a known summary gets that summary's title, and
+ * anything else gets the URL itself as its own link text. Only the exact
+ * observed shape is touched: a bracket pair whose contents aren't a bare URL
+ * is left alone rather than guessed at, and an already-correct markdown link
+ * has no `【 】` in it to match.
+ */
+export function normaliseCitations(body: string, summaries: ArticleSummary[]): string {
+  return body.replace(BRACKETED_CITATION_RE, (match, inner: string) => {
+    if (!BARE_URL_RE.test(inner)) return match;
+    const title = summaries.find((s) => s.url === inner)?.title;
+    return `[${title ?? inner}](${inner})`;
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Shared response parsing.
 // ---------------------------------------------------------------------------
 
-/** Strips a ```json ... ``` (or bare ```) fence if the model wrapped its JSON in one. */
+/**
+ * Strips a ```json ... ``` (or bare ```) fence, but only one that wraps the
+ * *entire* response - anchored to start and end of the (trimmed) text.
+ * `reduce`'s `body` is itself markdown that can legitimately contain a
+ * fenced code block (a `git worktree add` example, say), and an unanchored
+ * search-anywhere match would grab that inner fence instead of treating the
+ * response as a whole - see `tryParseJsonObject`'s comment for how that
+ * broke a real run (#75).
+ */
 function stripCodeFence(text: string): string {
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
-  return (fenced ? fenced[1] : text)?.trim() ?? '';
+  const trimmed = text.trim();
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(trimmed);
+  return fenced?.[1] ?? trimmed;
 }
 
-function tryParseJsonObject(text: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(stripCodeFence(text));
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-    return parsed as Record<string, unknown>;
-  } catch {
-    return null;
+/**
+ * Split from a single `| null` return so `parseMapResponse` and
+ * `parseReduceResponse` can tell "not JSON at all" apart from "valid JSON,
+ * wrong shape" - two of the six ways a response gets rejected, and the two
+ * a caller most needs distinguished since only one of them ever has key
+ * names to report.
+ */
+type JsonObjectResult = { ok: true; value: Record<string, unknown> } | { ok: false; reason: 'invalid-json' | 'not-an-object' };
+
+/**
+ * Tries the raw text first and only falls back to fence-stripping if that
+ * throws (production run `972cea0c`, #75): the model's response was
+ * unfenced, valid JSON whose `body` field happened to contain a fenced
+ * ```bash block, and unconditionally fence-stripping *before* attempting a
+ * raw parse extracted that inner fence instead of the response itself,
+ * turning a well-formed completion into `invalid-json`. This ordering keeps
+ * every response that already worked - including one genuinely wrapped in
+ * its own fence - parseable, while no longer letting an inner fence
+ * shadow the outer JSON.
+ */
+function tryParseJsonObject(text: string): JsonObjectResult {
+  for (const candidate of [text, stripCodeFence(text), unwrapFencedBlock(text)]) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(candidate);
+    } catch {
+      continue;
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false, reason: 'not-an-object' };
+    }
+    return { ok: true, value: parsed as Record<string, unknown> };
   }
+  return { ok: false, reason: 'invalid-json' };
+}
+
+/**
+ * Last resort: a fence that does not wrap the whole response, because the
+ * model prefaced it with prose. `stripCodeFence`'s anchoring is what stops an
+ * inner fence shadowing the outer JSON, but it also rejects a response the
+ * unanchored regex used to accept - and this model demonstrably ignores the
+ * prompt's "no other text" instruction elsewhere (it was told to cite as
+ * markdown links and did not), so that tolerance is worth keeping.
+ *
+ * Safe only because it is tried last: a response that is already valid JSON
+ * never reaches here, so this can no longer shadow anything. Greedy to the
+ * *last* fence rather than the first, so a fenced payload whose own content
+ * carries fences comes back whole.
+ */
+function unwrapFencedBlock(text: string): string {
+  const fenced = /```(?:json)?\s*([\s\S]*)```/.exec(text.trim());
+  return fenced?.[1]?.trim() ?? '';
 }

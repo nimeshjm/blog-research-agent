@@ -27,7 +27,8 @@ import {
 import type { GithubConfig } from './lib/github';
 import { createLlm, neuronsFor } from './lib/llm';
 import { blogPostPath, renderMdx, validateAgainstContentConfig, validateDraft } from './lib/mdx';
-import { buildMapMessages, buildReduceMessages, parseMapResponse, parseReduceResponse } from './lib/prompts';
+import { buildMapMessages, buildReduceMessages, normaliseCitations, parseMapResponse, parseReduceResponse } from './lib/prompts';
+import type { ReduceParseFailure } from './lib/prompts';
 import type { ArticleSummary, Candidate, Draft, Env, ParsedItem, ResearchParams, RunOutcome, Source, Topic } from './lib/types';
 import {
   ATTR_NEURONS_BUDGET,
@@ -639,11 +640,15 @@ export async function summarizeArticle(
   // partial/malformed object by accident.
   if (result.finishReason === 'length') return { summary: null, neurons };
 
+  // Never throws on a rejection (see parseMapResponse's doc comment) and the
+  // specific reason is discarded rather than surfaced: one bad article must
+  // not fail the run, so there is no caller here to hand a diagnosis to -
+  // unlike synthesizeDraft, which does throw and reports it below.
   const parsed = parseMapResponse(result.text);
-  if (parsed === null) return { summary: null, neurons };
+  if (!parsed.ok) return { summary: null, neurons };
 
   return {
-    summary: { url: candidate.url, title: candidate.title, ...parsed },
+    summary: { url: candidate.url, title: candidate.title, ...parsed.value },
     neurons,
   };
 }
@@ -657,6 +662,30 @@ function slugify(title: string, fallbackId: number): string {
     .slice(0, 80)
     .replace(/-+$/, '');
   return slug === '' ? `research-topic-${fallbackId}` : slug;
+}
+
+const MAX_PARSE_FAILURE_KEYS = 20;
+const MAX_PARSE_FAILURE_KEY_LENGTH = 40;
+
+/**
+ * Renders a parse failure as safe structural metadata only - the response
+ * text, article text, prompt text and URLs are never allowed into an error
+ * message that reaches the trace (CLAUDE.md's observability rule), so this
+ * reports only the failure reason, the response length, and (when the text
+ * parsed to an object) the top-level key *names* the model actually sent.
+ * Key names are themselves model-controlled text, so they are capped and
+ * truncated rather than trusted to be short.
+ */
+function describeParseFailure(reason: ReduceParseFailure, textLength: number, keys?: readonly string[]): string {
+  const parts = [`reason=${reason}`, `length=${textLength}`];
+  if (keys !== undefined) {
+    const shown = keys
+      .slice(0, MAX_PARSE_FAILURE_KEYS)
+      .map((k) => (k.length > MAX_PARSE_FAILURE_KEY_LENGTH ? `${k.slice(0, MAX_PARSE_FAILURE_KEY_LENGTH)}…` : k));
+    const overflow = keys.length > MAX_PARSE_FAILURE_KEYS ? `,+${keys.length - MAX_PARSE_FAILURE_KEYS} more` : '';
+    parts.push(`keys=[${shown.join(',')}${overflow}]`);
+  }
+  return parts.join(' ');
 }
 
 /**
@@ -691,20 +720,26 @@ export async function synthesizeDraft(
   }
 
   const parsed = parseReduceResponse(result.text);
-  if (parsed === null) {
-    throw new Error('synthesizeDraft: model response was not valid JSON in the expected shape');
+  if (!parsed.ok) {
+    const detail = describeParseFailure(parsed.reason, result.text.length, parsed.keys);
+    throw new Error(`synthesizeDraft: model response was not valid JSON in the expected shape (${detail})`);
   }
+  const draftFields = parsed.value;
 
   const draft: Draft = {
-    slug: slugify(parsed.title, topic.id),
-    title: parsed.title,
-    description: parsed.description,
+    slug: slugify(draftFields.title, topic.id),
+    title: draftFields.title,
+    description: draftFields.description,
     date: new Date().toISOString().slice(0, 10),
     authors: ['nimeshjm'],
-    tags: parsed.tags,
+    tags: draftFields.tags,
     draft: true,
     brief: renderBrief(topic, summaries),
-    body: parsed.body,
+    // REDUCE_SYSTEM_PROMPT asks for markdown-link citations but a prompt is a
+    // request, not a guarantee - a production completion (#75) cited every
+    // source as a bracket-wrapped bare URL instead, so this makes the shape
+    // deterministic rather than hoped-for.
+    body: normaliseCitations(draftFields.body, summaries),
     sources: summaries.map((s) => s.url),
   };
 

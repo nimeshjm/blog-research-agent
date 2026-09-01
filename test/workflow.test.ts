@@ -784,6 +784,25 @@ describe('synthesizeDraft()', () => {
     const aiEnv = envWithAi(chatFixture('not json at all'));
     await expect(synthesizeDraft(aiEnv, topic(), summaries)).rejects.toThrow();
   });
+
+  it('names the specific parse failure reason and response length, and never the response text itself', async () => {
+    const secretDescription = 'THIS SHOULD NEVER APPEAR IN AN ERROR MESSAGE';
+    const responseText = JSON.stringify({ title: 't', description: secretDescription, tags: [], body: '   ' });
+    const aiEnv = envWithAi(chatFixture(responseText));
+
+    let caught: Error | undefined;
+    try {
+      await synthesizeDraft(aiEnv, topic(), summaries);
+    } catch (err) {
+      caught = err as Error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught?.message).toContain('reason=body-invalid');
+    expect(caught?.message).toContain(`length=${responseText.length}`);
+    expect(caught?.message).toContain('keys=[title,description,tags,body]');
+    expect(caught?.message).not.toContain(secretDescription);
+  });
 });
 
 describe('isGrounded()', () => {
