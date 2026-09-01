@@ -214,7 +214,20 @@ function stepNamePrefix(text) {
   return i === -1 ? text : text.slice(0, i);
 }
 
-const DYNAMIC_STEP_PREFIXES = new Set(['gather', 'summarize']);
+/**
+ * A template step name is a replay key built at runtime, so each entry here is a
+ * deliberate decision that the interpolated part is deterministic across replays.
+ * `gather` and `summarize` interpolate a feed name / candidate URL, both fixed for
+ * a given run by the step that produced them.
+ *
+ * `await-gather-children` and its sleep interpolate the poll round (#75). That is
+ * deterministic by construction - round N is always the Nth iteration - and it is
+ * there precisely so no two rounds share a replay key: whether Workflows
+ * disambiguates repeat occurrences of one literal name is undocumented, and if it
+ * does not, a later round would replay an earlier round's cached `done: false`
+ * forever.
+ */
+const DYNAMIC_STEP_PREFIXES = new Set(['gather', 'summarize', 'await-gather-children', 'await-gather-children-wait']);
 const INFERENCE_STEP_PREFIXES = new Set(['summarize', 'synthesize']);
 
 /**
@@ -724,7 +737,7 @@ checks.push({
         findings.push({
           file: c.rel,
           line: line(c.sf, c.node),
-          message: `template step name '${c.text}...' has prefix '${prefix}', not in the allowlist (gather, summarize) - needs human review`,
+          message: `template step name '${c.text}...' has prefix '${prefix}', not in the allowlist (${[...DYNAMIC_STEP_PREFIXES].join(', ')}) - needs human review`,
         });
       }
     }

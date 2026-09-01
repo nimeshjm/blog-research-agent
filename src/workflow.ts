@@ -10,11 +10,9 @@ import {
   reclaimStaleTopics,
   recordRunOutcome,
   startRun,
-  writeRunCandidates,
 } from './lib/d1';
 import { extractArticleText } from './lib/extract';
-import { applyGatherWindow, parseFeed } from './lib/feed';
-import type { ParseBound } from './lib/feed';
+import { fetchFeedItems } from './lib/feed-fetch';
 import { loadFeeds } from './lib/feeds';
 import {
   createBranch,
@@ -29,8 +27,20 @@ import { createLlm, neuronsFor } from './lib/llm';
 import { blogPostPath, renderMdx, validateAgainstContentConfig, validateDraft } from './lib/mdx';
 import { buildMapMessages, buildReduceMessages, normaliseCitations, parseMapResponse, parseReduceResponse } from './lib/prompts';
 import type { ReduceParseFailure } from './lib/prompts';
-import type { ArticleSummary, Candidate, Draft, Env, ParsedItem, ResearchParams, RunOutcome, Source, Topic } from './lib/types';
+import type {
+  ArticleSummary,
+  Candidate,
+  Draft,
+  Env,
+  GatherParams,
+  GatherPollResult,
+  ResearchParams,
+  RunOutcome,
+  Source,
+  Topic,
+} from './lib/types';
 import {
+  ATTR_GATHER_CHILDREN,
   ATTR_NEURONS_BUDGET,
   ATTR_NEURONS_SPENT,
   ATTR_RUN_STATUS,
@@ -48,15 +58,22 @@ import {
  * Structured as a Workflow rather than a plain cron handler because the free
  * plan caps `scheduled()` at 15 minutes of wall-clock for the whole run, and
  * a Workflow step carries no such cap. The 10 ms CPU budget is charged per
- * invocation, *not* reset at each `step.do` - Workflows packs consecutive
- * fast steps into one invocation instead (measured 2026-08-27, #61: one feed
- * parse in an invocation passes, two pass, three fail with Workers error
- * `1102`). What a step boundary buys is a *chance* of a fresh invocation,
- * never a guarantee - so parsing ~46 feeds and ~15 articles still has to
- * stay one fetch-and-parse per step, on the chance that pays off, not on a
- * promise the platform never made.
+ * invocation, not reset at each `step.do`, and so is the 50-subrequest
+ * ceiling - Workflows packs consecutive fast steps into one invocation
+ * instead of starting fresh at each one. Gather runs in `GatherWorkflow`
+ * children rather than the parent's own steps for exactly this reason
+ * (feature 003, spec.md's "Gather in child instances"):
+ * 46 feeds' worth of fetches and D1 writes exhausted the parent's own
+ * 50-subrequest budget before a single article could be fetched (#75, run
+ * `0199648c`) - see `createGatherChildren`'s comment for the arithmetic. The
+ * ~15 remaining article-summarizing steps still stay one fetch-and-parse per
+ * step; a step boundary is a *chance* of a fresh invocation, never a
+ * guarantee, and it is the only lever there is.
  *
- * Every step body must be idempotent: Workflows retry steps on failure.
+ * No step is retried (spec.md requirement 1; `tracedStep`'s zero-retry
+ * policy). Every step body stays idempotent anyway, because `run()` itself
+ * re-executes from the top on every replay even when a completed step's
+ * cached result does not re-run.
  */
 export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
   async run(event: WorkflowEvent<ResearchParams>, step: WorkflowStep): Promise<void> {
@@ -105,43 +122,62 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
       return;
     }
 
-    // 2. One step per feed. The free plan's 50 subrequests are per invocation,
-    //    not per step (#75, run `0199648c`), so one fetch per step bounds this
-    //    loop's share but does not bound the run: 46 of these exhausted the
-    //    budget before a single article could be fetched.
-    //    Parsing only - dedupe is batched in `shortlist`, because a per-item
-    //    seen_urls query would blow both the 10 ms CPU and the 50-query budget.
-    //    Each gather applies GATHER_WINDOW_DAYS before returning. That is not
-    //    tuning: most of the allowlist is whole archives rather than rolling
-    //    feeds, and unwindowed they put 4,742 candidates into `shortlist`,
-    //    whose chunked seen_urls batch would then need 48 of D1's 50 queries
-    //    per invocation. Windowed it is 678 candidates and 7 queries.
+    // 2. Gather runs in child Workflow instances, never the parent's own
+    //    steps (spec.md requirement 2) - see the class doc comment above and
+    //    `createGatherChildren`'s comment for why and for the subrequest
+    //    arithmetic `GATHER_FEEDS_PER_CHILD` is sized against.
     //
-    //    `gathered` stays an integer, not an array: `run()` re-executes from
-    //    the top on every replay, so anything it accumulates here is rebuilt
-    //    once per attempt, and replay cost grows with the number of
-    //    *completed* gathers (requirement 4). Each feed writes its own
-    //    candidates straight to D1 (`gatherCandidates`); this loop only
-    //    totals the counts.
+    //    `create-gather-children` returns child ids as plain strings, never
+    //    a `WorkflowInstance` - the platform's own examples return one from
+    //    a step body, but an object carrying functions cannot be serialized
+    //    as a step result (plan.md's question 3). `await-gather-children` polls -
+    //    there is no blocking join on a child instance - and both steps are
+    //    idempotent on replay: deterministic child ids mean a re-run of
+    //    `create` recreates nothing (`createGatherChildren`'s own comment),
+    //    and a re-run of `await` only re-reads status.
     const sources = await traceStep('load-sources', {}, async () => loadSources(this.env));
 
+    const childIds = await traceStep('create-gather-children', {}, async (span) => {
+      const ids = await createGatherChildren(this.env, event.instanceId, sources);
+      span.setAttribute(ATTR_GATHER_CHILDREN, ids.length);
+      return ids;
+    });
+
+    // Each round gets its own step name. The step name is the replay key
+    // (CLAUDE.md), and whether Workflows disambiguates repeat occurrences of
+    // one literal name by call order is not documented - only
+    // `WorkflowInstanceRestartOptions.from.count`'s doc comment hints at it.
+    // If it does not, round 1 would replay round 0's cached `{ done: false }`
+    // forever and no run could ever observe a completion. A per-round name
+    // costs nothing (1,024 steps per instance, and a poll loop is bounded by
+    // `pollGatherChildren`'s derived cap) and removes the question entirely
+    // rather than leaving it for acceptance criterion 2 to discover.
+    //
+    // `:` so `tracedStep` still reports `agent.step` as
+    // `await-gather-children`, the same way `gather:<feed>` and
+    // `summarize:<url>` already do - the round stays out of the attribute.
     let gathered = 0;
-    for (const source of sources) {
-      // `agent.step` on this span is the `gather` prefix, not the full step
-      // name - `tracedStep` strips after the first `:` so a per-feed span
-      // never needs a source name judged sensitive enough to redact by hand.
-      gathered += await traceStep(`gather:${source.name}`, {}, async (span) => {
-        const count = await gatherCandidates(this.env, event.instanceId, source);
-        span.setAttribute(ATTR_SOURCES_GATHERED, count);
-        return count;
+    for (let round = 0; ; round++) {
+      const outcome: GatherPollResult = await traceStep(`await-gather-children:${round}`, {}, async (span) => {
+        const result = await pollGatherChildren(this.env, childIds, round);
+        span.setAttribute(ATTR_GATHER_CHILDREN, childIds.length);
+        return result;
       });
+      if (outcome.done) {
+        gathered = outcome.total;
+        break;
+      }
+      // Costs neither a step nor concurrency (Workflows limits docs;
+      // plan.md's question 1) - only ever a subrequest, spent on the next poll.
+      await step.sleep(`await-gather-children-wait:${round}`, GATHER_POLL_INTERVAL);
     }
 
     // Batched dedupe against seen_urls happens inside shortlistCandidates.
     // `gathered` is not otherwise read downstream - it lands on this span
-    // alongside the shortlisted count, so acceptance criterion 5 ("all 46
-    // feeds gathered with no CPU failure") is readable from one span instead
-    // of summed by hand across 46 gather spans.
+    // alongside the shortlisted count so the two are readable together, even
+    // though `gathered` itself is now a sum of child totals (`await-gather-
+    // children`'s own span already carries the child count) rather than
+    // something totalled across per-feed spans on the parent.
     const shortlist = await traceStep('shortlist', {}, async (span) => {
       const result = await shortlistCandidates(this.env, event.instanceId, topic);
       span.setAttribute(ATTR_SOURCES_GATHERED, gathered);
@@ -294,44 +330,6 @@ const MAP_MAX_TOKENS = 4096;
 const SYNTHESIS_MAX_TOKENS = 8192;
 
 /**
- * Discovery bounds. They exist because D1 allows 100 bound parameters per query
- * and 50 queries per invocation, and `shortlist` checks every candidate against
- * `seen_urls` in one batched pass. See spec.md, "The recency window in
- * `gather`".
- *
- * The window is what the agent is for - it reports on recent work, not on
- * archives - and the D1 arithmetic wants the same rule for its own reasons.
- *
- * There is deliberately no per-feed cap on *dated* items. arXiv publishes a
- * whole day at once - cs.AI carries 352 items, cs.SE 62, all inside the window -
- * and truncating that would starve the grounding gate of the papers it exists to
- * find. The date window bounds the common case; SHORTLIST_MAX_CANDIDATES bounds
- * a feed that dumps its archive with fresh timestamps.
- */
-export const GATHER_WINDOW_DAYS = 30;
-/** Backstop for items with no parseable date only. Zero such items today. */
-export const GATHER_UNDATED_MAX_PER_FEED = 20;
-/**
- * How many consecutive dated, out-of-window items `parseFeed` reads before it
- * cancels the response body rather than draining the rest of the archive
- * (spec.md req. 1). The margin it rests on is the differential over all 46
- * live feeds (acceptance criterion 2), not a derivation - it only has to
- * absorb the local disorder of a feed that is mostly, not perfectly,
- * newest-first.
- */
-export const GATHER_STALE_RUN = 10;
-/**
- * Requirement 3's backstop only: a wholly undated feed can never trip
- * `GATHER_STALE_RUN`, so without a raw-item ceiling it would be unbounded.
- * The margin is stated both ways it could be wrong: the largest raw item
- * count in the allowlist is OpenAI's 1,155, and the largest legitimate
- * *kept* count is arXiv cs.AI's 352-item announcement day (requirement 6
- * forbids truncating that). 2,000 sits far enough above both that it can
- * never truncate a real day - it is a safety net, not a tuning knob, and
- * deliberately not sized anywhere near 352.
- */
-export const GATHER_RAW_ITEM_MAX = 2000;
-/**
  * `run_candidates` is per-run scratch, not a second cross-run dedupe key -
  * `seen_urls` stays the only one. Pruned once per run, in `recordOutcome`,
  * so no terminal path needs its own step.
@@ -474,29 +472,6 @@ export async function proposeTopic(env: Env): Promise<{ title: string; angle: st
   return null;
 }
 
-/**
- * `bound`, when given, is threaded two places: as the `fetch`'s abort
- * signal (so cancelling it actually stops the network read, not only the
- * in-process parse) and into `parseFeed` (so it can decide when to stop
- * reading and call `bound.abort.abort()` itself). `parseFeed` absorbs the
- * rejection that abort causes in its own drain - see its module doc comment
- * - so by the time control reaches this function's `catch`, an aborted
- * bounded parse has already returned normally with whatever it read. This
- * `catch` therefore only ever sees a genuine fetch/parse failure, never the
- * bound firing; if that stopped being true, a bound tripping on every
- * archive feed would look identical to a dead feed here, and every one of
- * them would silently contribute zero candidates.
- */
-async function fetchFeedItems(feedUrl: string, bound?: ParseBound): Promise<ParsedItem[]> {
-  try {
-    const response = await fetch(feedUrl, bound === undefined ? undefined : { signal: bound.abort.signal });
-    if (!response.ok) return [];
-    return await parseFeed(response, bound);
-  } catch {
-    return [];
-  }
-}
-
 async function fetchFeedTitles(feedUrl: string): Promise<string[]> {
   // No bound: the seed-feed read that backs proposeTopic wants the newest
   // item regardless of the window (spec.md req. 12 - bounding it could
@@ -506,39 +481,190 @@ async function fetchFeedTitles(feedUrl: string): Promise<string[]> {
 }
 
 /**
- * One fetch, streamed parse (src/lib/feed.ts), then one D1 write
- * (`writeRunCandidates`). The 30-day window and the undated-item cap are
- * applied here, per feed, never in `shortlist` - see GATHER_WINDOW_DAYS /
- * GATHER_UNDATED_MAX_PER_FEED above and spec.md, "The recency window in
- * `gather`". A feed that cannot be fetched or fails to parse contributes
- * zero candidates rather than failing the step: `fetchFeedItems` already
- * swallows that failure and returns `[]`, so one dead feed must not fail the
- * run (spec.md risk table), and a feed that consistently returns nothing is
- * a review finding against the allowlist, visible via `agent.sources.gathered`
- * on the step's own span. A D1 write failure, though, does still fail the
- * step, and should - that is not a dead feed, it is a dead database.
+ * Chunks `sources` into `GATHER_FEEDS_PER_CHILD`-sized groups and creates one
+ * `GatherWorkflow` child per chunk (spec.md requirements 2/3). `runId`
+ * passed to every child is the *parent's* own instance id, never the
+ * child's - see `GatherParams.runId`'s doc comment - so every child writes
+ * into the same `run_candidates` rows and `shortlist` needs no change.
  *
- * `now` is computed once and shared between the bound's `cutoffMs` and
- * `applyGatherWindow`'s own cutoff, so the parse-time stop and the
- * post-parse filter agree on exactly the same window boundary rather than
- * drifting apart across the (sub-millisecond) gap between two separate
- * `Date.now()` reads.
+ * **The subrequest arithmetic `GATHER_FEEDS_PER_CHILD` is sized against**
+ * (`wrangler.toml`, read 2026-08-31 against #75's corrected premise - CPU is
+ * no longer what binds, 50 subrequests/invocation is): `gatherCandidates`
+ * (src/gather-workflow.ts) costs one `fetch` plus one D1 `batch()` call per
+ * feed - two Workers subrequests (CLAUDE.md: "any `fetch` *and* any D1, KV
+ * or AI binding call"), independent of `writeRunCandidates`'s own two SQL
+ * statements inside that one `batch()` call, which count separately against
+ * D1's *own* 50-queries-per-invocation ceiling (`d1.ts`) but not again
+ * against this one. That count is a floor, not the whole bill: "each
+ * redirect counts" too (CLAUDE.md), and this arithmetic does not know how
+ * many of the 46 allowlisted feeds redirect. At `GATHER_FEEDS_PER_CHILD =
+ * 10` the floor is 20 of a child's 50 - comfortable margin even against a
+ * feed or two redirecting - giving `ceil(46 / 10) = 5` children for the
+ * current feed count. `GATHER_FEEDS_PER_CHILD = 15` (the fewer-children
+ * alternative the poll-cost paragraph below argues for) would leave only 20
+ * of margin for redirects and D1 queuing before the ceiling, which is the
+ * concrete reason 10 wins that tension rather than a round number.
+ *
+ * **The parent's own poll cost is the other half of this trade** (spec.md's
+ * risk table: "Polling children costs subrequests and parent CPU" - one
+ * subrequest per child per round, spec.md's own figure). Fewer, larger
+ * children (this choice) mean fewer poll subrequests per round for a given
+ * feed count; more, smaller children would leave more margin per child but
+ * cost more per round. 10 was chosen for the child-side margin, not the
+ * poll-side cost, because a child that returns `1102`/subrequest-exhausted
+ * fails the whole run outright (requirement 4) while an extra poll round or
+ * two is only ever a few more subrequests and some wall-clock, which this
+ * design already spends freely (`step.sleep` costs neither a step nor
+ * concurrency).
+ *
+ * **This does not make the parent's own remaining invocation safe.**
+ * `shortlist` (~8 D1 queries at the current windowed candidate count),
+ * `summarize` (up to 15 x a fetch to an arbitrary article domain + an AI
+ * call = up to 30, before any of *those* fetches redirect) and
+ * `open-pull-request` (7 GitHub calls) alone already sum past 50 before a
+ * single poll subrequest is counted - unchanged by this feature, because
+ * spec.md requirement 2 only requires that no *feed* be parsed in the
+ * parent's invocation. Whether that remaining work survives a single
+ * invocation still depends on an invocation boundary landing between it and
+ * `shortlist`, exactly as the whole run did before this feature - this
+ * design removes gather's ~92-subrequest contribution to that gamble, the
+ * largest and most reliably-triggering one measured, but does not close it.
+ *
+ * Ids are deterministic (`${parentInstanceId}-g${index}`), which is what
+ * makes this step idempotent on replay: `run()` re-executes from the top on
+ * every replay (fact 2, spec.md), so a second call here must not create a
+ * different set of children. `createBatch` throws when *any* supplied id
+ * already exists (`index.d.ts`, contradicting plan.md's "createBatch skips
+ * existing ids outright" - see this PR's report) rather than skipping only
+ * those - so a duplicate-id failure is verified against reality
+ * (`childExists`), never assumed: a genuinely different failure (bad
+ * params, a quota) must still surface.
+ *
+ * Returns child ids as plain strings, never a `WorkflowInstance` - the
+ * platform's own examples return one from a step body, while the docs
+ * elsewhere say an object carrying functions cannot be serialized as a step
+ * result (plan.md's question 3).
  */
-export async function gatherCandidates(env: Env, runId: string, source: Source): Promise<number> {
-  const now = new Date();
-  const bound: ParseBound = {
-    abort: new AbortController(),
-    cutoffMs: now.getTime() - GATHER_WINDOW_DAYS * 24 * 60 * 60 * 1000,
-    staleRun: GATHER_STALE_RUN,
-    rawMax: GATHER_RAW_ITEM_MAX,
-  };
-  const items = await fetchFeedItems(source.feedUrl, bound);
-  const windowed = applyGatherWindow(items, {
-    windowDays: GATHER_WINDOW_DAYS,
-    undatedMax: GATHER_UNDATED_MAX_PER_FEED,
-    now,
+export async function createGatherChildren(env: Env, parentInstanceId: string, sources: Source[]): Promise<string[]> {
+  const chunkSize = Number(env.GATHER_FEEDS_PER_CHILD);
+  const chunks: Source[][] = [];
+  for (let i = 0; i < sources.length; i += chunkSize) chunks.push(sources.slice(i, i + chunkSize));
+
+  const options = chunks.map((chunk, index) => ({
+    id: `${parentInstanceId}-g${index}`,
+    params: { runId: parentInstanceId, sources: chunk, index } satisfies GatherParams,
+  }));
+
+  try {
+    await env.GATHER_WORKFLOW.createBatch(options);
+  } catch (err) {
+    const alreadyExist = await Promise.all(options.map((o) => childExists(env, o.id)));
+    if (!alreadyExist.every(Boolean)) throw err;
+  }
+
+  return options.map((o) => o.id);
+}
+
+/**
+ * Calls `.status()`, not just `.get()`: `index.d.ts` documents `get` as
+ * returning "a handle to an *existing* instance" but does not say whether
+ * that existence check is eager (in `get`) or lazy (deferred to the first
+ * real call on the handle) - measured under vitest-pool-workers, a
+ * nonexistent id throws from `.status()`, not from `.get()` itself. Calling
+ * only `get()` here would make this always return `true` under a lazy
+ * implementation, which would turn "verified against reality" into
+ * "assumed" exactly where `createGatherChildren`'s doc comment says it
+ * isn't - a genuinely different `createBatch` failure would then be
+ * swallowed instead of rethrown, and the run would fail later, at
+ * `await-gather-children`, with an opaque `instance.not_found` instead of
+ * the real cause.
+ */
+async function childExists(env: Env, id: string): Promise<boolean> {
+  try {
+    const instance = await env.GATHER_WORKFLOW.get(id);
+    await instance.status();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Poll cadence for `await-gather-children` (spec.md: "The parent waits by
+ * polling child status in a step, not by holding a promise across `run()`").
+ * `step.sleep` counts toward neither the 1,024-step limit nor concurrency
+ * (Workflows limits docs; plan.md's question 1) - but it also does not force
+ * a fresh invocation (`probe/FINDINGS.md` §4-6), so consecutive poll rounds
+ * can land in the very same invocation as every round before them, sharing
+ * its 50-subrequest ceiling with everything else the parent does. 30 s
+ * trades round-trip latency for fewer rounds against that shared budget -
+ * see `GATHER_POLL_MAX_ROUNDS` for the arithmetic this cadence has to
+ * respect.
+ */
+const GATHER_POLL_INTERVAL = '30 seconds';
+/**
+ * The poll backstop is a subrequest budget, not a round count. One round
+ * costs one subrequest per child (spec.md), and rounds can accumulate in one
+ * invocation (`GATHER_POLL_INTERVAL`'s comment) - a *fixed* round cap would
+ * let `children x rounds` blow past 50 on its own before the cap ever fired,
+ * so a genuinely stuck run would die on the platform's own opaque "Too many
+ * subrequests by single Worker invocation." instead of this function's
+ * clearly-labelled one. 30 is a deliberately small slice of the 50: it
+ * leaves the rest for whatever else that invocation is doing, and at the
+ * `GATHER_FEEDS_PER_CHILD = 10` default (5 children) it allows 6 rounds -
+ * 3 minutes at `GATHER_POLL_INTERVAL`, far past what gathering ~10 simple
+ * RSS feeds should take. More children (a smaller `GATHER_FEEDS_PER_CHILD`)
+ * automatically get fewer rounds before this fires, which is the right
+ * direction: more children is already more poll subrequests per round.
+ */
+const GATHER_POLL_SUBREQUEST_BUDGET = 30;
+
+/**
+ * One `await-gather-children` round: reads every child's `status()`.
+ * `InstanceStatus.output` is typed `unknown` - `validateGatherOutput` below
+ * checks it rather than casting it, per plan.md's question 3's rule for exactly this
+ * value. A child that is `errored` or `terminated` fails this step
+ * immediately (spec.md requirement 4: a failed child fails the run,
+ * visibly - the deliberate opposite of a single dead *feed* inside a child,
+ * which still contributes zero without failing anything). While any child
+ * is still `queued`/`running`/`paused`/`waiting`, this returns `done: false`
+ * so `run()`'s poll loop sleeps and calls it again - there is no blocking
+ * join on a child instance (plan.md's question 3).
+ */
+export async function pollGatherChildren(env: Env, childIds: string[], round: number): Promise<GatherPollResult> {
+  const statuses = await Promise.all(childIds.map((id) => env.GATHER_WORKFLOW.get(id).then((instance) => instance.status())));
+
+  statuses.forEach((s, i) => {
+    if (s.status === 'errored' || s.status === 'terminated') {
+      throw new Error(`gather child ${childIds[i]} ${s.status}`);
+    }
   });
-  return writeRunCandidates(env.DB, runId, source.name, windowed);
+
+  if (statuses.some((s) => s.status !== 'complete')) {
+    // Derived from childIds.length, not a fixed constant - see
+    // GATHER_POLL_SUBREQUEST_BUDGET's own comment for why a fixed round
+    // count would let this backstop be beaten to the punch by the platform's
+    // own subrequest error.
+    const maxRounds = Math.max(1, Math.floor(GATHER_POLL_SUBREQUEST_BUDGET / childIds.length));
+    if (round >= maxRounds) {
+      throw new Error(`await-gather-children: ${childIds.length} children still not complete after ${maxRounds} polls`);
+    }
+    return { done: false, total: 0 };
+  }
+
+  let total = 0;
+  statuses.forEach((s, i) => {
+    total += validateGatherOutput(s.output, childIds[i] ?? `#${i}`);
+  });
+  return { done: true, total };
+}
+
+/** `InstanceStatus.output` is `unknown` - this is what actually enforces a child's "returns its candidate count" contract, per plan.md's question 3 ("validates rather than casts"). */
+function validateGatherOutput(output: unknown, childId: string): number {
+  if (typeof output !== 'number' || !Number.isFinite(output) || output < 0) {
+    throw new Error(`gather child ${childId} returned a non-count output`);
+  }
+  return output;
 }
 
 const STOPWORDS = new Set([

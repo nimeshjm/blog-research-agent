@@ -2,6 +2,7 @@ import type { Env, ResearchParams } from './lib/types';
 import { ATTR_INSTANCE_ID, traced } from './lib/trace';
 
 export { ResearchWorkflow } from './workflow';
+export { GatherWorkflow } from './gather-workflow';
 
 /**
  * Cron only starts a Workflow instance; all orchestration lives in the

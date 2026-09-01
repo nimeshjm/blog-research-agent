@@ -78,9 +78,27 @@ Feed volumes are perishable — arXiv cs.SE returned 41 raw items on 2026-08-27 
 1. **No step is retried.** `step.do` is invoked with a retry policy of zero attempts
    beyond the first, everywhere in the Worker. A step that throws fails its instance
    immediately.
-2. **Gather runs in child Workflow instances**, not in the parent's own `run()`. The
-   parent creates children, waits for them, and reads their results; no feed is parsed in
-   the parent invocation.
+2. **Gather *and article summarisation* run in child Workflow instances**, not in the
+   parent's own `run()`. The parent creates children, waits for them, and reads their
+   results; no feed is parsed and no article is fetched in the parent invocation.
+
+   **Extended 2026-08-31 (#75) after measuring the half of it that shipped.** Run
+   `6f75e460` moved gather into five children — all complete in 5-8 seconds, 264
+   candidates — and the parent went from summarising **0 articles to 14** before failing
+   the 15th with `Too many subrequests by single Worker invocation.` Children are
+   therefore confirmed to be a fresh subrequest budget, which was this design's
+   load-bearing untested inference; and moving *only* gather is confirmed insufficient,
+   which the arithmetic predicted before the run rather than after.
+
+   The parent's residue is what overflows: 15 articles cost a fetch plus a model call
+   each, roughly 30 subrequests, on top of `shortlist`'s D1 traffic, `synthesize` and
+   `open-pull-request`'s seven GitHub calls. That is over 50 with gather already gone, so
+   the same mechanism has to cover articles. This is an extension of the requirement, not
+   a new design: the child shape, the deterministic ids, the polling and the validated
+   integer return are all reused.
+
+   What stays in the parent: `select-topic`, `load-sources`, `shortlist`, `synthesize`
+   and `open-pull-request`. Those are bounded and do not grow with the allowlist.
 3. **A child instance parses at most `GATHER_FEEDS_PER_CHILD` feeds**, a value in
    `wrangler.toml` and nowhere else, sized so that a child completes with margin against
    the observed failure range rather than at its edge.
@@ -170,7 +188,9 @@ Criterion 4 stays open for PR 5's captures.
 >
 > Read every CPU justification below as the reason this was *first* proposed, not as the
 > reason it is still wanted. Requirement 6 (the design must not depend on the per-child
-> feed count) and acceptance criterion 2 are unaffected.
+> feed count) is unaffected. Acceptance criterion 2 was **not** unaffected and has been
+> rewritten — see it for why its original wording would have passed the very run that
+> exposed all of this.
 
 
 The parent workflow keeps `select-topic`, `load-sources`, `shortlist`, synthesis and the
@@ -221,7 +241,26 @@ margin rather than fitted to two data points.
 1. `npx wrangler deploy --dry-run` resolves every binding; `npm run typecheck`,
    `lint:ast`, `lint:ts`, `review:checks` and every mutation table pass.
 2. **Five consecutive runs against the deployed Worker each gather all 46 feeds and reach
-   `shortlist`, with no step reporting `Worker exceeded CPU time limit`.**
+   a successful terminal state — a `runs` row with `status = 'succeeded'` and a non-null
+   `pr_url` — with no step failing on a platform limit and no `summarize` step recording
+   a `fetch-threw` skip.**
+
+   **Rewritten 2026-08-31 (#75). The original wording would have graded a failing run a
+   pass**, and it is worth being exact about how, because the same trap will be there for
+   the next criterion someone writes against a symptom.
+
+   It read: *"gather all 46 feeds and reach `shortlist`, with no step reporting `Worker
+   exceeded CPU time limit`."* Run `0199648c` gathered all 46 feeds, reached `shortlist`,
+   and reported no CPU error — and then skipped every one of its 15 articles with `Too
+   many subrequests by single Worker invocation.`, spent zero neurons, and recorded
+   `insufficient_sources`. Two independent faults: the named error is no longer the one
+   that occurs, and `shortlist` is upstream of where the run now dies.
+
+   So the criterion is stated against the **outcome** rather than a symptom. A run that
+   opens a pull request cannot have been starved of CPU, subrequests or articles,
+   whatever the platform's failure message says next month. The `fetch-threw` clause is
+   the one symptom kept, because #85 made it self-reporting and because a run can reach
+   `succeeded` on a thin set of articles without it being visible in the `runs` row.
 
    Five, not one, and consecutive, not five of seven. Feature 002's criterion 5 was a
    single real run, and fact 1 makes a single run a coin: three of five identical probe
@@ -248,12 +287,12 @@ margin rather than fitted to two data points.
 | risk | mitigation |
 |---|---|
 | **The premise the whole feature is built on may no longer hold.** Measured 2026-08-31 (`FINDINGS.md` §7.1): a single `run()` execution absorbed 5x10^8 arithmetic iterations in one isolate with no boundary and **no `1102`**, twice. Three survivals at that size across two builds (114, 149, 695 ms of wall for the burn), against deaths at 10^9 and above; a fourth run at 5x10^8 on the same build as the deaths is what rules out the build, not the size, being the variable. The account is **Free**, checked in the dashboard, and neither `wrangler.toml` sets `[limits]` — so the enforced ceiling sits above ~115 ms of arithmetic and below ~230 ms, an order of magnitude above the documented 10 ms with no configuration or plan to explain it. Read as a bound, not a CPU figure: the deltas are wall-clock and a `Math.sqrt` loop does not transfer to `parseFeed`'s allocation and GC behaviour. Four days earlier the same account was measured to fail on the third feed parse in an invocation. Both cannot be true of the same platform. | **Not mitigated. This is a stop, not a risk to carry.** If the ceiling in force is not 10 ms, gather in child instances solves a problem that may not exist, and PR 3 is the wrong next PR. The cheap decisive follow-up is `map` mode over the same 46 feeds, on the real parse path: §1 and §4 record that as a coin flip on identical input, so a run now is directly comparable against committed evidence in a way the synthetic burn is not. Neither `wrangler.toml` declares `[limits]`, so a per-script `cpu_ms` difference is already ruled out; the account plan is the remaining candidate and this instrument cannot see it. |
-| **A child instance is not a fresh subrequest budget either.** Still the load-bearing inference in the whole design and still **untested** — but the resource in question changed on 2026-08-31. CPU is no longer what bites (`FINDINGS.md` §7.1, and run `0199648c` completed all 46 gathers with no `1102`); the 50-subrequest-per-invocation ceiling is. | Nothing measured it. It is adopted because it is the only remaining candidate with a mechanism story, and because `step.sleep` and retry are both measured *not* to be one. Criterion 2 is a repeated real run precisely because it is what decides — the same shape feature 002 used, and the same reason. If children do not help, the spec is wrong and the finding is worth as much as the fix would have been. |
+| ~~**A child instance is not a fresh subrequest budget either.**~~ **Closed 2026-08-31 by run `6f75e460`:** five gather children completed in 5-8 seconds and the parent, relieved of 46 feed fetches, summarised 14 articles where the previous run summarised 0. A child is a fresh budget. What remains open is narrower — whether moving the *articles* into children too leaves the parent's residue (`shortlist`, `synthesize`, `open-pull-request`) inside 50. That is arithmetic rather than inference: those are bounded and do not grow with the allowlist — but the resource in question changed on 2026-08-31. CPU is no longer what bites (`FINDINGS.md` §7.1, and run `0199648c` completed all 46 gathers with no `1102`); the 50-subrequest-per-invocation ceiling is. | Nothing measured it. It is adopted because it is the only remaining candidate with a mechanism story, and because `step.sleep` and retry are both measured *not* to be one. Criterion 2 is a repeated real run precisely because it is what decides — the same shape feature 002 used, and the same reason. If children do not help, the spec is wrong and the finding is worth as much as the fix would have been. |
 | **Free-tier limits on concurrent or daily Workflow instances are not recorded anywhere in this repo.** A design that creates ten instances per run may hit a ceiling nobody has cited. | `plan.md` must find and cite the number before choosing `GATHER_FEEDS_PER_CHILD`, and the design tolerates sequential children if concurrency is capped — children are independent, so running them one at a time costs wall-clock and nothing else. |
 | **Turning retries off removes a real recovery path** on the D1 and GitHub steps. | Accepted, and stated in the design section rather than buried. `fetchFeedItems` already insulates the gather path. Re-examine if a run fails on a step that would have recovered. |
 | **Polling children costs subrequests and parent CPU.** | One subrequest per child per poll, in a parent step that parses nothing. The parent's cost is counts and status reads; requirement 5 is what keeps it that way. |
 | **The failure is non-deterministic, so a green run proves less than it looks.** | Criterion 2 requires five consecutive, with the arithmetic stated. This risk is the reason that criterion is not "a run completes". |
-| **Per-feed CPU cost is still unmeasured**, so `GATHER_FEEDS_PER_CHILD` cannot be derived. | Requirement 6 keeps the design independent of the number. The value is chosen with margin in `plan.md`, and criterion 2 is what validates it. |
+| **Per-feed subrequest cost, not CPU, is what sizes `GATHER_FEEDS_PER_CHILD`** — corrected 2026-08-31 (#75); CPU is no longer the binding resource. | Requirement 6 keeps the design independent of the number. Unlike CPU, this one *is* measurable ahead of a run: a feed costs one fetch plus its D1 write. Criterion 2 still validates the choice. |
 
 ## Divergences from `intent.md`
 
