@@ -45,14 +45,15 @@ page, read 2026-08-28. Every row here is `documented`, not inferred.
 
 | limit | Workers Free | bearing on this design |
 |---|---|---|
-| Concurrent instances | **100** | 8 children per run is comfortably inside it |
+| Concurrent instances | **100** | 9 children per run (5 gather, 3 summarize, 1 publish) is comfortably inside it |
 | Instances waiting (`step.sleep`, retry, `waitForEvent`) | **do not count** toward concurrency | polling parents are cheap |
 | Instance lifetime | **no ceiling** — "can run forever" | closes `intent.md`'s open question in the opposite direction from the way it was asked |
 | Executions per day | 100,000, shared with the Workers daily request limit | ~9 instances per run is nothing |
 | Creation rate | 100/sec | irrelevant at this scale |
 | Steps per instance | **1,024** confirmed | see the budget below |
 | `step.sleep` / `sleepUntil` | **do not count** toward the step limit | polling can sleep between rounds for free |
-| Max non-stream step result | 1 MiB | a gather child returns an integer; a summarize child returns summaries bounded by `SHORTLIST_TOP_N` |
+| Max non-stream step result | 1 MiB | a gather child returns an integer; a summarize child returns summaries bounded by `SHORTLIST_TOP_N`; a publish child returns one URL |
+| Max event payload (an instance's params) | **1 MiB (2^20 bytes)**, Free and Paid alike | read again 2026-09-01 for work order step 10: a whole `Draft` is a few tens of KB, two orders of magnitude under |
 
 **`intent.md` asked for the instance lifetime ceiling and there is none.** Footnote 1:
 *"A Workflow instance can run forever, as long as each step does not take more than the
@@ -149,13 +150,13 @@ touch the same regex and each needs its own mutation row.
 
 ## Files
 
-### PR 1 — `75-plan-md` (Part 1 of 10)
+### PR 1 — `75-plan-md` (Part 1 of 11)
 
 | file | change |
 |---|---|
 | `features/003-run-to-completion/plan.md` | this file; replaces the unfilled template |
 
-### PR 2 — `75-no-retries` (Part 2 of 10)
+### PR 2 — `75-no-retries` (Part 2 of 11)
 
 | file | change |
 |---|---|
@@ -171,7 +172,7 @@ touch the same regex and each needs its own mutation row.
 | `test/trace.test.ts` | the policy is passed, with the exact shape |
 | `REVIEW.md` | pass 1 and pass 3 markers naming the new check ids |
 
-### PR 3 — `75-verify-no-retries` (Part 3 of 10)
+### PR 3 — `75-verify-no-retries` (Part 3 of 11)
 
 Not in the original table. Work order step 2 gates PR 3 on verifying the retry policy on
 a deployed Worker, and that verification produced both a record and a finding large
@@ -186,7 +187,7 @@ enough to be reviewable on its own.
 | `features/003-run-to-completion/spec.md` | the measured reading, and the CPU finding as a stop in the risk table |
 | `features/003-run-to-completion/plan.md` | this entry, and `M` 4 → 5; then, in the same PR and once the rest of the work order had actually run, 5 → 8 |
 
-### PR 4 — `75-parse-failure-modes` (Part 4 of 10)
+### PR 4 — `75-parse-failure-modes` (Part 4 of 11)
 
 Not in the original table, and not a deferred piece of one either. A deployed run
 (`972cea0c`) died on `synthesize-draft` with "model response was not valid JSON in the
@@ -205,7 +206,7 @@ a step that never reaches `open-pull-request`.
 | `test/prompts.test.ts` | every failure mode, and the one deliberate narrowing: JSON wrapped in prose used to parse by accident and now does not |
 | `test/workflow.test.ts` | the diagnosis survives into the error message |
 
-### PR 5 — `75-summarize-skip-reasons` (Part 5 of 10)
+### PR 5 — `75-summarize-skip-reasons` (Part 5 of 11)
 
 Not in the original table, and the reason the two PRs after it are shaped the way they
 are. A 46-feed run (`525a5386`) completed all 46 gather steps with no `1102` and then
@@ -226,7 +227,7 @@ rests on that fact and was planned against a different one.
 | `features/003-run-to-completion/spec.md` | the amendment: the design survives, on a different resource than the one it was argued from |
 | `test/workflow.test.ts` | each of the five skip paths is distinguishable |
 
-### PR 6 — `75-gather-children` (Part 6 of 10)
+### PR 6 — `75-gather-children` (Part 6 of 11)
 
 The rationale changed under this entry; the substance did not. Children were proposed to
 buy a fresh CPU budget, and run `0199648c`'s 46 clean gather steps killed that premise
@@ -246,7 +247,7 @@ the arithmetic in work order step 6.
 | `test/workflow.test.ts` | parent creates the right children, sums counts, fails on a failed child |
 | `test/gather-workflow.test.ts` | new: the child's own behaviour |
 
-### PR 7 — `75-summarize-children` (Part 7 of 10)
+### PR 7 — `75-summarize-children` (Part 7 of 11)
 
 Not in the original table, because the original table assumed moving gather out was
 enough. Run `6f75e460` settled both halves of that in one sitting. Gather in children
@@ -272,7 +273,7 @@ monomorphic, which is worth more than the file it costs.
 | `test/summarize-workflow.test.ts` | new: the child's own behaviour, including its slice of the neuron budget |
 | `test/workflow.test.ts` | the parent's second create-and-poll pair, and the bound on what it returns |
 
-### PR 8 — `75-volume-chunking` (Part 8 of 10)
+### PR 8 — `75-volume-chunking` (Part 8 of 11)
 
 Not in the original table. Run `bd33248b` killed gather child `g0` with `Worker exceeded
 CPU time limit.` while its four siblings completed: `GATHER_FEEDS_PER_CHILD` chunks by
@@ -292,7 +293,7 @@ allowlist's 1,117 items. Step 8 of the work order below is what this PR is.
 | `.claude/skills/cf-free-tier/SKILL.md` | the same correction, as PRs 2 and 5 both did |
 | `test/workflow.test.ts`, `test/d1.test.ts` | the chunker's cases, and the weight query's |
 
-### PR 9 — `75-cheaper-polling` (Part 9 of 10)
+### PR 9 — `75-cheaper-polling` (Part 9 of 11)
 
 Not in the original table, and found the same way the last four were: by deploying. Run
 `0357f119` reached `synthesize`, produced a real draft, and then failed
@@ -316,7 +317,35 @@ that turned into a PR of its own has.
 | `probe/captures/` | run `0357f119`'s parent, verbatim |
 | `test/workflow.test.ts` | the wait-then-poll ordering, driven through `run()` itself; a completed child not re-polled; outputs surviving across rounds; a replayed middle round; the round backstop at its new cap |
 
-### PR 10 — `75-five-runs` (Part 10 of 10, closes the tracking issue)
+### PR 10 — `75-publish-child` (Part 10 of 11)
+
+The half of run `0357f119`'s bill PR 9 deliberately left, and which PR 9's own entry said
+would arrive as its own PR: `open-pull-request`'s seven GitHub calls move out of the
+parent's invocation into a `PublishWorkflow` child. Step 11 of the work order below is
+what this PR is.
+
+It also fixes a real defect the same run exposed, which no requirement here had covered:
+publication is not atomic, and `0357f119` proved it by pushing
+`research/2026-09-01-modular-silent-trials-...` and committing the draft before dying.
+The branch is still in the blog repo, as is `research/2026-08-31-...` from the run before.
+See the work-order step for what was and was not already handled.
+
+| file | change |
+|---|---|
+| `src/publish-workflow.ts` | new: `PublishWorkflow`, `runPublish`, and `openPullRequest` moved here from `src/workflow.ts` unchanged |
+| `src/workflow.ts` | `createPublishChildren` / `pollPublishChildren` / `validatePublishOutput`, the third wait-then-poll loop, the fixed-cost recount, `openPullRequest` and its GitHub/mdx imports gone |
+| `src/lib/github.ts` | `refExists`; `createBranch`'s 422 confirmed against the live ref instead of assumed |
+| `src/lib/types.ts` | `PublishParams` (and the cited 1 MiB event-payload limit), `PublishPollState`, `PublishPollResult`, `Env.PUBLISH_WORKFLOW` |
+| `src/lib/trace.ts` | `ATTR_PUBLISH_CHILDREN`, allowlisted |
+| `src/index.ts`, `wrangler.toml` | the third export and its `[[workflows]]` block; no new `[vars]` entry - one child, nothing to chunk |
+| `scripts/review-checks.mjs` | `await-publish-children` / `-wait` added to `DYNAMIC_STEP_PREFIXES` |
+| `scripts/review-checks.test.mjs` | the `tracerFor`-rename row extended to the fourth child file - `tracerBoundNames` is a set of identifier names, so one file left unrenamed made the row pass while proving nothing |
+| `features/003-run-to-completion/spec.md` | requirement 2's third extension, requirement 7's blog-repo half, criterion 8's fourth output shape, and the parent's recounted subrequest table |
+| `features/003-run-to-completion/plan.md` | this entry, `M` 10 → 11, and the work-order step |
+| `test/publish-workflow.test.ts` | new: `openPullRequest`'s tests moved here, plus `runPublish` and the branch-already-exists paths |
+| `test/workflow.test.ts`, `test/github.test.ts` | the parent's create/poll/validate cases and the run-level ordering; `refExists` and the narrowed 422 |
+
+### PR 11 — `75-five-runs` (Part 11 of 11, closes the tracking issue)
 
 | file | change |
 |---|---|
@@ -327,7 +356,7 @@ that turned into a PR of its own has.
 The PR exists whatever the runs show, so its own existence never depends on the result —
 the same device feature 002 used for its PR 6.
 
-**`M` was revised anyway, 4 → 5 → 8 → 9 → 10, and every time by the case the device does not
+**`M` was revised anyway, 4 → 5 → 8 → 9 → 10 → 11, and every time by the case the device does not
 cover.** It protects against a PR whose *result* is unknown; it does not protect against a
 step of the work order turning out to need a PR of its own. Work order step 2's platform
 verification did, so it is PR 3 and the two implementation PRs shifted down. Then it
@@ -360,6 +389,24 @@ predictable from the other. Second, this revision is knowingly incomplete: PR 9 
 roughly 8 of the parent's 50, and `open-pull-request`'s 7 GitHub calls are still spent in
 the parent's invocation, so `M` is expected to move again. Saying so is cheaper than a plan
 that claims to be finished twice.
+
+**10 → 11 on 2026-09-01, and this is the one revision the plan predicted.** The paragraph
+directly above named it — "`open-pull-request`'s 7 GitHub calls are still spent in the
+parent's invocation, so `M` is expected to move again" — and PR 9's own entry said the
+move "will add its own entry and revise `M` again when it is written." PR 10 is that
+entry. So this seventh revision is not another finding from a run; it is the second half
+of a bill that was itemised before either half shipped, and the five runs shift to 11
+for a reason that was written down in advance rather than discovered.
+
+Two things it did turn up that were not predicted, both in the same step. Publication is
+**not atomic** and run `0357f119` demonstrated it: the branch and commit it pushed are
+still in the blog repo, so a same-slug re-run meets its own debris rather than a clean
+repo — a case requirement 7 covered for D1 and not for the blog repo until this PR. And
+`createBranch`'s existing 422-is-success rule turned out to be right about the case but
+wrong about the check: GitHub answers 422 to `Reference update failed` and `Object does
+not exist` as well, so a ref that was never created passed silently. Neither is a change
+to the design; both are recorded here because the plan's own device is that a finding
+shows up as a revision rather than as a quiet fix.
 
 ## Work order
 
@@ -629,11 +676,71 @@ where five rounds of 60 s gave 1.6x, and lets round 0 catch the measured converg
 outright. The interval is the free lever; the round count is the dear one.
 
 **What this does not fix.** The parent still spends `open-pull-request`'s 7 GitHub calls in
-its own invocation, and `shortlist`'s term grows with candidates per run. The first is a
-follow-up PR; the second is recorded in `spec.md`'s risk table as a floor set by D1's
+its own invocation, and `shortlist`'s term grows with candidates per run. The first is step
+10, the PR this one predicted; the second is recorded in `spec.md`'s risk table as a floor set by D1's
 100-bound-parameter cap rather than a knob.
 
-### 10. Five runs, and the record — PR 10
+### 10. Publication in a child — PR 10
+
+Step 9 spent the poll budget down and left the other half of run `0357f119`'s bill
+untouched: `open-pull-request`'s **seven** GitHub calls, still in the parent's invocation.
+This step moves them, by the mechanism that has now worked twice — a child Workflow
+instance is a separate invocation with its own 50 (measured, run `6f75e460`).
+
+**`PublishWorkflow`, and a third class rather than one parameterised child.** The binding
+is typed `Workflow<TParams>`, so one class covering gather, summarize and publish would
+mean one binding carrying a three-way union params type and a three-way union return type
+the parent has to narrow before it can validate any of it. `createChildBatch` /
+`pollChildBatch` already hold everything the three genuinely share; what differs is
+exactly the two things a class boundary keeps monomorphic. Same argument step 7 made when
+summarize became the second.
+
+**Cheapest of the three moves, for two structural reasons.** There is one child — one run
+publishes one draft — so there is nothing to chunk, requirement 3 gains no third value and
+`wrangler.toml` gets no new var. And the child returns a **single URL string**, so
+requirement 5 and criterion 8 hold by construction rather than by an argument about caps.
+Going the other way, the parent hands the child a whole `Draft` as the instance's params:
+the platform caps an **event payload at 1 MiB (2^20 bytes)** on Free and Paid alike
+([Workflows limits](https://developers.cloudflare.com/workflows/reference/limits/)), and a
+1,000–2,800-word body plus a brief of at most `SHORTLIST_TOP_N` source lines is a few tens
+of KB — two orders of magnitude under, and not a term that grows with the allowlist.
+
+**`record-success` stays in the parent and stays last**, because the `pr_url` it writes is
+what the child returns.
+
+**Cost.** The parent's fixed bill goes ~29 → **23** (the 7 out, `create-publish-children`'s
+1 in), `PUBLISH_POLL_SUBREQUEST_BUDGET` is 4 — which at one child *is* the round count,
+since `max(1, floor(budget / childCount))` divides by one — and `PUBLISH_POLL_INTERVAL` is
+15 s, gather's order of magnitude rather than summarize's, because seven sequential REST
+calls converge in seconds. Expected total ~35 of 50 on run `0357f119`'s shape; 46 if all
+three backstops are exhausted. `spec.md`'s "What run `0357f119` settled" carries the table.
+
+**The atomicity defect, which is not a subrequest problem.** `open-pull-request` pushes a
+branch, commits a file and *then* opens the pull request, so a run that dies part-way
+leaves state in a repository the next run also writes to. Run `0357f119` left
+`research/2026-09-01-modular-silent-trials-...` behind, and `research/2026-08-31-...`
+survives from the run before it. The branch name is `research/<date>-<slug>`, so a
+same-slug run meets its own debris.
+
+Half of this was already handled and it is worth being exact about which half, because the
+plan for this step was written on the assumption that neither was. `createBranch` already
+treated a 422 as success and `test/github.test.ts` already covered it, so a re-run did
+**not** fail on "reference already exists". What it did was believe the 422: GitHub answers
+422 to `Reference update failed` (branch protection) and `Object does not exist` (an
+unknown base sha) as well, and returning on any of them turned a ref that was never created
+into a silent success whose first symptom was a 404 from `putFile`. So the change is to
+*confirm* — `refExists` GETs the ref, and only an existing one is idempotent — which is the
+same rule `childExists` applies to a duplicate instance id, at one extra subrequest on a
+path that is already the exception. Requirement 7 gains the blog-repo half it never had.
+
+**The base-branch rule is untouched and is verified by removing it.** `BLOG_BASE_BRANCH`
+moves to `src/publish-workflow.ts` and is read in exactly one place, inline in a `base:`
+property, and the new ref-existence check is a GET in `src/lib/github.ts` that only ever
+receives the `research/*` head. `base-branch-not-a-write-target` was confirmed to still
+fire by two mutations of the new file — passing `env.BLOG_BASE_BRANCH` to `createBranch`,
+and as `putFile`'s `branch:` — each of which turns the check red.
+
+### 11. Five runs, and the record — PR 11
 
 Deploy, then trigger five runs **consecutively**, each to a terminal state, capturing
 `wrangler workflows instances describe` for the parent and at least one child of each.
@@ -660,9 +767,11 @@ deliberately unmitigated. That finding is written up rather than tuned around.
 parent, at `open-pull-request`, and `shortlist` was indeed the term that had moved - 13
 subrequests at 1,118 candidates against the 3 this plan estimated. Step 9 spent the poll
 budget down instead, because `shortlist`'s chunking is D1's 100-bound-parameter cap rather
-than a value here. So when reading a parent-side failure from here on, the first term to
-suspect is no longer `shortlist` but `open-pull-request`'s 7 GitHub calls, which are still
-spent in the parent's own invocation.
+than a value here. Step 10 then moved
+`open-pull-request`'s 7 GitHub calls out of the parent's invocation altogether. So when
+reading a parent-side failure from here on, `shortlist` is the first term to suspect again
+- it is 13 of the parent's 23 fixed subrequests, it is the only one that follows the feed
+allowlist, and there is nothing left to move out ahead of it.
 
 ## Reuse
 
@@ -678,7 +787,7 @@ spent in the parent's own invocation.
 - `probe/captures/` is the evidence pattern: commit the verbatim `describe` output at the
   moment it is taken, because feed volumes are perishable and dashboard traces expire in
   3 days (#22).
-- The `Part N of M of #75` marker on PRs 1–9, `Closes` on PR 10 only. Never
+- The `Part N of M of #75` marker on PRs 1–10, `Closes` on PR 11 only. Never
   `--body-file -` (`CLAUDE.md`, "Repeated mistakes").
 
 ## Verification
@@ -701,14 +810,24 @@ A guard that passes with its subject removed is dead. For each of
 guard, confirm the check goes red, restore, confirm green. Record the pair in the PR body
 — this is what `CONVENTIONS.md` means by verification re-deriving rather than believing.
 
+**Step 10 applied the same rule to a guard it did not add, and found it dead.** The
+`base-branch-not-a-write-target` check was confirmed live against the new
+`src/publish-workflow.ts` by two mutations of that file (`env.BLOG_BASE_BRANCH` passed to
+`createBranch`; the same value as `putFile`'s `branch:`), each of which turns it red. The
+mutation *table* row for the `tracerFor` rename, though, passed while proving nothing:
+`tracerBoundNames` is a set of identifier names collected across all of `src/`, so leaving
+the fourth child file calling `tracerFor` kept `traceStep` in the set and `src/workflow.ts`'s
+own calls carried on resolving. The row is extended, which is the third time this same
+staleness has had to be fixed by hand — the row's own comment now says so twice.
+
 ### Acceptance criteria, by number
 
 | # | how |
 |---|---|
 | 1 | the command block above |
-| 2 | five consecutive deployed runs, captures committed (work order 10) |
+| 2 | five consecutive deployed runs, captures committed (work order 11) |
 | 3 | `grep -rn 'step\.do(' src/` returns only `src/lib/trace.ts`; a bare call inserted into `src/workflow.ts` fails `lint:ast` |
-| 4 | one attempt row in `describe` for a deliberately failing step (work order 3). Measured on the probe, not on `research-workflow`, so this criterion stays open for PR 10 |
+| 4 | one attempt row in `describe` for a deliberately failing step (work order 3). Measured on the probe, not on `research-workflow`, so this criterion stays open for PR 11 |
 | 5 | terminate a child mid-run; parent errors, `runs` row status is not a success |
 | 6 | re-run a child against a written `run_id`; `SELECT count(*)` unchanged |
 | 7 | vitest parity case: shortlist from children == shortlist from the current path, same inputs |
@@ -724,9 +843,8 @@ settled, and neither the way this section expected: `1102` is not the failure in
 budget, so the risk row is struck through rather than open.
 
 What remains falsifiable is narrower, and arithmetic rather than inferential: a parent that
-exhausts 50 subrequests on its residue alone — `shortlist`, `synthesize`,
-`open-pull-request` and its own poll rounds — with both gather and summarisation already
-out of its invocation. The term to suspect is `findSeenUrls`, whose 100-URLs-per-query
+exhausts 50 subrequests on its residue alone — `shortlist`, `synthesize` and its own three
+poll loops — with gather, summarisation *and* publication all out of its invocation. The term to suspect is `findSeenUrls`, whose 100-URLs-per-query
 chunking scales with candidates and which `spec.md` records as deliberately unmitigated.
 That result gets written into `spec.md` and `probe/FINDINGS.md` rather than tuned away,
 and feature 003 goes back to Stage 2.
