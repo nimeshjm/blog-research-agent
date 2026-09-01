@@ -65,7 +65,14 @@ open pull request → record run.
   three fail with Workers error `1102`. Never parse many feeds or articles in one step
   regardless — one feed per step, one article per step is still what buys a *chance* of
   a fresh invocation, which is the only lever there is. I/O wait is free; parsing is not.
-- **50 subrequests per step.** A single fetch per step leaves headroom for redirects.
+- **50 subrequests per *invocation*, not per step.** Measured 2026-08-31 (#75) on run
+  `0199648c`: 46 gather steps then 15 article fetches, and every one of the 15 failed
+  with the platform's own `Too many subrequests by single Worker invocation.` A
+  subrequest is any `fetch` *and* any D1, KV or AI binding call, and each redirect
+  counts. So the budget is shared by whatever steps the runtime packs into one
+  invocation — the same shape as the CPU limit above, and this line said "per step"
+  until that run proved otherwise. One fetch per step is still right; it is no longer
+  sufficient.
 - **Cron wall-clock is 15 min**, Workflow steps have none. This is why orchestration is a
   Workflow, not a cron handler. Do not move logic back into `scheduled()`.
 - **10,000 neurons/day** is the whole inference budget. A run should cost ~4,300; the

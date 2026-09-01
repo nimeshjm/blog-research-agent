@@ -685,7 +685,7 @@ describe('summarizeArticle()', () => {
     expect(result.neurons).toBeGreaterThan(0);
   });
 
-  it('returns summary: null without failing when the article cannot be fetched', async () => {
+  it('returns skipReason: fetch-threw (with a truncated error message) when the fetch throws', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => {
@@ -693,22 +693,48 @@ describe('summarizeArticle()', () => {
       }),
     );
     const result = await summarizeArticle(envWithAi(chatFixture('{}')), candidate(), topic());
-    expect(result).toEqual({ summary: null, neurons: 0 });
+    expect(result.summary).toBeNull();
+    expect(result.neurons).toBe(0);
+    expect(result.skipReason).toBe('fetch-threw');
+    expect(result.errorMessage).toBe('network down');
+    expect(result.status).toBeUndefined();
   });
 
-  it('returns summary: null without failing on a non-2xx fetch', async () => {
+  it('caps errorMessage at 100 chars for a fetch throw with a long message', async () => {
+    const longMessage = 'x'.repeat(200);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error(longMessage);
+      }),
+    );
+    const result = await summarizeArticle(envWithAi(chatFixture('{}')), candidate(), topic());
+    expect(result.skipReason).toBe('fetch-threw');
+    expect(result.errorMessage).toHaveLength(100);
+    expect(result.errorMessage).toBe(longMessage.slice(0, 100));
+  });
+
+  it('returns skipReason: http-error (with the status) on a non-2xx fetch', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 404 })));
     const result = await summarizeArticle(envWithAi(chatFixture('{}')), candidate(), topic());
-    expect(result).toEqual({ summary: null, neurons: 0 });
+    expect(result.summary).toBeNull();
+    expect(result.neurons).toBe(0);
+    expect(result.skipReason).toBe('http-error');
+    expect(result.status).toBe(404);
+    expect(result.errorMessage).toBeUndefined();
   });
 
-  it('returns summary: null without failing when the article body extracts to nothing', async () => {
+  it('returns skipReason: empty-extract when the article body extracts to nothing', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => articleResponse('<script>only script content</script>')));
     const result = await summarizeArticle(envWithAi(chatFixture('{}')), candidate(), topic());
-    expect(result).toEqual({ summary: null, neurons: 0 });
+    expect(result.summary).toBeNull();
+    expect(result.neurons).toBe(0);
+    expect(result.skipReason).toBe('empty-extract');
+    expect(result.status).toBeUndefined();
+    expect(result.errorMessage).toBeUndefined();
   });
 
-  it('returns summary: null (but still reports spent neurons) when the model response is not parseable JSON', async () => {
+  it('returns skipReason: unparseable (but still reports spent neurons) when the model response is not parseable JSON', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => articleResponse('<p>Article prose.</p>')));
     const aiEnv = envWithAi(chatFixture('I think the article is about... (reasoning-fallback prose, not JSON)'));
 
@@ -716,14 +742,27 @@ describe('summarizeArticle()', () => {
 
     expect(result.summary).toBeNull();
     expect(result.neurons).toBeGreaterThan(0);
+    expect(result.skipReason).toBe('unparseable');
   });
 
-  it('returns summary: null when the completion was truncated (finish_reason: length)', async () => {
+  it('returns skipReason: truncated when the completion was truncated (finish_reason: length)', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => articleResponse('<p>Article prose.</p>')));
     const aiEnv = envWithAi(chatFixture('{"summary": "cut off h', 'length'));
 
     const result = await summarizeArticle(aiEnv, candidate(), topic());
     expect(result.summary).toBeNull();
+    expect(result.skipReason).toBe('truncated');
+  });
+
+  it('distinguishes truncated from unparseable - both skip before a summary but for different reasons', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => articleResponse('<p>Article prose.</p>')));
+
+    const truncated = await summarizeArticle(envWithAi(chatFixture('{"summary": "cut off h', 'length')), candidate(), topic());
+    const unparseable = await summarizeArticle(envWithAi(chatFixture('not json at all')), candidate(), topic());
+
+    expect(truncated.skipReason).toBe('truncated');
+    expect(unparseable.skipReason).toBe('unparseable');
+    expect(truncated.skipReason).not.toBe(unparseable.skipReason);
   });
 });
 

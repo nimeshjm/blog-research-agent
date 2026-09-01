@@ -159,6 +159,20 @@ Criterion 4 stays open for PR 5's captures.
 
 ### Gather in child instances
 
+> **Amended 2026-08-31 (#75).** This section was written to buy a fresh **CPU** budget.
+> That rationale is dead: run `0199648c` completed all 46 gather steps with no `1102`,
+> and `probe/FINDINGS.md` §7.1 measured an invocation surviving work two orders of
+> magnitude past the documented 10 ms. The design survives on a different resource. The
+> same run failed every one of its 15 article fetches with `Too many subrequests by
+> single Worker invocation.`, and a child instance is a separate invocation with its own
+> 50. Moving 46 gathers out leaves the parent roughly 15 article fetches, 16 model calls
+> and its D1 traffic — inside 50, where 46 + 15 never was.
+>
+> Read every CPU justification below as the reason this was *first* proposed, not as the
+> reason it is still wanted. Requirement 6 (the design must not depend on the per-child
+> feed count) and acceptance criterion 2 are unaffected.
+
+
 The parent workflow keeps `select-topic`, `load-sources`, `shortlist`, synthesis and the
 pull request. It no longer parses feeds. Instead:
 
@@ -196,7 +210,7 @@ margin rather than fitted to two data points.
 |---|---|
 | **CPU is charged per invocation and a step boundary is not a reset** | The design stops relying on boundaries arriving. A child instance is a new invocation lineage by construction rather than by hope. |
 | **10,000 neurons/day** | Unchanged. Children do no inference; `NEURON_BUDGET_PER_RUN` and `neuronsFor()` stay in the parent. |
-| **50 subrequests per step** | One fetch per feed per step is unchanged. Parent polling adds one subrequest per child per poll, in the parent's own steps. |
+| **50 subrequests per *invocation*** | Corrected 2026-08-31 (#75, run `0199648c`) from "per step", which is what this row said. One fetch per feed per step is unchanged and is no longer sufficient: 46 gather steps exhausted the budget before a single article fetch, all 15 failing with `Too many subrequests by single Worker invocation.` This, not CPU, is now the measured reason gather has to leave the parent's invocation. Parent polling adds one subrequest per child per poll. |
 | **1,024 steps per instance** | Improved, not worsened: the parent sheds 46 gather steps and gains roughly `46 / GATHER_FEEDS_PER_CHILD` create-and-poll steps. Each child holds its own budget. |
 | **Instance lifetime** | Still uncited (`intent.md` open question). Measured floor of ≥46 minutes (fact 5). A child's lifetime is a fraction of a parent's, so the design moves away from the ceiling rather than toward it. |
 | **Cron wall-clock 15 min** | Not binding: orchestration remains a Workflow. The cron is paused (#64) and this feature does not restore it. |
@@ -234,7 +248,7 @@ margin rather than fitted to two data points.
 | risk | mitigation |
 |---|---|
 | **The premise the whole feature is built on may no longer hold.** Measured 2026-08-31 (`FINDINGS.md` §7.1): a single `run()` execution absorbed 5x10^8 arithmetic iterations in one isolate with no boundary and **no `1102`**, twice. Three survivals at that size across two builds (114, 149, 695 ms of wall for the burn), against deaths at 10^9 and above; a fourth run at 5x10^8 on the same build as the deaths is what rules out the build, not the size, being the variable. The account is **Free**, checked in the dashboard, and neither `wrangler.toml` sets `[limits]` — so the enforced ceiling sits above ~115 ms of arithmetic and below ~230 ms, an order of magnitude above the documented 10 ms with no configuration or plan to explain it. Read as a bound, not a CPU figure: the deltas are wall-clock and a `Math.sqrt` loop does not transfer to `parseFeed`'s allocation and GC behaviour. Four days earlier the same account was measured to fail on the third feed parse in an invocation. Both cannot be true of the same platform. | **Not mitigated. This is a stop, not a risk to carry.** If the ceiling in force is not 10 ms, gather in child instances solves a problem that may not exist, and PR 3 is the wrong next PR. The cheap decisive follow-up is `map` mode over the same 46 feeds, on the real parse path: §1 and §4 record that as a coin flip on identical input, so a run now is directly comparable against committed evidence in a way the synthetic burn is not. Neither `wrangler.toml` declares `[limits]`, so a per-script `cpu_ms` difference is already ruled out; the account plan is the remaining candidate and this instrument cannot see it. |
-| **A child instance is not a fresh CPU budget either.** This is the load-bearing inference in the whole design and it is **untested**. | Nothing measured it. It is adopted because it is the only remaining candidate with a mechanism story, and because `step.sleep` and retry are both measured *not* to be one. Criterion 2 is a repeated real run precisely because it is what decides — the same shape feature 002 used, and the same reason. If children do not help, the spec is wrong and the finding is worth as much as the fix would have been. |
+| **A child instance is not a fresh subrequest budget either.** Still the load-bearing inference in the whole design and still **untested** — but the resource in question changed on 2026-08-31. CPU is no longer what bites (`FINDINGS.md` §7.1, and run `0199648c` completed all 46 gathers with no `1102`); the 50-subrequest-per-invocation ceiling is. | Nothing measured it. It is adopted because it is the only remaining candidate with a mechanism story, and because `step.sleep` and retry are both measured *not* to be one. Criterion 2 is a repeated real run precisely because it is what decides — the same shape feature 002 used, and the same reason. If children do not help, the spec is wrong and the finding is worth as much as the fix would have been. |
 | **Free-tier limits on concurrent or daily Workflow instances are not recorded anywhere in this repo.** A design that creates ten instances per run may hit a ceiling nobody has cited. | `plan.md` must find and cite the number before choosing `GATHER_FEEDS_PER_CHILD`, and the design tolerates sequential children if concurrency is capped — children are independent, so running them one at a time costs wall-clock and nothing else. |
 | **Turning retries off removes a real recovery path** on the D1 and GitHub steps. | Accepted, and stated in the design section rather than buried. `fetchFeedItems` already insulates the gather path. Re-examine if a run fails on a step that would have recovered. |
 | **Polling children costs subrequests and parent CPU.** | One subrequest per child per poll, in a parent step that parses nothing. The parent's cost is counts and status reads; requirement 5 is what keeps it that way. |
