@@ -65,7 +65,11 @@ curl -sX POST https://research-probe.<subdomain>.workers.dev \
 npx wrangler workflows instances describe probe-workflow <id>
 ```
 
-`mode` is `map` (one step per feed, in the order given), `sleep` or `retry`. Reordering
+`mode` is `map` (one step per feed, in the order given), `sleep`, `retry`, `noretry`,
+`noretry-cpu` or `cpu`. **An unrecognised mode is rejected with 400** — it used to fall
+through to the gather loop, where a run with no `feeds` reads back as "the thing under
+test did nothing", which is the exact false negative these runs exist to avoid.
+Reordering
 the `feeds` array is how the position of a feed is varied — putting The Pragmatic
 Engineer first is the experiment that separates "that feed is too expensive on its own"
 from "the tenth step has no budget left".
@@ -114,6 +118,33 @@ not, the step never succeeds. A clock read survives both.
 
 Compare `retry:fails-then-passes`'s `r` and `iso` against `retry:before-2`'s. Different
 `r` means the retry ran in a separate `run()` execution.
+
+`noretry`, `noretry-cpu` and `cpu` were added 2026-08-31 for feature 003's gate on PR 3:
+does `retries: { limit: 0, delay: 0 }` — what `src/lib/trace.ts` now passes at
+production's one `step.do` call site — actually suppress retries, and does `limit: 0`
+mean *no attempts at all*? The value is written out in `probe.ts` rather than imported
+from `src/lib/trace.ts`, because a probe importing production's constant would stop
+measuring the platform and start tracking a later edit.
+
+| mode | shape | policy | reads |
+|---|---|---|---|
+| `noretry` | two markers, then a step that always throws | `NO_RETRIES` | attempt rows on the throwing step; **and** whether the markers ran at all |
+| `retry` | as above but the step stops throwing after ~25 s | platform default | the same-sitting control |
+| `noretry-cpu` | two markers, then 5x10^8 arithmetic iterations | `NO_RETRIES` | whether the policy also covers a `1102` |
+| `cpu` | as above | platform default | its control |
+
+Pass conditions differ per run and must not be swapped:
+
+- **`noretry`** — the markers complete *and* the throwing step shows exactly one attempt
+  row. The markers are the half that rules out `limit: 0` meaning "never run".
+- **`noretry-cpu` / `cpu`** — attempt rows on the burn step only. A missing marker row
+  here says nothing about `limit`: the markers may share the invocation the kill lands
+  in.
+
+`cpu` mode is also the only thing here that reads the CPU ceiling directly. It is not a
+CPU *figure* — the burn either survives or does not — but "one `run()` execution absorbed
+5x10^8 iterations" is a lower bound where `FINDINGS.md` previously had nothing. See
+section 7.1, where both burns survived.
 
 ## Typecheck
 
