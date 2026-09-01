@@ -65,17 +65,66 @@ export async function readBaseRefSha(config: GithubConfig, baseBranch: string): 
 }
 
 /**
- * Creates `refs/heads/<branchName>` pointing at `fromSha`. Idempotent: a
- * `422` ("Reference already exists") is treated as success rather than an
- * error, because a retried `step.do` must not fail on a branch an earlier
- * attempt already created.
+ * Does `heads/<branchName>` exist? `null`-free companion to
+ * `readBaseRefSha`: this one is only ever asked about a branch the agent
+ * writes, so it reports existence rather than a sha and treats a 404 as an
+ * answer instead of a failure.
+ *
+ * Each path segment is encoded separately, not the whole name: GitHub's
+ * `GET /git/ref/{ref}` takes `heads/research/<date>-<slug>` with its slashes
+ * intact and answers 404 to a `%2F`-encoded one, so `encodeURIComponent` over
+ * the whole branch name - what `readBaseRefSha` can afford, its argument
+ * being an unslashed branch - would report every `research/*` branch missing.
+ */
+export async function refExists(config: GithubConfig, branchName: string): Promise<boolean> {
+  const encoded = branchName.split('/').map(encodeURIComponent).join('/');
+  const res = await githubFetch(config, `/repos/${config.repo}/git/ref/heads/${encoded}`);
+  if (res.status === 404) return false;
+  if (!res.ok) throw new GithubError(res.status, 'refExists');
+  return true;
+}
+
+/**
+ * Creates `refs/heads/<branchName>` pointing at `fromSha`. Idempotent on a
+ * branch that is already there - which is needed for two independent
+ * reasons, neither of them a retry (no step is retried; feature 003
+ * requirement 1):
+ *
+ *  - `run()` re-executes from the top on every replay (feature 003 spec.md
+ *    fact 2), so this can be called a second time inside one run.
+ *  - **A failed run leaves its branch behind.** Run `0357f119` (2026-09-01)
+ *    pushed `research/2026-09-01-modular-silent-trials-...` and its commit,
+ *    then died before opening the pull request; `research/2026-08-31-...`
+ *    survives from the run before it. The branch name is
+ *    `research/<draft.date>-<draft.slug>`, so a later run that derives the
+ *    same slug meets its own leftover rather than a clean repo.
+ *
+ * **The 422 is checked against reality rather than assumed to mean "already
+ * exists".** GitHub answers 422 here to at least three different things -
+ * `Reference already exists`, `Reference update failed` (branch protection),
+ * and `Object does not exist` (a `fromSha` the repo does not have) - so
+ * returning on any 422, which this did until 2026-09-01, turned the latter
+ * two into a silent success whose first symptom was a 404 from `putFile` or a
+ * pull request opened against a ref that was never created. Confirming via
+ * `refExists` is the same rule `childExists`
+ * (src/lib/workflow-children.ts) applies to a duplicate instance id, and it
+ * costs one extra subrequest only on the path that is already the exception.
+ *
+ * The existing ref is left pointing where it points; it is never moved to
+ * `fromSha`. `putFile` commits onto it next and reads its current file sha
+ * first, so a branch left behind by a failed run is reused rather than
+ * reset - and a force-update would be a write this agent has no reason to
+ * make.
  */
 export async function createBranch(config: GithubConfig, branchName: string, fromSha: string): Promise<void> {
   const res = await githubFetch(config, `/repos/${config.repo}/git/refs`, {
     method: 'POST',
     body: JSON.stringify({ ref: `refs/heads/${branchName}`, sha: fromSha }),
   });
-  if (res.status === 422) return;
+  if (res.status === 422) {
+    if (await refExists(config, branchName)) return;
+    throw new GithubError(res.status, 'createBranch');
+  }
   if (!res.ok) throw new GithubError(res.status, 'createBranch');
 }
 
