@@ -180,6 +180,28 @@ describe('chunkSourcesByVolume()', () => {
     expect(chunks[0]!.filter((s) => weights.get(s.name)! > 0).map((s) => s.name)).toEqual(['arXiv cs.AI']);
     expect(chunks.map((c) => loadOf(c, weights))).toEqual([783, 84, 84, 83, 83]);
     expect(chunks.map((c) => c.length)).toEqual([6, 10, 10, 10, 10]);
+    // Membership, not only the aggregates: the totals above are identical
+    // under several different placements of the 19 empty feeds, so they do
+    // not on their own pin what this function returns.
+    expect(chunks.map((c) => c.map((s) => s.name))).toEqual([
+      ['arXiv cs.AI', 'Transluce', 'Windsurf Blog', 'Windsurf Changelog', 'Windsurf Next Changelog', 'xAI'],
+      [
+        'arXiv cs.SE', 'Weaviate', 'Dagster', 'Cohere', 'EleutherAI Papers', 'FAR.AI', 'Groq', 'Mistral AI',
+        'Paul Graham Essays', 'The Batch (DeepLearning.AI)',
+      ],
+      [
+        'OpenAI', 'Cursor', 'Honeycomb', 'Anthropic Research', 'Pinecone', 'OpenAI Engineering', 'Goodfire',
+        'OpenAI Research', 'Perplexity', 'Timaeus',
+      ],
+      [
+        'Simon Willison', 'Stack Overflow', 'GitHub', 'The Pragmatic Engineer', 'Anthropic News', 'OpenAI Developer',
+        'Surge AI', 'UK AI Safety Institute', 'AI at Meta', 'Anthropic Frontier Red Team',
+      ],
+      [
+        'Claude', 'Cloudflare', 'Google Developers — AI', 'DX', 'Martin Fowler', 'Ollama', 'AI FIRST Podcast',
+        'Will Larson', 'Anthropic Engineering', 'Chander Ramesh',
+      ],
+    ]);
   });
 
   it('the feed-count cap binds before the weight balance does', () => {
