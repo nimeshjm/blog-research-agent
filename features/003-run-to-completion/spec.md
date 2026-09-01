@@ -102,12 +102,27 @@ Feed volumes are perishable — arXiv cs.SE returned 41 raw items on 2026-08-27 
 3. **A child instance parses at most `GATHER_FEEDS_PER_CHILD` feeds**, a value in
    `wrangler.toml` and nowhere else, sized so that a child completes with margin against
    the observed failure range rather than at its edge.
+
+   **Extended 2026-08-31 (#75), alongside requirement 2's own amendment.** A summarize
+   child processes at most `SUMMARIZE_ARTICLES_PER_CHILD` shortlisted candidates, the
+   same value shape one requirement earlier, sized against the same 50-subrequest ceiling
+   (`createSummarizeChildren`'s comment in `src/workflow.ts`) rather than the feed count.
 4. **A failed child fails the run**, visibly. It does not silently contribute zero
    candidates. This is the deliberate opposite of the dead-feed rule, which stays: a feed
    that cannot be fetched still contributes zero without failing anything.
 5. **The parent's own CPU cost does not grow with the number of children.** It holds
    counts, never candidates — the same rule feature 002 applied to `gather` within one
    instance, applied again one level up.
+
+   **Extended 2026-08-31 (#75).** A summarize child cannot return a bare count the way a
+   gather child does — `synthesize` needs the summaries themselves, not just how many
+   there are. The reading this requirement is held to is the *size* claim, not the literal
+   word: a step's output must not grow with the number of feeds or the number of
+   children, whatever shape it takes. It holds under that reading because the parent's
+   `await-summarize-children` step output is bounded by `SHORTLIST_TOP_N` (15 candidates,
+   fixed regardless of the allowlist's size or how many children the run happens to split
+   into) — see `createSummarizeChildren`'s comment for the 1 MiB arithmetic this stays
+   two orders of magnitude under.
 6. **The design does not depend on where the failure boundary falls.** Requirement 3's
    value may be tuned from measurement, but no requirement here asserts that N feeds fit
    and N+1 do not. The failure is not deterministic (fact 1), so any design keyed to a
@@ -282,10 +297,22 @@ margin rather than fitted to two data points.
 8. The parent's step outputs are integers, never candidate arrays — feature 002's
    criterion 6, applied to the parent/child seam.
 
+   **Extended 2026-08-31 (#75).** Two of the parent's own step outputs were never
+   literally integers even before this extension: `create-gather-children` and
+   `create-summarize-children` both output `string[]` (child ids), not an integer — that
+   was already true when this criterion was written and is not a regression. What it
+   guards against is a candidate (or now a summary) array whose size scales with the feed
+   allowlist or the child count. `await-summarize-children`'s own output is an object
+   carrying a `summaries: ArticleSummary[]` capped at `SHORTLIST_TOP_N`, which is bounded
+   for the same reason requirement 5's amendment gives — sized once against `SHORTLIST_TOP_N`,
+   not against feed count or child count, and small enough in practice that the `create-*`
+   steps' own id arrays are a closer comparison than "an integer" ever was.
+
 ## Risks and mitigations
 
 | risk | mitigation |
 |---|---|
+| **`shortlist` can exhaust the parent's invocation on its own, and nothing upstream stops it.** `findSeenUrls` chunks 100 URLs per D1 query; at `SHORTLIST_MAX_CANDIDATES`'s 4,000-row ceiling that is **40 queries — 40 subrequests — in the parent's invocation before a single child is polled.** Gather and summarize both leaving the parent does not touch this. | **Not mitigated, and deliberately not tuned.** Measured volumes are nowhere near it: 7 queries on 2026-08-26 (~700 candidates), 3 on run `6f75e460` (264), because the 30-day gather window bounds the input long before the 4,000 ceiling does. So the ceiling is reachable only if that window is widened or the allowlist grows several-fold — which is exactly when someone would be changing feeds and not thinking about D1. The number to watch is candidates per run, not feeds; `findSeenUrls` already throws rather than truncating past 50 chunks, so the failure is loud. Recorded here so the next person to widen `GATHER_WINDOW_DAYS` finds it. |
 | **The premise the whole feature is built on may no longer hold.** Measured 2026-08-31 (`FINDINGS.md` §7.1): a single `run()` execution absorbed 5x10^8 arithmetic iterations in one isolate with no boundary and **no `1102`**, twice. Three survivals at that size across two builds (114, 149, 695 ms of wall for the burn), against deaths at 10^9 and above; a fourth run at 5x10^8 on the same build as the deaths is what rules out the build, not the size, being the variable. The account is **Free**, checked in the dashboard, and neither `wrangler.toml` sets `[limits]` — so the enforced ceiling sits above ~115 ms of arithmetic and below ~230 ms, an order of magnitude above the documented 10 ms with no configuration or plan to explain it. Read as a bound, not a CPU figure: the deltas are wall-clock and a `Math.sqrt` loop does not transfer to `parseFeed`'s allocation and GC behaviour. Four days earlier the same account was measured to fail on the third feed parse in an invocation. Both cannot be true of the same platform. | **Not mitigated. This is a stop, not a risk to carry.** If the ceiling in force is not 10 ms, gather in child instances solves a problem that may not exist, and PR 3 is the wrong next PR. The cheap decisive follow-up is `map` mode over the same 46 feeds, on the real parse path: §1 and §4 record that as a coin flip on identical input, so a run now is directly comparable against committed evidence in a way the synthetic burn is not. Neither `wrangler.toml` declares `[limits]`, so a per-script `cpu_ms` difference is already ruled out; the account plan is the remaining candidate and this instrument cannot see it. |
 | ~~**A child instance is not a fresh subrequest budget either.**~~ **Closed 2026-08-31 by run `6f75e460`:** five gather children completed in 5-8 seconds and the parent, relieved of 46 feed fetches, summarised 14 articles where the previous run summarised 0. A child is a fresh budget. What remains open is narrower — whether moving the *articles* into children too leaves the parent's residue (`shortlist`, `synthesize`, `open-pull-request`) inside 50. That is arithmetic rather than inference: those are bounded and do not grow with the allowlist — but the resource in question changed on 2026-08-31. CPU is no longer what bites (`FINDINGS.md` §7.1, and run `0199648c` completed all 46 gathers with no `1102`); the 50-subrequest-per-invocation ceiling is. | Nothing measured it. It is adopted because it is the only remaining candidate with a mechanism story, and because `step.sleep` and retry are both measured *not* to be one. Criterion 2 is a repeated real run precisely because it is what decides — the same shape feature 002 used, and the same reason. If children do not help, the spec is wrong and the finding is worth as much as the fix would have been. |
 | **Free-tier limits on concurrent or daily Workflow instances are not recorded anywhere in this repo.** A design that creates ten instances per run may hit a ceiling nobody has cited. | `plan.md` must find and cite the number before choosing `GATHER_FEEDS_PER_CHILD`, and the design tolerates sequential children if concurrency is capped — children are independent, so running them one at a time costs wall-clock and nothing else. |

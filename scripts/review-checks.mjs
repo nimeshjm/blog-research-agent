@@ -227,7 +227,19 @@ function stepNamePrefix(text) {
  * does not, a later round would replay an earlier round's cached `done: false`
  * forever.
  */
-const DYNAMIC_STEP_PREFIXES = new Set(['gather', 'summarize', 'await-gather-children', 'await-gather-children-wait']);
+// `await-summarize-children`/`await-summarize-children-wait` added
+// 2026-08-31 (#75): summarize's own poll loop, moved into
+// SummarizeWorkflow children the same way gather's was - `summarize` itself
+// was already here (the per-article step, unchanged, now issued from
+// src/summarize-workflow.ts instead of src/workflow.ts).
+const DYNAMIC_STEP_PREFIXES = new Set([
+  'gather',
+  'summarize',
+  'await-gather-children',
+  'await-gather-children-wait',
+  'await-summarize-children',
+  'await-summarize-children-wait',
+]);
 const INFERENCE_STEP_PREFIXES = new Set(['summarize', 'synthesize']);
 
 /**
@@ -260,10 +272,6 @@ checks.push({
   pass: 1,
   severity: 'Important',
   run(ctx) {
-    const rel = 'src/workflow.ts';
-    const sf = ctx.getSourceFile(rel);
-    if (!sf) return [{ file: rel, line: 0, message: `${rel} not found - nothing to check` }];
-
     /** Does `node`'s own body contain a break not swallowed by a nested loop/switch/function? */
     function containsOwnBreak(node) {
       let found = false;
@@ -297,21 +305,32 @@ checks.push({
       return prefixes;
     }
 
+    // Every src file, not just src/workflow.ts (widened 2026-08-31, #75):
+    // the summarize loop this check exists for moved into
+    // src/summarize-workflow.ts when article summarization became a child
+    // Workflow, and a file-pinned check would have gone quietly vacuous -
+    // zero loops found in src/workflow.ts is zero findings, not a failure.
+    // See rel="src/summarize-workflow.ts" in the mutation row that proves
+    // this still fires.
     const findings = [];
-    (function visit(node) {
-      if (isLoop(node)) {
-        const prefixes = inferenceStepPrefixesUsed(node);
-        const needsBreak = [...prefixes].some((p) => INFERENCE_STEP_PREFIXES.has(p));
-        if (needsBreak && !containsOwnBreak(node)) {
-          findings.push({
-            file: rel,
-            line: line(sf, node),
-            message: 'loop carries an inference step (summarize/synthesize) with no break - can exceed NEURON_BUDGET_PER_RUN',
-          });
+    for (const rel of ctx.srcFiles) {
+      const sf = ctx.getSourceFile(rel);
+      if (!sf) continue;
+      (function visit(node) {
+        if (isLoop(node)) {
+          const prefixes = inferenceStepPrefixesUsed(node);
+          const needsBreak = [...prefixes].some((p) => INFERENCE_STEP_PREFIXES.has(p));
+          if (needsBreak && !containsOwnBreak(node)) {
+            findings.push({
+              file: rel,
+              line: line(sf, node),
+              message: 'loop carries an inference step (summarize/synthesize) with no break - can exceed NEURON_BUDGET_PER_RUN',
+            });
+          }
         }
-      }
-      ts.forEachChild(node, visit);
-    })(sf);
+        ts.forEachChild(node, visit);
+      })(sf);
+    }
     return findings;
   },
 });

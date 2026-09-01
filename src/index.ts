@@ -3,6 +3,7 @@ import { ATTR_INSTANCE_ID, traced } from './lib/trace';
 
 export { ResearchWorkflow } from './workflow';
 export { GatherWorkflow } from './gather-workflow';
+export { SummarizeWorkflow } from './summarize-workflow';
 
 /**
  * Cron only starts a Workflow instance; all orchestration lives in the

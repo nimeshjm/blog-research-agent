@@ -5,6 +5,8 @@ export interface Env {
   RESEARCH_WORKFLOW: Workflow<ResearchParams>;
   /** feature 003: the child Workflow gather runs in, not the parent's own steps. See src/gather-workflow.ts. */
   GATHER_WORKFLOW: Workflow<GatherParams>;
+  /** feature 003, extended 2026-08-31 (#75): the child Workflow article summarization runs in, not the parent's own steps. See src/summarize-workflow.ts. */
+  SUMMARIZE_WORKFLOW: Workflow<SummarizeParams>;
 
   BLOG_REPO: string;
   BLOG_BASE_BRANCH: string;
@@ -16,6 +18,8 @@ export interface Env {
   GITHUB_API_BASE: string;
   /** How many feeds one GatherWorkflow child parses. See its own comment in src/workflow.ts for the subrequest arithmetic this is sized against. */
   GATHER_FEEDS_PER_CHILD: string;
+  /** How many shortlisted candidates one SummarizeWorkflow child processes. See createSummarizeChildren's comment in src/workflow.ts for the subrequest arithmetic this is sized against. */
+  SUMMARIZE_ARTICLES_PER_CHILD: string;
 
   /** Set with `wrangler secret put GITHUB_TOKEN`. Never in wrangler.toml. */
   GITHUB_TOKEN: string;
@@ -144,6 +148,38 @@ export interface GatherParams {
 export interface GatherPollResult {
   done: boolean;
   total: number;
+}
+
+/**
+ * `SummarizeWorkflow`'s input (feature 003, extended 2026-08-31 (#75) once
+ * gather's own child shape proved out: run `6f75e460` moved 46 feeds off the
+ * parent and the parent still failed its 15th article on
+ * `Too many subrequests by single Worker invocation.`). One instance per
+ * chunk of `SUMMARIZE_ARTICLES_PER_CHILD` shortlisted candidates.
+ */
+export interface SummarizeParams {
+  candidates: Candidate[];
+  topic: Topic;
+  /**
+   * This child's share of the run's remaining neuron budget - see
+   * `createSummarizeChildren`'s comment (src/workflow.ts) for how it is
+   * derived and why a proportional split, not the whole budget, is what
+   * keeps concurrent children from jointly overspending it.
+   */
+  neuronBudget: number;
+  /** 0-based position among the parent's children. Carried only for the `agent.summarize.child_index` span attribute - never used to derive a step name (that stays the static `summarize:<url>` literal). */
+  index: number;
+}
+
+/**
+ * Outcome of one `await-summarize-children` poll round (src/workflow.ts).
+ * `done: false` means at least one child has not yet reached `complete`;
+ * `summaries`/`neuronsSpent` are meaningless until `done` is true.
+ */
+export interface SummarizePollResult {
+  done: boolean;
+  summaries: ArticleSummary[];
+  neuronsSpent: number;
 }
 
 /** Recorded in the `runs` table for observability and budget tracking. */
