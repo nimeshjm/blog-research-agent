@@ -287,8 +287,9 @@ allowlist's 1,117 items. Step 8 of the work order below is what this PR is.
 | `wrangler.toml` | `GATHER_FEEDS_PER_CHILD`'s changed role — a feed-count cap and the child-count divisor, not a CPU knob |
 | `features/003-run-to-completion/spec.md` | requirement 3's amendment, the dated calibration table, and the CPU-premise risk row rewritten to carry both runs |
 | `features/003-run-to-completion/plan.md` | this entry, `M` 8 → 9, and the work-order step |
-| `probe/captures/` | the failed run's parent, `g0`, and two completed siblings, verbatim |
-| `CLAUDE.md` | the CPU platform bullet gains today's measurement |
+| `probe/captures/` | the failed run's parent and all five gather children, verbatim |
+| `CLAUDE.md` | the CPU platform bullet gains today's measurement: items, not feeds |
+| `.claude/skills/cf-free-tier/SKILL.md` | the same correction, as PRs 2 and 5 both did |
 | `test/workflow.test.ts`, `test/d1.test.ts` | the chunker's cases, and the weight query's |
 
 ### PR 9 — `75-five-runs` (Part 9 of 9, closes the tracking issue)

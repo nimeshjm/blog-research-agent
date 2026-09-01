@@ -76,9 +76,12 @@ Feed volumes are perishable — arXiv cs.SE returned 41 raw items on 2026-08-27 
 ### Per-feed item volumes, measured 2026-09-01
 
 The calibration table requirement 3's volume-balanced distribution was designed against.
-Read from run `bd33248b`'s own gather step outputs (`probe/captures/`) — the failed child
-`g0` for the first three feeds, its four completed siblings for most of the rest — plus
-two probe children covering the feeds `g0` died before reaching.
+Read from run `bd33248b`'s own gather step outputs, committed at `probe/captures/`: the
+failed child `g0`'s first three steps plus its four completed siblings' 36 are 39 of the
+46. Two throwaway probe children covered the seven feeds `g0` died before reaching —
+Cloudflare, GitHub, Stack Overflow, Martin Fowler, Will Larson, Simon Willison, The
+Pragmatic Engineer. Those two were read on 2026-09-01 and **not retained**, so alone among
+the numbers here they have no committed capture behind them.
 
 | feed | items | feed | items |
 |---|---|---|---|
