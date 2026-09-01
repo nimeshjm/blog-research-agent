@@ -1,4 +1,9 @@
-import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
+import {
+  WorkflowEntrypoint,
+  type WorkflowEvent,
+  type WorkflowStep,
+  type WorkflowStepConfig,
+} from 'cloudflare:workers';
 import { applyGatherWindow, parseFeed } from '../src/lib/feed';
 import type { ParseBound } from '../src/lib/feed';
 import type { ParsedItem, Source } from '../src/lib/types';
@@ -55,10 +60,14 @@ interface Marker {
   iso: string;
   seq: number;
   ms: number;
+  // `noretry-cpu` / `cpu` only: the burn's sum, so the loop cannot be elided,
+  // and the iteration count it was asked for.
+  sink?: number;
+  iters?: number;
 }
 
 export interface ProbeParams {
-  mode: 'map' | 'retry' | 'sleep';
+  mode: (typeof MODES)[number];
   feeds: Source[];
   // `sleep` only. `everyN` counts gather steps between sleeps; `sleepFor` is a
   // Workflows duration string ('1 second', '60 seconds') or a millisecond
@@ -67,6 +76,32 @@ export interface ProbeParams {
   // marker shape, so its map is comparable with the runs already recorded.
   everyN?: number;
   sleepFor?: WorkflowSleepDuration;
+  // `noretry-cpu` / `cpu` only: iterations of the burn loop. Ramped across runs
+  // to find where the ceiling actually is, since 5e8 turned out to be under it.
+  iters?: number;
+}
+
+export const MODES = ['map', 'retry', 'sleep', 'noretry', 'noretry-cpu', 'cpu'] as const;
+
+/**
+ * The value `src/lib/trace.ts` passes at production's one `step.do` call site,
+ * written out here rather than imported: this instrument exists to measure
+ * what the platform does with it, and importing it would make the probe track
+ * a later edit of production silently. `rules/no-step-retry-config.yml` is
+ * scoped to `src/**`, so this copy is outside it by design.
+ */
+const NO_RETRIES: WorkflowStepConfig = { retries: { limit: 0, delay: 0 } };
+
+/**
+ * Deliberate `1102`. 10 ms of CPU is a few million iterations of this loop,
+ * so 5e8 is far enough past the limit that the kill is deterministic rather
+ * than a race with whatever else the invocation is doing. The sum is returned
+ * so nothing can eliminate the loop.
+ */
+function burnCpu(iters: number): number {
+  let x = 0;
+  for (let i = 0; i < iters; i++) x += Math.sqrt(i);
+  return x;
 }
 
 // Copied from src/workflow.ts rather than exported from it: these are the
@@ -146,6 +181,41 @@ export class ProbeWorkflow extends WorkflowEntrypoint<unknown, ProbeParams> {
       return;
     }
 
+    if (mode === 'noretry' || mode === 'noretry-cpu' || mode === 'cpu') {
+      // `cpu` is the control: identical burn, no retry policy, so the platform
+      // default applies. Everything else passes NO_RETRIES. The prefix in each
+      // step name carries which, because a capture is read back months later
+      // without this file beside it.
+      const off = mode !== 'cpu';
+      const doStep = (name: string, body: () => Promise<Marker>): Promise<Marker> =>
+        off ? step.do(name, NO_RETRIES, body) : step.do(name, body);
+
+      // Two markers first. Under the "total attempts" reading of `limit`, zero
+      // would mean these never run at all, and their completing is the only
+      // thing that separates that reading from the one this design assumes.
+      // Read this evidence off the `noretry` run only: on either CPU run the
+      // markers may be packed into the invocation the burn kills, so a missing
+      // marker row there says nothing about `limit`.
+      const prefix = mode === 'cpu' ? 'cpu' : mode === 'noretry-cpu' ? 'nrcpu' : 'nr';
+      await doStep(`${prefix}:before-1`, async () => mark());
+      await doStep(`${prefix}:before-2`, async () => mark());
+
+      if (mode === 'noretry') {
+        // Unconditional, unlike `retry:fails-then-passes`: with retries off
+        // there is no second attempt for a clock to behave differently in, and
+        // a step that could pass would leave "it never failed" as a reading.
+        await doStep('nr:always-throws', async () => {
+          throw new Error('probe: deliberate failure, retries off');
+        });
+      } else {
+        const iters = event.payload.iters ?? 500_000_000;
+        await doStep(`${prefix}:burns`, async () => ({ ...mark(), iters, sink: burnCpu(iters) }));
+      }
+
+      await doStep(`${prefix}:after`, async () => mark());
+      return;
+    }
+
     for (const [i, source] of feeds.entries()) {
       // Zero-padded so the step order is readable in the instance view, and
       // the index is in the name so a reordered allowlist is unambiguous.
@@ -176,6 +246,12 @@ export default {
    */
   async fetch(request: Request, env: ProbeEnv): Promise<Response> {
     const params = (await request.json()) as ProbeParams;
+    // A misspelled mode used to fall through to the gather loop, which reads
+    // back as "the thing under test did nothing" - a false negative the README
+    // had to warn about instead. Reject it here, where it is unambiguous.
+    if (!(MODES as readonly string[]).includes(params.mode)) {
+      return Response.json({ error: `mode must be one of: ${MODES.join(', ')}` }, { status: 400 });
+    }
     const instance = await env.PROBE.create({ params });
     return Response.json({ id: instance.id });
   },

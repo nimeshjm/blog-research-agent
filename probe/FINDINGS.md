@@ -1,4 +1,4 @@
-# Probe results, 2026-08-28
+# Probe results, 2026-08-28 and 2026-08-31
 
 Runs of `probe/` against the deployed `research-probe` Worker. Every number below is a
 step output read back with `wrangler workflows instances describe probe-workflow <id>`,
@@ -9,6 +9,10 @@ sitting the same day that answered feature 002's deferred question — does `ste
 force an invocation boundary? **It does not** — and, in the control run fired first,
 **refuted section 1**. Sections 1–3 are left as they were written and annotated where
 they are now known to be wrong; the corrections are the record, not the embarrassment.
+
+Section 7 is a third sitting, **2026-08-31**, after PR #82 turned step retries off. It
+closes `plan.md`'s question 2 — and, unplanned, puts the CPU premise all six earlier
+sections were written against in question.
 
 ## 1. A step boundary buys nothing. There are no invocation boundaries at all
 
@@ -273,6 +277,167 @@ reason a per-step forced boundary would not obviously cost O(n²) — but that i
 from a flat five-run series, not a measurement of replay cost, and no design should lean
 on it without measuring it.
 
+## 7. `retries: { limit: 0, delay: 0 }` is honoured, and `0` does not mean "no attempts"
+
+> Third sitting, 2026-08-31, against `research-probe` redeployed at version
+> `7dee9a84-d28b-4501-b4bf-0888d959e775`. Sections 1-6 are 2026-08-28 and are untouched.
+
+The gate `plan.md` work order step 2 puts in front of PR 3. PR
+[#82](https://github.com/nimeshjm/blog-research-agent/pull/82) made
+`src/lib/trace.ts` pass `NO_RETRIES` at production's one `step.do` call site, but the
+docs describe `limit` as "the total number of attempts" on one page and "maximum number
+of retries" on another, and under the first reading `0` could mean *never run*. Nothing
+documented settles it. Two instances, triggered within one second of each other, do.
+
+`noretry` and `retry` run the same shape — two cheap markers, then a step that fails —
+and differ only in whether `{ retries: { limit: 0, delay: 0 } }` is passed. The probe
+writes that value out rather than importing it from `src/lib/trace.ts`, so this measures
+the platform, not this repo's constant.
+
+| | `noretry` `3f5770ac` (policy passed) | `retry` `f95f58da` (control, default config) |
+|---|---|---|
+| markers before the failing step | `nr:before-1` ✅ `seq` 0, `nr:before-2` ✅ `seq` 1 | `retry:before-1` ✅, `retry:before-2` ✅ |
+| attempt rows on the failing step | **1** — errored 11:06:58 | **3** — threw at 4,001 ms, threw at 14,011 ms, succeeded at 34,019 ms |
+| step after it | never ran | `retry:after` ✅ |
+| instance | ❌ Errored, **0 seconds** | ✅ Completed, 30 seconds |
+
+Both halves of the pass condition hold, and they answer different questions:
+
+- **One attempt row against the control's three** — same instrument, same sitting, same
+  step shape — is the policy being honoured. Six was the number to fear
+  (`spec.md` acceptance criterion 4); three is what this account's default actually
+  produces on a step that stops throwing.
+- **`nr:before-1` and `nr:before-2` completed.** That is what rules out the "total
+  attempts" reading under which `0` would mean no step ever runs. Read this evidence off
+  the `noretry` run only — see 7.1, where the markers share an invocation with a step
+  that could have killed it.
+
+So `plan.md` question 2 resolves to the **"maximum number of retries"** reading.
+`{ limit: 0, delay: 0 }` is the right value and the recorded fallback to
+`{ limit: 1, delay: 0 }` is not needed.
+
+**What this does not establish.** The failure here is a thrown `Error`. Production's
+failure is `1102`, a platform CPU kill, and 7.1 is the run that was supposed to test
+whether the policy reaches that too. It did not get that far: no `1102` was produced.
+Whether a CPU kill honours `retries` is **untested**, and `spec.md` acceptance criterion
+4 — one attempt row on `research-workflow` itself — stays open for PR 4's captures.
+
+*(Amended by 7.2: the ramp in 7.1 did eventually produce a real `1102`, and it too got
+exactly one attempt row. So the policy is measured to cover a CPU kill; what stays open
+is only that criterion 4 names `research-workflow`, not the probe.)*
+
+### 7.1 A single `run()` execution absorbed ~700 ms of arithmetic without a `1102`
+
+The instrument for the paragraph above: `noretry-cpu` and `cpu` are the same two markers
+plus a step running 5x10^8 iterations of `x += Math.sqrt(i)`, with and without the retry
+policy. **Both completed.**
+
+| instance | mode | `r` / `iso` | `seq` 0-3 `ms` | burn |
+|---|---|---|---|---|
+| `ed80e52c` | `noretry-cpu` | `b80b547e` / `b2ea679f` | 305, 320, **336**, **1031** | ~695 ms |
+| `b90a43b6` | `cpu` | `c64c7361` / `aaede366` | 252, 271, **290**, **439** | ~149 ms |
+
+The loop ran: both return `sink` = `7453559913819.172`, which is the sum it computes
+(2/3 x (5x10^8)^1.5), so nothing elided it. The two burns differ by 4.6x, which is JIT
+warm-up or scheduling and is not what this section is about.
+
+**All four steps of each run carry one `r` and one `iso` with `seq` 0-3.** By this
+document's own reading rules that is *one* `run()` execution in *one* isolate — no
+boundary, nothing packed around. That execution absorbed the burn and kept going.
+
+`ms` is wall-clock, not CPU, and this instrument has never read a CPU figure. But the
+loop contains no `await` and no I/O, and 5x10^8 floating-point iterations do not cost
+10 ms on any hardware — that is inference from the operation count, not a measurement,
+and it is the only step in this reading that is not read off a capture.
+
+Neither `wrangler.toml` declares a `[limits]` block and both use
+`compatibility_date = "2025-01-01"`, so a per-script `cpu_ms` difference between the
+probe and production is ruled out. The account plan was the other candidate and it is
+**Free**, checked in the dashboard on 2026-08-31 — so that is ruled out too. What remains
+is that the documented 10 ms is not what is enforced per invocation: a burst allowance
+above the steady-state average would fit both this and production's `1102`, but this
+instrument cannot see the mechanism and this document does not assert one.
+
+**A ramp, and what it is not.** Redeployed with the iteration count as a payload field
+(`b1e14d18`), the same burn was run at larger sizes:
+
+| instance | mode | `iters` | burn step to next marker | burn |
+|---|---|---|---|---|
+| `671c04db` | `noretry-cpu` | 1x10^8 | 24 ms | ✅ |
+| `904a7f11` | `noretry-cpu` | 2x10^8 | 41 ms | ✅ |
+| `b90a43b6` | `cpu` | 5x10^8 | 149 ms | ✅ |
+| `ed80e52c` | `noretry-cpu` | 5x10^8 | 695 ms | ✅ |
+| `db004cbd` | `noretry-cpu` | 5x10^8 | 114 ms | ✅ |
+| `da873328` | `noretry-cpu` | 1x10^9 | — | ❌ `Worker exceeded CPU time limit` |
+| `b292794e` | `noretry-cpu` | 2x10^9 | — | ❌ same |
+| `0c23546e` | `noretry-cpu` | 5x10^9 | — | ❌ same |
+| `a32b6d53` | `noretry-cpu` | 5x10^10 | — | ❌ same |
+
+**A confound, found and closed.** The first two 5x10^8 survivals ran on a build where the
+iteration count was a literal; every death ran on the redeployed build where it comes from
+the payload. That is not a clean ramp — the difference could have been what V8 does with a
+constant loop bound rather than the size. `db004cbd` is 5x10^8 on the **same build as the
+deaths** and it survived, so the threshold is size and the confound is closed. `904a7f11`
+and `671c04db` extend the same build downward and scale linearly (24 / 41 / 114 ms for
+1 / 2 / 5 x10^8), which is what a real loop looks like and an elided one does not. Each
+`sink` is the correct sum for its own `iters`.
+
+**Still not a CPU figure, but no longer only ordinal.** The deltas are wall-clock and
+include the burn step's own output persistence, so they are an upper bound on burn CPU;
+and the same 5x10^8 loop took 695 ms in a cold isolate against 114-149 ms in warm ones, so
+a single reading means little. The defensible statement is a range: **the ceiling in force
+sits above ~115 ms of arithmetic and below ~230 ms** — an order of magnitude above the
+documented 10 ms, and three orders below the 30 s a paid plan would give. The account was
+confirmed **Free** on 2026-08-31, so plan is not the explanation.
+
+Nor does the burn transfer to production's failure. `parseFeed` allocates, builds strings
+and pressures GC; a tight floating-point loop over a flat heap does not. A threshold
+measured on `Math.sqrt` says nothing about where `parseFeed` dies.
+
+**This contradicts a load-bearing premise in the tree.** `CLAUDE.md` and
+`.claude/skills/cf-free-tier/SKILL.md` say, measured 2026-08-27 under #61: one feed parse
+in an invocation passes, two pass, three fail with `1102`. Four days later one invocation
+took two orders of magnitude more arithmetic than that and did not fail. Both cannot
+describe the same platform. Either the ceiling in force changed between those dates, or
+production's `1102` has a cause other than accumulated arithmetic CPU.
+
+**Not resolved here, and deliberately not tuned around.** The cheap decisive follow-up is
+`map` mode over the same 46 feeds: sections 1 and 4 record that as a coin flip on
+identical input, so a clean completion now is directly comparable against committed
+evidence. Until that is run, feature 003's children design rests on a premise this
+section puts in question, and `plan.md`'s PR 3 should not start.
+
+### 7.2 A real `1102` gets one attempt too
+
+Section 7 could not answer whether the policy reaches a *platform* kill rather than a
+thrown `Error`, because the burn it had was under the ceiling. 7.1's ramp supplies the
+missing failure. Every instance that died did so with `Worker exceeded CPU time limit` —
+production's `1102`, produced deliberately — and under `{ retries: { limit: 0, delay: 0 } }`:
+
+| instance | `iters` | attempt rows on the burn step | instance |
+|---|---|---|---|
+| `da873328` | 1x10^9 | **1** | ❌ Errored |
+| `b292794e` | 2x10^9 | **1** | ❌ Errored |
+| `0c23546e` | 5x10^9 | **1** | ❌ Errored |
+| `a32b6d53` | 5x10^10 | **1** | ❌ Errored |
+
+Four for four. **The policy covers a CPU kill, not only a thrown error**, which is the
+case `spec.md` requirement 1 exists for. Counted off the burn step's own attempt table in
+each capture — a `grep` for the error string also matches the instance header line and
+returns 2 for a single-attempt step.
+
+**The control did not reproduce, and that is recorded rather than left implied.**
+`2831f91e` is the same 5x10^9 burn under the platform default. It took one attempt and
+then stayed `Running` for **at least 14 minutes** with no second attempt row and no
+terminal state — polled once a minute throughout. Production's run in
+[#75](https://github.com/nimeshjm/blog-research-agent/issues/75) got six attempts across
+five minutes on a real `1102`; this control got one and then sat. So the table above says
+what the policy does, and **nothing here establishes what the default would have done to
+the same step** — the contrast with `retry`'s clean 1-against-3 in section 7 is not
+available on the CPU side.
+
+Times in this section are as `wrangler` prints them, which is local (UTC+1), not UTC.
+
 ## What this settles, and what it overturns
 
 The three sub-hypotheses for the deterministic retries all resolve:
@@ -314,6 +479,11 @@ findings are ordinal (nine fit, ten do not), not quantitative. The documented 10
 awkwardly against nine feed parses fitting, but the local bench's "elapsed is CPU"
 premise is itself unverified, so this record does not assert a number.
 
+*(Section 7.1 does not close this either, but it moves it: a single `run()` execution
+absorbed 5x10^8 arithmetic iterations without a `1102`. Still no CPU figure — only a
+lower bound on what one invocation survived, and one that sits two orders of magnitude
+above the documented 10 ms.)*
+
 ## Reproducing
 
 The verbatim `wrangler workflows instances describe` output for every run is committed
@@ -331,6 +501,18 @@ teardown below it is the only one.
 | `e381a65f-7638-40c1-bed4-c85745d73535` | 4 | `map`, 46 feeds | ❌ `1102` at feed 11 |
 | `523c1723-d3ba-4076-9e63-9b227f95f3e7` | 5 | `sleep`, `everyN` 1, 1 s | ✅ 46 |
 | `aaddf4f9-20f9-48c6-bfb1-48db00b4dbda` | 6 | `sleep`, `everyN` 1, 60 s | ✅ 46, 46 min |
+| `3f5770ac-c12b-4f8f-a561-0eef472a164c` | 7 | `noretry` | ❌ 1 attempt, instance errored in 0 s |
+| `f95f58da-ee6c-4059-8e31-728db3ace65a` | 7 | `retry` (control) | ✅ 3 attempts |
+| `ed80e52c-9204-49f3-b9cd-13301e5e0846` | 7.1 | `noretry-cpu` | ✅ no `1102` |
+| `b90a43b6-bcd6-4c8d-89b5-37031c265891` | 7.1 | `cpu` (control) | ✅ no `1102` |
+| `da873328-5052-488f-9217-d1223b2ff597` | 7.1, 7.2 | `noretry-cpu`, 1x10^9 | ❌ `1102`, 1 attempt |
+| `b292794e-10c9-466c-820c-c239c72bf4e2` | 7.1, 7.2 | `noretry-cpu`, 2x10^9 | ❌ `1102`, 1 attempt |
+| `0c23546e-368e-42c4-94c7-b00694fbc7d1` | 7.1, 7.2 | `noretry-cpu`, 5x10^9 | ❌ `1102`, 1 attempt |
+| `a32b6d53-f0d5-4d65-8c6f-8ec88712bb73` | 7.1, 7.2 | `noretry-cpu`, 5x10^10 | ❌ `1102`, 1 attempt |
+| `2831f91e-f016-4fd6-98d0-a88f113dacc7` | 7.2 | `cpu` (control), 5x10^9 | ⚠ 1 attempt, then stayed `Running` |
+| `db004cbd-b456-445e-a769-969d67c3a30f` | 7.1 | `noretry-cpu`, 5x10^8, payload build | ✅ closes the build confound |
+| `904a7f11-a06d-433e-bd63-cbecb6c052c2` | 7.1 | `noretry-cpu`, 2x10^8 | ✅ 41 ms |
+| `671c04db-3a60-4900-a5dd-ef8bb7bf0c67` | 7.1 | `noretry-cpu`, 1x10^8 | ✅ 24 ms |
 
 Live readback works only while the probe Worker and its workflow exist:
 
