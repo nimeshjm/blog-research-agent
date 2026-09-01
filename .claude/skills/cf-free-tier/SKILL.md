@@ -62,6 +62,18 @@ invocation.` D1, KV and AI binding calls count too, as does every redirect. One 
 per step is necessary and not sufficient: if a run needs more than ~50 subrequests
 end to end, it needs more than one invocation, which today means a child instance.
 
+**A status poll is a subrequest, so a poll loop has a bill.** Run `0357f119`
+(2026-09-01) spent 19 of the parent's 50 polling children and died at
+`open-pull-request`, and 10 of the 19 were spent on rounds that could not have found
+anything. Two rules follow, both cheap. **Sleep before the first poll, not after it:**
+`step.sleep` costs no subrequest, no step and no concurrency, so a round fired seconds
+after `createBatch` spends one subrequest per child to learn what the wait would have
+told you for free. **Do not re-poll a child that is already `complete`:** carry its
+result forward in the poll step's own output (`pollChildBatch`,
+`src/lib/workflow-children.ts`), never in a variable, because `run()` re-executes from
+the top on replay. Size the loop's backstop on the round where *nothing* completes -
+that one still costs one subrequest per child.
+
 **Prefer streaming parsers.** Use `HTMLRewriter` for HTML rather than regex over a full
 body — it streams and keeps large documents out of the CPU budget. Cap extracted text
 length before it reaches the model.

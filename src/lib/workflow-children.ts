@@ -1,3 +1,5 @@
+import type { ChildPollState } from './types';
+
 /**
  * The create/poll shape behind every child Workflow this repo runs
  * (`GatherWorkflow`, `SummarizeWorkflow`) - feature 003's "Gather in child
@@ -7,7 +9,7 @@
  * assumed, and "a failed child fails the run visibly" (spec.md requirement
  * 4) are the parts every caller shares; what a child actually returns (a
  * count, or summaries-plus-neuron-spend) stays with the caller, via
- * `createChildBatch`'s params and `pollChildBatch`'s `combine`.
+ * `createChildBatch`'s params and `pollChildBatch`'s `validate`/`combine`.
  */
 
 /**
@@ -54,47 +56,90 @@ export async function createChildBatch<TParams>(
   return options.map((o) => o.id);
 }
 
-export type ChildPollOutcome<T> = { done: true; result: T } | { done: false };
+export type ChildPollOutcome<T, TOutput> = { done: true; result: T } | { done: false; state: ChildPollState<TOutput> };
+
+/** The state a poll loop starts from: every child pending, nothing carried yet. */
+export function initialChildPollState<TOutput>(childIds: string[]): ChildPollState<TOutput> {
+  return { pending: [...childIds], outputs: {} };
+}
 
 /**
  * One poll round shared by every `await-<x>-children` step. A child that is
  * `errored` or `terminated` fails this immediately (spec.md requirement 4 -
  * the deliberate opposite of a single dead *item* inside a child, which
  * still contributes zero without failing anything). While any child is not
- * yet `complete`, this returns `{ done: false }` up to a subrequest-budget-
- * derived round cap - past it, this throws rather than lets the platform's
- * own opaque subrequest error be the first sign anything is stuck. Once
- * every child is `complete`, `combine` turns each child's raw (`unknown`,
- * per `InstanceStatus.output`) result into whatever the caller's poll
- * result type is - validating, not casting, is `combine`'s job, not this
- * function's.
+ * yet `complete`, this returns `{ done: false }` with the state the next
+ * round resumes from, up to a subrequest-budget-derived round cap - past it,
+ * this throws rather than lets the platform's own opaque subrequest error be
+ * the first sign anything is stuck. Once every child is `complete`, `combine`
+ * turns the per-child results into whatever the caller's poll result type is.
+ *
+ * **Only `state.pending` is polled.** A `status()` call is a subrequest
+ * charged to the parent's invocation, and re-reading a child that finished
+ * two rounds ago buys nothing - run `0357f119` (2026-09-01) spent 19 of the
+ * parent's 50 on polling and then died inside `open-pull-request`. Since
+ * `combine` needs every child's result, a child that is no longer polled has
+ * to have its result carried: see `ChildPollState` (src/lib/types.ts) for why
+ * that travels through this step's own output rather than a closure, and why
+ * it stays bounded.
+ *
+ * `validate` rather than a cast: `InstanceStatus.output` is typed `unknown`
+ * (plan.md's question 3 sets the rule for exactly this value). It runs at the
+ * round a child completes, which is also what makes the carried state typed
+ * rather than a bag of `unknown`.
+ *
+ * **The round cap still divides by the total child count, not by
+ * `pending.length`.** A round now costs `pending.length` subrequests, so the
+ * loop's *typical* cost fell - but the round this backstop exists for is the
+ * one where nothing completed, and that round still costs one subrequest per
+ * child. A cap sized against the cheaper case would not be a backstop.
  */
-export async function pollChildBatch<TParams, T>(
+export async function pollChildBatch<TParams, T, TOutput>(
   binding: Workflow<TParams>,
   childIds: string[],
+  state: ChildPollState<TOutput>,
   round: number,
   subrequestBudget: number,
   label: string,
-  combine: (outputs: unknown[]) => T,
-): Promise<ChildPollOutcome<T>> {
-  const statuses = await Promise.all(childIds.map((id) => binding.get(id).then((instance) => instance.status())));
+  validate: (output: unknown, childId: string) => TOutput,
+  combine: (outputs: TOutput[]) => T,
+): Promise<ChildPollOutcome<T, TOutput>> {
+  const statuses = await Promise.all(state.pending.map((id) => binding.get(id).then((instance) => instance.status())));
 
   statuses.forEach((s, i) => {
     if (s.status === 'errored' || s.status === 'terminated') {
-      throw new Error(`${label} child ${childIds[i]} ${s.status}`);
+      throw new Error(`${label} child ${state.pending[i]} ${s.status}`);
     }
   });
 
-  if (statuses.some((s) => s.status !== 'complete')) {
+  const outputs = { ...state.outputs };
+  const pending: string[] = [];
+  statuses.forEach((s, i) => {
+    const id = state.pending[i] ?? `#${i}`;
+    if (s.status === 'complete') outputs[id] = validate(s.output, id);
+    else pending.push(id);
+  });
+
+  if (pending.length > 0) {
     // Derived from childIds.length, not a fixed constant - a fixed round
     // count would let this backstop be beaten to the punch by the
     // platform's own subrequest error once there are enough children.
     const maxRounds = Math.max(1, Math.floor(subrequestBudget / childIds.length));
     if (round >= maxRounds) {
-      throw new Error(`await-${label}-children: ${childIds.length} children still not complete after ${maxRounds} polls`);
+      throw new Error(`await-${label}-children: ${pending.length} children still not complete after ${maxRounds} polls`);
     }
-    return { done: false };
+    return { done: false, state: { pending, outputs } };
   }
 
-  return { done: true, result: combine(statuses.map((s) => s.output)) };
+  // In `childIds` order, never completion order: these results reach
+  // `synthesize`, and what the run produces should not depend on which child
+  // happened to finish first. Asserted rather than cast, because a caller that
+  // ever seeds `state` with a short `pending` list would otherwise hand
+  // `combine` an `undefined` typed as a child's output.
+  const results = childIds.map((id) => {
+    const output = outputs[id];
+    if (output === undefined) throw new Error(`${label} child ${id} never reached a polled completion`);
+    return output;
+  });
+  return { done: true, result: combine(results) };
 }

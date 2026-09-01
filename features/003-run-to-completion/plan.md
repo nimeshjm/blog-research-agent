@@ -149,13 +149,13 @@ touch the same regex and each needs its own mutation row.
 
 ## Files
 
-### PR 1 — `75-plan-md` (Part 1 of 9)
+### PR 1 — `75-plan-md` (Part 1 of 10)
 
 | file | change |
 |---|---|
 | `features/003-run-to-completion/plan.md` | this file; replaces the unfilled template |
 
-### PR 2 — `75-no-retries` (Part 2 of 9)
+### PR 2 — `75-no-retries` (Part 2 of 10)
 
 | file | change |
 |---|---|
@@ -171,7 +171,7 @@ touch the same regex and each needs its own mutation row.
 | `test/trace.test.ts` | the policy is passed, with the exact shape |
 | `REVIEW.md` | pass 1 and pass 3 markers naming the new check ids |
 
-### PR 3 — `75-verify-no-retries` (Part 3 of 9)
+### PR 3 — `75-verify-no-retries` (Part 3 of 10)
 
 Not in the original table. Work order step 2 gates PR 3 on verifying the retry policy on
 a deployed Worker, and that verification produced both a record and a finding large
@@ -186,7 +186,7 @@ enough to be reviewable on its own.
 | `features/003-run-to-completion/spec.md` | the measured reading, and the CPU finding as a stop in the risk table |
 | `features/003-run-to-completion/plan.md` | this entry, and `M` 4 → 5; then, in the same PR and once the rest of the work order had actually run, 5 → 8 |
 
-### PR 4 — `75-parse-failure-modes` (Part 4 of 9)
+### PR 4 — `75-parse-failure-modes` (Part 4 of 10)
 
 Not in the original table, and not a deferred piece of one either. A deployed run
 (`972cea0c`) died on `synthesize-draft` with "model response was not valid JSON in the
@@ -205,7 +205,7 @@ a step that never reaches `open-pull-request`.
 | `test/prompts.test.ts` | every failure mode, and the one deliberate narrowing: JSON wrapped in prose used to parse by accident and now does not |
 | `test/workflow.test.ts` | the diagnosis survives into the error message |
 
-### PR 5 — `75-summarize-skip-reasons` (Part 5 of 9)
+### PR 5 — `75-summarize-skip-reasons` (Part 5 of 10)
 
 Not in the original table, and the reason the two PRs after it are shaped the way they
 are. A 46-feed run (`525a5386`) completed all 46 gather steps with no `1102` and then
@@ -226,7 +226,7 @@ rests on that fact and was planned against a different one.
 | `features/003-run-to-completion/spec.md` | the amendment: the design survives, on a different resource than the one it was argued from |
 | `test/workflow.test.ts` | each of the five skip paths is distinguishable |
 
-### PR 6 — `75-gather-children` (Part 6 of 9)
+### PR 6 — `75-gather-children` (Part 6 of 10)
 
 The rationale changed under this entry; the substance did not. Children were proposed to
 buy a fresh CPU budget, and run `0199648c`'s 46 clean gather steps killed that premise
@@ -246,7 +246,7 @@ the arithmetic in work order step 6.
 | `test/workflow.test.ts` | parent creates the right children, sums counts, fails on a failed child |
 | `test/gather-workflow.test.ts` | new: the child's own behaviour |
 
-### PR 7 — `75-summarize-children` (Part 7 of 9)
+### PR 7 — `75-summarize-children` (Part 7 of 10)
 
 Not in the original table, because the original table assumed moving gather out was
 enough. Run `6f75e460` settled both halves of that in one sitting. Gather in children
@@ -272,7 +272,7 @@ monomorphic, which is worth more than the file it costs.
 | `test/summarize-workflow.test.ts` | new: the child's own behaviour, including its slice of the neuron budget |
 | `test/workflow.test.ts` | the parent's second create-and-poll pair, and the bound on what it returns |
 
-### PR 8 — `75-volume-chunking` (Part 8 of 9)
+### PR 8 — `75-volume-chunking` (Part 8 of 10)
 
 Not in the original table. Run `bd33248b` killed gather child `g0` with `Worker exceeded
 CPU time limit.` while its four siblings completed: `GATHER_FEEDS_PER_CHILD` chunks by
@@ -292,18 +292,42 @@ allowlist's 1,117 items. Step 8 of the work order below is what this PR is.
 | `.claude/skills/cf-free-tier/SKILL.md` | the same correction, as PRs 2 and 5 both did |
 | `test/workflow.test.ts`, `test/d1.test.ts` | the chunker's cases, and the weight query's |
 
-### PR 9 — `75-five-runs` (Part 9 of 9, closes the tracking issue)
+### PR 9 — `75-cheaper-polling` (Part 9 of 10)
+
+Not in the original table, and found the same way the last four were: by deploying. Run
+`0357f119` reached `synthesize`, produced a real draft, and then failed
+`open-pull-request` with `Too many subrequests by single Worker invocation.` — the parent's
+own residue, ~39 subrequests before a step that costs 7. **19 of those 39 were poll
+subrequests, and 10 of them could not have found anything**, because both loops polled
+before they slept and round 0 fired a second after `createBatch`. This PR is the polling
+half of that bill only. The other half — moving `open-pull-request`'s 7 GitHub calls into
+a child instance — is a separate change and is deliberately **not** in this table yet: it
+will add its own entry and revise `M` again when it is written, the same way every step
+that turned into a PR of its own has.
+
+| file | change |
+|---|---|
+| `src/workflow.ts` | both poll loops wait before polling rather than after; the poll state is threaded from each round's output into the next round's input; `SUMMARIZE_POLL_SUBREQUEST_BUDGET` 15 → 9 and `SUMMARIZE_POLL_INTERVAL` 60 s → 90 s; the fixed-cost recount against run `0357f119`'s measured 20 |
+| `src/lib/workflow-children.ts` | `pollChildBatch` polls only the children still pending and carries the finished ones' validated outputs forward; `validate` becomes a parameter so the carried state is typed; `initialChildPollState` |
+| `src/lib/types.ts` | `ChildPollState`, `GatherPollState`, `SummarizePollState`, `SummarizeChildOutput`; both poll results become discriminated unions |
+| `src/summarize-workflow.ts` | the child's return type named at its source rather than spelled out twice |
+| `features/003-run-to-completion/spec.md` | what run `0357f119` settled; the `shortlist` and polling risk rows amended; criterion 8's third output shape |
+| `features/003-run-to-completion/plan.md` | this entry, `M` 9 → 10, and the work-order step |
+| `probe/captures/` | run `0357f119`'s parent, verbatim |
+| `test/workflow.test.ts` | the wait-then-poll ordering, driven through `run()` itself; a completed child not re-polled; outputs surviving across rounds; a replayed middle round; the round backstop at its new cap |
+
+### PR 10 — `75-five-runs` (Part 10 of 10, closes the tracking issue)
 
 | file | change |
 |---|---|
 | `features/003-run-to-completion/spec.md` | the measured record of the five runs; `GATHER_FEEDS_PER_CHILD` and `SUMMARIZE_ARTICLES_PER_CHILD`'s final values and why |
-| `wrangler.toml` | those values, if step 9 tunes them |
+| `wrangler.toml` | those values, if step 10 tunes them |
 | `probe/captures/` | the five instance captures, committed as evidence |
 
 The PR exists whatever the runs show, so its own existence never depends on the result —
 the same device feature 002 used for its PR 6.
 
-**`M` was revised anyway, 4 → 5 → 8 → 9, and every time by the case the device does not
+**`M` was revised anyway, 4 → 5 → 8 → 9 → 10, and every time by the case the device does not
 cover.** It protects against a PR whose *result* is unknown; it does not protect against a
 step of the work order turning out to need a PR of its own. Work order step 2's platform
 verification did, so it is PR 3 and the two implementation PRs shifted down. Then it
@@ -323,6 +347,19 @@ feeds while the cost being spent is items, so the chunking itself changes. That 
 neither. Both were green on every check and both deployed; the run is what found it, the
 fourth time in this build that a step of the work order turned into a PR of its own by
 being deployed rather than by being read.
+
+**9 → 10 on 2026-09-01, a sixth time and the second in one day.** Run `0357f119` — the run
+PR 8's chunking made possible — reached `synthesize`, produced a real draft, and died in
+`open-pull-request` on the parent's own subrequest ceiling. Again the five-runs step could
+not have absorbed it: the fix is a change to how the poll loops spend subrequests, not a
+value they read. PR 9 is that change and the runs shift to 10. Two things are worth writing
+down rather than leaving to the pattern. First, the fifth and sixth revisions are
+consecutive findings from consecutive runs, each exposing the failure the previous fix
+uncovered — `bd33248b` died in a child, `0357f119` died in the parent, and neither was
+predictable from the other. Second, this revision is knowingly incomplete: PR 9 buys back
+roughly 8 of the parent's 50, and `open-pull-request`'s 7 GitHub calls are still spent in
+the parent's invocation, so `M` is expected to move again. Saying so is cheaper than a plan
+that claims to be finished twice.
 
 ## Work order
 
@@ -543,7 +580,60 @@ which is what the count-based chunking did and is a fine floor for a first run.
 than 1 and the fixed-cost recount in `createSummarizeChildren`'s comment goes from ~21 to
 ~22 of 50, ~47 with both poll budgets.
 
-### 9. Five runs, and the record — PR 9
+### 9. Cheaper polling — PR 9
+
+Step 6 sized the parent's poll cost as "one subrequest per child per round" and treated an
+extra round as free. Run `0357f119` priced it: 19 of the parent's 50 subrequests went on
+polling, and the run died in `open-pull-request` at roughly 46. Two changes to how the
+loops spend, plus the one interval adjustment the second of them forces.
+
+**Wait, then poll.** Both loops polled and then slept, so round 0 fired about a second
+after `createBatch` and could only ever return `{ done: false }` — 5 subrequests for
+gather, 3 for summarize, every run, with no possible outcome other than "not yet".
+Inverting the loop lands round 0 past the measured convergence (gather 5-8 s against a 30 s
+wait; summarize 62-122 s against a 90 s wait), which takes gather from 2 rounds to 1 and
+summarize from 3 to 1 or 2. `step.sleep` counts toward neither the 1,024-step limit nor
+concurrency, so the wall-clock is the cheap side of this trade and the subrequest is the
+dear one.
+
+**Do not re-poll a finished child.** `pollChildBatch` read every child's `status()` every
+round. The crux is that `combine` needs *every* child's output, so a child that stops being
+polled must have its output carried — and it cannot be carried in the parent's memory,
+because `run()` re-executes from the top on every replay (fact 2). It therefore rides in
+the poll step's own output: `ChildPollState` holds the still-pending ids plus the validated
+output of every finished child, round N-1's output is round N's input, and a replayed round
+recomputes from that input. `validate` moves from `combine`'s body to `pollChildBatch`'s
+parameters, which is what makes the carried state typed rather than a bag of `unknown`
+(`Rpc.Serializable` rejects `unknown` in a step output, so this was forced as much as
+chosen). Requirement 5 and criterion 8 still hold: the state is keyed by child id and the
+carried outputs are the same per-child results the terminal round always contained.
+
+**The round cap keeps dividing by the total child count.** A round now costs
+`pending.length`, so the typical cost fell — but the round the backstop exists for is the
+one where nothing completed, and that one still costs one subrequest per child. So
+`max(1, floor(budget / childCount))` is unchanged, and with it step 8's argument for
+holding the gather child count at five.
+
+**What the budgets become.** The fixed cost is recounted from `0357f119` rather than
+estimated: 20 measured before the poll loops (`shortlist` alone 13 of them, at
+`ceil(1118/100) = 12` `findSeenUrls` chunks plus one read), plus `open-pull-request`'s 7
+and `record-success`'s 2 still estimated — ~29, not the ~22 step 8 recorded when
+candidates per run were 264. That leaves ~21 for both loops, which 10 + 15 never fitted.
+`GATHER_POLL_SUBREQUEST_BUDGET` stays 10, because `floor(10 / 5) = 2` is the smallest cap
+that leaves a retry at all; `SUMMARIZE_POLL_SUBREQUEST_BUDGET` goes to 9, giving
+`floor(9 / 3) = 3` rounds against a 62-122 s measured convergence. Dropping rounds
+shortens the slowest child the loop tolerates, so `SUMMARIZE_POLL_INTERVAL` goes 60 s -> 90 s
+in the same move: 90/180/270 s costs the same three subrequests per round as 60/120/180
+would, holds the margin over the 150 s worst case step 7 sized a child against at 1.8x
+where five rounds of 60 s gave 1.6x, and lets round 0 catch the measured convergence
+outright. The interval is the free lever; the round count is the dear one.
+
+**What this does not fix.** The parent still spends `open-pull-request`'s 7 GitHub calls in
+its own invocation, and `shortlist`'s term grows with candidates per run. The first is a
+follow-up PR; the second is recorded in `spec.md`'s risk table as a floor set by D1's
+100-bound-parameter cap rather than a knob.
+
+### 10. Five runs, and the record — PR 10
 
 Deploy, then trigger five runs **consecutively**, each to a terminal state, capturing
 `wrangler workflows instances describe` for the parent and at least one child of each.
@@ -566,6 +656,14 @@ and the term to suspect first is `shortlist`: `findSeenUrls` chunks 100 URLs per
 which scales with candidates rather than with feeds, and `spec.md` records it as
 deliberately unmitigated. That finding is written up rather than tuned around.
 
+**This paragraph has already fired, before this step was ever reached.** Run `0357f119` failed in the
+parent, at `open-pull-request`, and `shortlist` was indeed the term that had moved - 13
+subrequests at 1,118 candidates against the 3 this plan estimated. Step 9 spent the poll
+budget down instead, because `shortlist`'s chunking is D1's 100-bound-parameter cap rather
+than a value here. So when reading a parent-side failure from here on, the first term to
+suspect is no longer `shortlist` but `open-pull-request`'s 7 GitHub calls, which are still
+spent in the parent's own invocation.
+
 ## Reuse
 
 - `gatherCandidates` (`src/workflow.ts`) moves into the child **unchanged**. It already
@@ -580,7 +678,7 @@ deliberately unmitigated. That finding is written up rather than tuned around.
 - `probe/captures/` is the evidence pattern: commit the verbatim `describe` output at the
   moment it is taken, because feed volumes are perishable and dashboard traces expire in
   3 days (#22).
-- The `Part N of M of #75` marker on PRs 1–8, `Closes` on PR 9 only. Never
+- The `Part N of M of #75` marker on PRs 1–9, `Closes` on PR 10 only. Never
   `--body-file -` (`CLAUDE.md`, "Repeated mistakes").
 
 ## Verification
@@ -608,9 +706,9 @@ guard, confirm the check goes red, restore, confirm green. Record the pair in th
 | # | how |
 |---|---|
 | 1 | the command block above |
-| 2 | five consecutive deployed runs, captures committed (work order 9) |
+| 2 | five consecutive deployed runs, captures committed (work order 10) |
 | 3 | `grep -rn 'step\.do(' src/` returns only `src/lib/trace.ts`; a bare call inserted into `src/workflow.ts` fails `lint:ast` |
-| 4 | one attempt row in `describe` for a deliberately failing step (work order 3). Measured on the probe, not on `research-workflow`, so this criterion stays open for PR 9 |
+| 4 | one attempt row in `describe` for a deliberately failing step (work order 3). Measured on the probe, not on `research-workflow`, so this criterion stays open for PR 10 |
 | 5 | terminate a child mid-run; parent errors, `runs` row status is not a success |
 | 6 | re-run a child against a written `run_id`; `SELECT count(*)` unchanged |
 | 7 | vitest parity case: shortlist from children == shortlist from the current path, same inputs |
