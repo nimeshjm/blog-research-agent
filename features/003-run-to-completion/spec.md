@@ -144,14 +144,45 @@ same capture also dates the convergence the poll cadence is now sized against: g
 complete by the 13:57:16 poll, and summarize was still running at 62 s (13:58:19) and
 complete at 122 s (13:59:19).
 
+**The parent's bill after both halves of that run's fix.** Cheaper polling took the 19 to
+about 11 on this run's shape; moving publication into a child (requirement 2's third
+extension) takes the 7 out of the parent entirely and puts `create-publish-children`'s 1
+in. Re-counting the same terms:
+
+| term | subrequests |
+|---|---|
+| `start-run` + `select-topic` | ~3 D1 |
+| `load-sources` | 0 |
+| `create-gather-children` | 2 |
+| **`shortlist`** | **13** at 1,118 candidates (1 read + `ceil(1118 / 100) = 12`) |
+| `create-summarize-children` | 1 |
+| `synthesize` | 1 AI call |
+| `create-publish-children` | 1 |
+| `record-success` | 2 (still an estimate — no run has reached it) |
+| **fixed total** | **23**, where it was ~29 |
+| both existing poll loops, this run's shape | ~11 |
+| publish poll, one child past a seconds-long convergence | 1 |
+| **expected total** | **~35 of 50** |
+
+The pessimal figure is the one the backstops actually permit: 23 fixed plus every poll
+budget exhausted (10 + 9 + 4) is **46 of 50**, which fits where 29 + 10 + 9 would not
+have. Four spare is not margin, and is not meant to be — a run that reaches all three
+backstops has a worse problem than four subrequests.
+
+**`shortlist`'s 13 is now the largest single term and the only one that follows the feed
+allowlist.** It was 4 at run `6f75e460`'s 264 candidates. The risk table below records it
+rather than tuning it, and the reason is unchanged: D1 caps a statement at 100 bound
+parameters, so `ceil(candidates / 100)` is the platform's floor, not a knob here.
+
 ## Requirements
 
 1. **No step is retried.** `step.do` is invoked with a retry policy of zero attempts
    beyond the first, everywhere in the Worker. A step that throws fails its instance
    immediately.
-2. **Gather *and article summarisation* run in child Workflow instances**, not in the
-   parent's own `run()`. The parent creates children, waits for them, and reads their
-   results; no feed is parsed and no article is fetched in the parent invocation.
+2. **Gather, article summarisation *and publication* run in child Workflow instances**,
+   not in the parent's own `run()`. The parent creates children, waits for them, and reads
+   their results; no feed is parsed, no article is fetched and no pull request is opened in
+   the parent invocation.
 
    **Extended 2026-08-31 (#75) after measuring the half of it that shipped.** Run
    `6f75e460` moved gather into five children — all complete in 5-8 seconds, 264
@@ -168,8 +199,25 @@ complete at 122 s (13:59:19).
    a new design: the child shape, the deterministic ids, the polling and the validated
    integer return are all reused.
 
-   What stays in the parent: `select-topic`, `load-sources`, `shortlist`, `synthesize`
-   and `open-pull-request`. Those are bounded and do not grow with the allowlist.
+   **Extended again 2026-09-01 (#75), and again by measurement rather than by design.**
+   Run `0357f119` moved article summarisation out as well, reached `open-pull-request`
+   with a real draft in hand, and failed *inside it* on the same
+   `Too many subrequests by single Worker invocation.` The parent's residue was ~39
+   subrequests before a step whose own cost is 7 GitHub calls. So the third and last
+   per-item block of work leaves the parent's invocation too, by the same mechanism a
+   third time: `PublishWorkflow` (`src/publish-workflow.ts`), one instance per run, created
+   and polled exactly as the other two are.
+
+   Two things make this the cheapest of the three extensions rather than a third design.
+   There is **one** child, so there is nothing to chunk and requirement 3 gains no third
+   value — `wrangler.toml` gets a `[[workflows]]` block and no new var. And the child
+   returns a **single URL string**, which satisfies requirement 5's size reading by
+   construction rather than by an argument about caps.
+
+   What stays in the parent: `select-topic`, `load-sources`, `shortlist`, `synthesize` and
+   the `runs`-row bookkeeping. Those are bounded and do not grow with the allowlist.
+   `record-success` in particular stays here **and stays last**: the `pr_url` it writes is
+   what the publish child returns, so the row cannot be written before the child completes.
 3. **A child instance parses at most `GATHER_FEEDS_PER_CHILD` feeds**, a value in
    `wrangler.toml` and nowhere else, sized so that a child completes with margin against
    the observed failure range rather than at its edge.
@@ -239,6 +287,25 @@ complete at 122 s (13:59:19).
    the other: `run()` demonstrably re-executes (fact 2), and although a completed step's
    body does not re-run, nothing in this repo has measured what a *child* instance
    re-executes.
+
+   **Extended 2026-09-01 (#75) to the *blog repo's* writes, which have a second reason
+   nothing else here has.** Publication is not atomic — it pushes a branch, commits a
+   file, then opens a pull request — so a run that dies part-way leaves state behind in a
+   repository the next run also writes to. Run `0357f119` proved it: it pushed
+   `research/2026-09-01-modular-silent-trials-...` and committed the draft, then died
+   before the pull request, and `research/2026-08-31-...` survives from the run before it.
+   The branch name is `research/<draft.date>-<draft.slug>`, so a later run deriving the
+   same slug meets its own leftover. Branch creation therefore has to tolerate an
+   already-existing ref for *two* reasons — replay (fact 2) and a previous run's debris —
+   and it already did, via a 422 treated as success.
+
+   What that 422 did **not** do is check. GitHub answers 422 to `Reference already exists`,
+   to `Reference update failed` (branch protection) and to `Object does not exist` (an
+   unknown base sha), so returning on any of them turned a ref that was never created into
+   a silent success whose first symptom was a 404 further down the call chain.
+   `createBranch` now confirms the ref with a GET before treating a 422 as idempotent —
+   the same "verified against reality rather than assumed" rule `childExists` applies to a
+   duplicate instance id, and one extra subrequest only on the exceptional path.
 8. **A run that dies still leaves a `runs` row and frees its topic**, exactly as feature
    002 specified. Nothing here regresses that.
 
@@ -345,6 +412,16 @@ integer.
 `run()` — `run()` re-executes and a promise would not survive it. Polling is one
 subrequest per child per poll and the parent's steps carry no parse cost.
 
+**The shape generalised to all three children, and that is the finding of the three
+extensions taken together.** `createChildBatch` / `pollChildBatch`
+(`src/lib/workflow-children.ts`) hold the create-poll-validate mechanism once; what each
+caller supplies is its params, its output validator and how to combine results. Gather
+returns a count, summarize an object of summaries and neuron spend, publish a URL — and
+each is a separate `WorkflowEntrypoint` class with its own binding, deliberately, because
+the binding is typed `Workflow<TParams>` and one class for all three would mean one
+binding carrying a three-way union the parent must narrow before it can validate any of
+it.
+
 ### What is deliberately not decided here
 
 `GATHER_FEEDS_PER_CHILD` gets a number in `plan.md`, from measurement, not here. The
@@ -358,8 +435,8 @@ margin rather than fitted to two data points.
 |---|---|
 | **CPU is charged per invocation and a step boundary is not a reset** | The design stops relying on boundaries arriving. A child instance is a new invocation lineage by construction rather than by hope. **Extended 2026-09-01 (#75, run `bd33248b`):** a fresh invocation is not enough on its own, because the cost charged to it drains cumulatively across every feed in the chunk. Requirement 3 now balances that cost across children instead of counting feeds into them. |
 | **10,000 neurons/day** | Unchanged. Children do no inference; `NEURON_BUDGET_PER_RUN` and `neuronsFor()` stay in the parent. |
-| **50 subrequests per *invocation*** | Corrected 2026-08-31 (#75, run `0199648c`) from "per step", which is what this row said. One fetch per feed per step is unchanged and is no longer sufficient: 46 gather steps exhausted the budget before a single article fetch, all 15 failing with `Too many subrequests by single Worker invocation.` This, not CPU, is now the measured reason gather has to leave the parent's invocation. Parent polling adds one subrequest per child per poll. |
-| **1,024 steps per instance** | Improved, not worsened: the parent sheds 46 gather steps and gains roughly `46 / GATHER_FEEDS_PER_CHILD` create-and-poll steps. Each child holds its own budget. |
+| **50 subrequests per *invocation*** | Corrected 2026-08-31 (#75, run `0199648c`) from "per step", which is what this row said. One fetch per feed per step is unchanged and is no longer sufficient: 46 gather steps exhausted the budget before a single article fetch, all 15 failing with `Too many subrequests by single Worker invocation.` This, not CPU, is now the measured reason gather has to leave the parent's invocation. Parent polling adds one subrequest per *pending* child per poll. **Extended 2026-09-01 (#75, run `0357f119`):** it is also the reason article summarisation and then publication had to leave it - the parent's fixed bill is 23 with all three gone, against the ~48 that killed that run. See "What run `0357f119` settled" for the table. |
+| **1,024 steps per instance** | Improved, not worsened: the parent sheds 46 gather steps, then 15 `summarize` steps, then `open-pull-request`, and gains three create-and-poll pairs. Each child holds its own budget, and the publish child holds exactly one step. |
 | **Instance lifetime** | Still uncited (`intent.md` open question). Measured floor of ≥46 minutes (fact 5). A child's lifetime is a fraction of a parent's, so the design moves away from the ceiling rather than toward it. |
 | **Cron wall-clock 15 min** | Not binding: orchestration remains a Workflow. The cron is paused (#64) and this feature does not restore it. |
 | **Steps are retried** | **No longer true, by requirement 1.** This is a deliberate divergence from `intent.md`'s Constraints and from `CLAUDE.md`'s platform rules, recorded in "Divergences" below rather than by editing the approved intent. |
@@ -432,16 +509,26 @@ margin rather than fitted to two data points.
    ceiling is still `SHORTLIST_TOP_N`, and it stays that way only while summarize children
    partition a capped shortlist rather than sharing an uncapped one.
 
+   **Extended a third time 2026-09-01 (#75), and this one needs no argument.** Publication
+   in a child adds two more parent step outputs: `create-publish-children`'s one-element
+   `string[]` of child ids, and `await-publish-children`'s pull request URL — a single
+   bounded string, GitHub's own `html_url`. Neither follows the feed allowlist or the child
+   count, and unlike the summaries there is no cap to keep holding: one run publishes one
+   draft. Going the *other* way — the whole `Draft` the parent hands the child — is a
+   Workflow **event payload**, not a step output, and is capped by the platform at the same
+   1 MiB (`PublishParams`' doc comment sizes a draft against it at two orders of magnitude
+   under, every field either fixed-size or bounded by `SHORTLIST_TOP_N`).
+
 ## Risks and mitigations
 
 | risk | mitigation |
 |---|---|
-| **`shortlist` can exhaust the parent's invocation on its own, and nothing upstream stops it.** `findSeenUrls` chunks 100 URLs per D1 query; at `SHORTLIST_MAX_CANDIDATES`'s 4,000-row ceiling that is **40 queries — 40 subrequests — in the parent's invocation before a single child is polled.** Gather and summarize both leaving the parent does not touch this. **Partly fired 2026-09-01 on run `0357f119`: 1,118 candidates, 13 subrequests in `shortlist`, and the parent died at `open-pull-request`.** | **Still not mitigated, and still deliberately not tuned — but no longer hypothetical.** The estimate this row was filed with (3 queries at run `6f75e460`'s 264 candidates) went stale in five days: `0357f119` gathered 1,118 and spent 13, and `shortlist` is now the largest single term in the parent's fixed cost. That did not kill the run on its own — 13 of 50 is not 40 — but it is what made the poll loops' 19 unaffordable, so the mitigation this run actually motivated is **cheaper polling** (`pollChildBatch`, and the wait-then-poll ordering in `run()`), not a change to `shortlist`. **The 12 queries are a floor, not a knob:** D1 caps a prepared statement at 100 bound parameters, so the chunk size is the platform's and `findSeenUrls` cannot be tuned below `ceil(candidates / 100)` without a different dedupe strategy altogether. The number to watch is still candidates per run, and it quadrupled in five days; `findSeenUrls` throws rather than truncating past 50 chunks, so the ceiling itself stays loud. Recorded here so the next person to widen `GATHER_WINDOW_DAYS` — or to wonder why the parent's fixed cost moved — finds it. |
+| **`shortlist` can exhaust the parent's invocation on its own, and nothing upstream stops it.** `findSeenUrls` chunks 100 URLs per D1 query; at `SHORTLIST_MAX_CANDIDATES`'s 4,000-row ceiling that is **40 queries — 40 subrequests — in the parent's invocation before a single child is polled.** Gather, summarize and (since 2026-09-01) publication all leaving the parent does not touch this. **Partly fired 2026-09-01 on run `0357f119`: 1,118 candidates, 13 subrequests in `shortlist`, and the parent died at `open-pull-request`.** | **Still not mitigated, and still deliberately not tuned — but no longer hypothetical.** The estimate this row was filed with (3 queries at run `6f75e460`'s 264 candidates) went stale in five days: `0357f119` gathered 1,118 and spent 13, and `shortlist` is now the largest single term in the parent's fixed cost. That did not kill the run on its own — 13 of 50 is not 40 — but it is what made the poll loops' 19 unaffordable, so the mitigations this run actually motivated are **cheaper polling** (`pollChildBatch`, and the wait-then-poll ordering in `run()`) and **publication in a child**, neither of them a change to `shortlist`. With both landed it is 13 of a fixed 23 - the largest term in the parent's bill, where it used to be one of several. **The 12 queries are a floor, not a knob:** D1 caps a prepared statement at 100 bound parameters, so the chunk size is the platform's and `findSeenUrls` cannot be tuned below `ceil(candidates / 100)` without a different dedupe strategy altogether. The number to watch is still candidates per run, and it quadrupled in five days; `findSeenUrls` throws rather than truncating past 50 chunks, so the ceiling itself stays loud. Recorded here so the next person to widen `GATHER_WINDOW_DAYS` — or to wonder why the parent's fixed cost moved — finds it. |
 | **Two runs contradict each other about the CPU premise, and neither settles it.** On 2026-08-31 run `0199648c` parsed all **46 feeds in the parent's own steps** with no `1102`, and `FINDINGS.md` §7.1 measured a single `run()` execution absorbing 5x10^8 arithmetic iterations in one isolate with no boundary, twice — three survivals at that size across two builds (114, 149, 695 ms of wall for the burn) against deaths at 10^9 and above, on a **Free** account with `[limits]` set in neither `wrangler.toml`, which reads as an enforced ceiling above ~115 ms of arithmetic and below ~230 ms. This row previously concluded from that pair that the premise was dead. On 2026-09-01 run `bd33248b` then killed a gather **child** on its fourth feed with `Worker exceeded CPU time limit.`, 917 items already parsed in that invocation (`probe/captures/bd33248b-0fab-4abc-abce-92246a40b1b1-g0.txt`). Both cannot describe the same enforced ceiling, and fact 1 says the failure is non-deterministic, so neither run settles it alone. The candidate explanation is **volume**: cs.AI returned 352 items on 2026-08-27 and 783 on 2026-09-01, so the two runs were not parsing the same workload even though they were parsing the same 46 feeds. | **Not mitigated, and the contradiction is itself the finding — it is the evidence requirement 3's volume-balanced distribution is argued from.** Whatever the ceiling is, chunking that counts feeds while cost scales with items decides its own outcome by which chunk the heaviest feed lands in, and that holds on either reading of these two runs; the amendment therefore does not rest on `bd33248b` alone, which fact 1 forbids. The synthetic burn stays a bound rather than a CPU figure — a `Math.sqrt` loop does not transfer to `parseFeed`'s allocation and GC behaviour, which is exactly the gap the two real runs sit in. Neither `wrangler.toml` declares `[limits]`, so a per-script `cpu_ms` difference is ruled out; the account plan remains uninspectable from here. Criterion 2's five consecutive runs are what decide. |
-| ~~**A child instance is not a fresh subrequest budget either.**~~ **Closed 2026-08-31 by run `6f75e460`:** five gather children completed in 5-8 seconds and the parent, relieved of 46 feed fetches, summarised 14 articles where the previous run summarised 0. A child is a fresh budget. What remains open is narrower — whether moving the *articles* into children too leaves the parent's residue (`shortlist`, `synthesize`, `open-pull-request`) inside 50. That is arithmetic rather than inference: those are bounded and do not grow with the allowlist — but the resource in question changed on 2026-08-31. CPU is no longer what bites (`FINDINGS.md` §7.1, and run `0199648c` completed all 46 gathers with no `1102`); the 50-subrequest-per-invocation ceiling is. | Nothing measured it. It is adopted because it is the only remaining candidate with a mechanism story, and because `step.sleep` and retry are both measured *not* to be one. Criterion 2 is a repeated real run precisely because it is what decides — the same shape feature 002 used, and the same reason. If children do not help, the spec is wrong and the finding is worth as much as the fix would have been. |
+| ~~**A child instance is not a fresh subrequest budget either.**~~ **Closed 2026-08-31 by run `6f75e460`:** five gather children completed in 5-8 seconds and the parent, relieved of 46 feed fetches, summarised 14 articles where the previous run summarised 0. A child is a fresh budget. What remains open is narrower — whether the parent's residue (`shortlist`, `synthesize` and its poll loops) stays inside 50 now that gather, the articles *and* the pull request have all left it. That is arithmetic rather than inference: those are bounded and do not grow with the allowlist — but the resource in question changed on 2026-08-31. CPU is no longer what bites (`FINDINGS.md` §7.1, and run `0199648c` completed all 46 gathers with no `1102`); the 50-subrequest-per-invocation ceiling is. | Nothing measured it. It is adopted because it is the only remaining candidate with a mechanism story, and because `step.sleep` and retry are both measured *not* to be one. Criterion 2 is a repeated real run precisely because it is what decides — the same shape feature 002 used, and the same reason. If children do not help, the spec is wrong and the finding is worth as much as the fix would have been. |
 | **Free-tier limits on concurrent or daily Workflow instances are not recorded anywhere in this repo.** A design that creates ten instances per run may hit a ceiling nobody has cited. | `plan.md` must find and cite the number before choosing `GATHER_FEEDS_PER_CHILD`, and the design tolerates sequential children if concurrency is capped — children are independent, so running them one at a time costs wall-clock and nothing else. |
 | **Turning retries off removes a real recovery path** on the D1 and GitHub steps. | Accepted, and stated in the design section rather than buried. `fetchFeedItems` already insulates the gather path. Re-examine if a run fails on a step that would have recovered. |
-| **Polling children costs subrequests and parent CPU.** **Fired 2026-09-01 on run `0357f119`: 19 of the parent's 50 subrequests, 10 of them on rounds that could not have found anything.** | One subrequest per *pending* child per poll, in a parent step that parses nothing. Two things changed on 2026-09-01 (#75), and neither is a tuning of the cadence: each loop now waits before its first poll, so round 0 lands past the point children are measured to converge rather than a second after `createBatch`; and a child that has already completed is not polled again, its validated output being carried in the poll step's own output instead (`pollChildBatch`, `src/lib/workflow-children.ts`). Together those take the two loops from 19 subrequests to about 11 on the same run's shape. `SUMMARIZE_POLL_INTERVAL` then goes 60 s → 90 s as a consequence rather than a lever: a smaller round cap shortens the slowest child the loop tolerates, and a longer wait gives that back at no subrequest cost. The parent's cost is still counts and status reads; requirement 5 is what keeps it that way, and the carried outputs are held to it explicitly. |
+| **Polling children costs subrequests and parent CPU**, and there are now three loops paying it. **Fired 2026-09-01 on run `0357f119`: 19 of the parent's 50 subrequests, 10 of them on rounds that could not have found anything.** | One subrequest per *pending* child per poll, in a parent step that parses nothing. Two things changed on 2026-09-01 (#75), and neither is a tuning of the cadence: each loop now waits before its first poll, so round 0 lands past the point children are measured to converge rather than a second after `createBatch`; and a child that has already completed is not polled again, its validated output being carried in the poll step's own output instead (`pollChildBatch`, `src/lib/workflow-children.ts`). Together those take the two loops from 19 subrequests to about 11 on the same run's shape. `SUMMARIZE_POLL_INTERVAL` then goes 60 s → 90 s as a consequence rather than a lever: a smaller round cap shortens the slowest child the loop tolerates, and a longer wait gives that back at no subrequest cost. A third loop then joined them the same day, for publication - at one child it costs one subrequest per round, and `PUBLISH_POLL_SUBREQUEST_BUDGET` is the cheapest of the three backstops per round of tolerance bought, because `max(1, floor(budget / childCount))` divides by one. The parent's cost is still counts, status reads and one bounded URL; requirement 5 is what keeps it that way, and the carried outputs are held to it explicitly. |
 | **The failure is non-deterministic, so a green run proves less than it looks.** | Criterion 2 requires five consecutive, with the arithmetic stated. This risk is the reason that criterion is not "a run completes". |
 | **Per-feed subrequest cost, not CPU, is what sizes `GATHER_FEEDS_PER_CHILD`** — corrected 2026-08-31 (#75); CPU is no longer the binding resource. | Requirement 6 keeps the design independent of the number. Unlike CPU, this one *is* measurable ahead of a run: a feed costs one fetch plus its D1 write. Criterion 2 still validates the choice. |
 
