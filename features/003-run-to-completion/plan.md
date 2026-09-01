@@ -26,6 +26,13 @@ still wanted; `spec.md` carries the same amendment. The correction was only legi
 work order step 5 first made fifteen identical `summary: null` step outputs tell themselves
 apart.
 
+**And then CPU came back, 2026-09-01.** Run `bd33248b` killed a gather child with
+`Worker exceeded CPU time limit.` after 917 items across three feeds. So the paragraph
+above is not the last word either: `spec.md`'s risk table now carries both that run and
+`0199648c` rather than a verdict, and work order step 8 exists because the chunking was
+counting feeds while the cost being spent is items — a mismatch that holds whichever of
+those two runs describes the ceiling in force.
+
 The acceptance criterion is five consecutive completing runs, not one, because three of
 five identical probe runs completed while the underlying problem was untouched.
 
@@ -142,13 +149,13 @@ touch the same regex and each needs its own mutation row.
 
 ## Files
 
-### PR 1 — `75-plan-md` (Part 1 of 8)
+### PR 1 — `75-plan-md` (Part 1 of 9)
 
 | file | change |
 |---|---|
 | `features/003-run-to-completion/plan.md` | this file; replaces the unfilled template |
 
-### PR 2 — `75-no-retries` (Part 2 of 8)
+### PR 2 — `75-no-retries` (Part 2 of 9)
 
 | file | change |
 |---|---|
@@ -164,7 +171,7 @@ touch the same regex and each needs its own mutation row.
 | `test/trace.test.ts` | the policy is passed, with the exact shape |
 | `REVIEW.md` | pass 1 and pass 3 markers naming the new check ids |
 
-### PR 3 — `75-verify-no-retries` (Part 3 of 8)
+### PR 3 — `75-verify-no-retries` (Part 3 of 9)
 
 Not in the original table. Work order step 2 gates PR 3 on verifying the retry policy on
 a deployed Worker, and that verification produced both a record and a finding large
@@ -179,7 +186,7 @@ enough to be reviewable on its own.
 | `features/003-run-to-completion/spec.md` | the measured reading, and the CPU finding as a stop in the risk table |
 | `features/003-run-to-completion/plan.md` | this entry, and `M` 4 → 5; then, in the same PR and once the rest of the work order had actually run, 5 → 8 |
 
-### PR 4 — `75-parse-failure-modes` (Part 4 of 8)
+### PR 4 — `75-parse-failure-modes` (Part 4 of 9)
 
 Not in the original table, and not a deferred piece of one either. A deployed run
 (`972cea0c`) died on `synthesize-draft` with "model response was not valid JSON in the
@@ -198,7 +205,7 @@ a step that never reaches `open-pull-request`.
 | `test/prompts.test.ts` | every failure mode, and the one deliberate narrowing: JSON wrapped in prose used to parse by accident and now does not |
 | `test/workflow.test.ts` | the diagnosis survives into the error message |
 
-### PR 5 — `75-summarize-skip-reasons` (Part 5 of 8)
+### PR 5 — `75-summarize-skip-reasons` (Part 5 of 9)
 
 Not in the original table, and the reason the two PRs after it are shaped the way they
 are. A 46-feed run (`525a5386`) completed all 46 gather steps with no `1102` and then
@@ -219,7 +226,7 @@ rests on that fact and was planned against a different one.
 | `features/003-run-to-completion/spec.md` | the amendment: the design survives, on a different resource than the one it was argued from |
 | `test/workflow.test.ts` | each of the five skip paths is distinguishable |
 
-### PR 6 — `75-gather-children` (Part 6 of 8)
+### PR 6 — `75-gather-children` (Part 6 of 9)
 
 The rationale changed under this entry; the substance did not. Children were proposed to
 buy a fresh CPU budget, and run `0199648c`'s 46 clean gather steps killed that premise
@@ -239,7 +246,7 @@ the arithmetic in work order step 6.
 | `test/workflow.test.ts` | parent creates the right children, sums counts, fails on a failed child |
 | `test/gather-workflow.test.ts` | new: the child's own behaviour |
 
-### PR 7 — `75-summarize-children` (Part 7 of 8)
+### PR 7 — `75-summarize-children` (Part 7 of 9)
 
 Not in the original table, because the original table assumed moving gather out was
 enough. Run `6f75e460` settled both halves of that in one sitting. Gather in children
@@ -265,18 +272,38 @@ monomorphic, which is worth more than the file it costs.
 | `test/summarize-workflow.test.ts` | new: the child's own behaviour, including its slice of the neuron budget |
 | `test/workflow.test.ts` | the parent's second create-and-poll pair, and the bound on what it returns |
 
-### PR 8 — `75-five-runs` (Part 8 of 8, closes the tracking issue)
+### PR 8 — `75-volume-chunking` (Part 8 of 9)
+
+Not in the original table. Run `bd33248b` killed gather child `g0` with `Worker exceeded
+CPU time limit.` while its four siblings completed: `GATHER_FEEDS_PER_CHILD` chunks by
+feed count, and one chunk drew both arXiv feeds. Parse cost scales with items, so the
+knob was never measuring the thing that binds — arXiv cs.AI alone is 783 of the
+allowlist's 1,117 items. Step 8 of the work order below is what this PR is.
+
+| file | change |
+|---|---|
+| `src/lib/d1.ts` | `readSourceWeights` — mean candidates per source per distinct run, excluding the run being chunked |
+| `src/workflow.ts` | `chunkSourcesByVolume` (greedy LPT over a fixed child count) replaces the count-based slicing; `DEFAULT_SOURCE_WEIGHT`; the fixed-cost recount for the parent's extra D1 call |
+| `wrangler.toml` | `GATHER_FEEDS_PER_CHILD`'s changed role — a feed-count cap and the child-count divisor, not a CPU knob |
+| `features/003-run-to-completion/spec.md` | requirement 3's amendment, the dated calibration table, and the CPU-premise risk row rewritten to carry both runs |
+| `features/003-run-to-completion/plan.md` | this entry, `M` 8 → 9, and the work-order step |
+| `probe/captures/` | the failed run's parent and all five gather children, verbatim |
+| `CLAUDE.md` | the CPU platform bullet gains today's measurement: items, not feeds |
+| `.claude/skills/cf-free-tier/SKILL.md` | the same correction, as PRs 2 and 5 both did |
+| `test/workflow.test.ts`, `test/d1.test.ts` | the chunker's cases, and the weight query's |
+
+### PR 9 — `75-five-runs` (Part 9 of 9, closes the tracking issue)
 
 | file | change |
 |---|---|
 | `features/003-run-to-completion/spec.md` | the measured record of the five runs; `GATHER_FEEDS_PER_CHILD` and `SUMMARIZE_ARTICLES_PER_CHILD`'s final values and why |
-| `wrangler.toml` | those values, if step 8 tunes them |
+| `wrangler.toml` | those values, if step 9 tunes them |
 | `probe/captures/` | the five instance captures, committed as evidence |
 
 The PR exists whatever the runs show, so its own existence never depends on the result —
 the same device feature 002 used for its PR 6.
 
-**`M` was revised anyway, 4 → 5 → 8, and every time by the case the device does not
+**`M` was revised anyway, 4 → 5 → 8 → 9, and every time by the case the device does not
 cover.** It protects against a PR whose *result* is unknown; it does not protect against a
 step of the work order turning out to need a PR of its own. Work order step 2's platform
 verification did, so it is PR 3 and the two implementation PRs shifted down. Then it
@@ -287,6 +314,15 @@ be read at all (PR 5); and article summarisation, once run `6f75e460` measured
 gather-in-children to be necessary but not sufficient (PR 7). Recorded here after the fact
 rather than backdated, because the point of fixing `M` is that changing it is visible — a
 plan that quietly said 8 all along would have hidden three findings.
+
+**8 → 9 on 2026-09-01, and this one is not a new case — it is the same one a fifth time.**
+Run `bd33248b` died in a gather child, and the fix is not a tuning of a number the
+five-runs step could have made on the way past: `GATHER_FEEDS_PER_CHILD` was measuring
+feeds while the cost being spent is items, so the chunking itself changes. That is a PR
+(8), and the five runs shift to 9. What is worth noticing is which of the two PRs before it found this:
+neither. Both were green on every check and both deployed; the run is what found it, the
+fourth time in this build that a step of the work order turned into a PR of its own by
+being deployed rather than by being read.
 
 ## Work order
 
@@ -472,7 +508,42 @@ candidate is two subrequests, so 5 candidates is 10 of 50 — more margin than g
 deliberately: an article's host is whatever a feed happened to link to, not an RSS host
 this run has already reached once. `SHORTLIST_TOP_N`'s 15 gives 3 children.
 
-### 8. Five runs, and the record — PR 8
+### 8. Volume-balanced chunking — PR 8
+
+Step 6 sized `GATHER_FEEDS_PER_CHILD` against subrequests and left CPU to requirement 6.
+Run `bd33248b` (2026-09-01) then killed child `g0` with `Worker exceeded CPU time limit.`
+after it had parsed 917 items across three feeds — cs.SE (80), cs.AI (783), OpenAI (54) —
+and died on its fourth, Cloudflare, at 20. Its four siblings completed. Chunking by feed
+count gave one child 70% of the allowlist's items, and no feed count could have said so.
+
+**What changes.** `chunkSourcesByVolume` (`src/workflow.ts`) distributes sources across
+the *same* number of children — `ceil(sources.length / GATHER_FEEDS_PER_CHILD)`, still 5
+— greedy longest-processing-time-first: heaviest source into the least-loaded child with
+room. `GATHER_FEEDS_PER_CHILD` keeps its name and loses its implied job: it is the
+per-child feed-count cap (the child's own 50 subrequests) and the child-count divisor,
+never a CPU knob.
+
+**What does not change, deliberately.** The child count. `pollChildBatch` derives
+`max(1, floor(GATHER_POLL_SUBREQUEST_BUDGET / childCount))` rounds, so six children leave
+the parent one poll round and no retry — raising the count to spread volume would trade a
+child-side failure for a parent-side one. And there is **no per-child item cap**: that
+would assert N items fit and N+1 do not, which requirement 6 forbids. See `spec.md`'s
+amendment for why balancing across a fixed count asserts no boundary at all.
+
+**Where the weights come from.** `readSourceWeights` (`src/lib/d1.ts`) averages
+`run_candidates` per source per *distinct run*, not per row — a plain `COUNT(*)` would
+score a feed by how many runs it appeared in. It excludes the current `run_id`, which is
+load-bearing rather than tidy: this run's own children write under it as they complete, so
+counting them would make a replay of `create-gather-children` compute different weights
+and different chunks behind child ids that stayed identical. A source with no history
+takes `DEFAULT_SOURCE_WEIGHT`; with every weight equal, greedy placement is round-robin,
+which is what the count-based chunking did and is a fine floor for a first run.
+
+**Cost to the parent.** One D1 call, so `create-gather-children` is 2 subrequests rather
+than 1 and the fixed-cost recount in `createSummarizeChildren`'s comment goes from ~21 to
+~22 of 50, ~47 with both poll budgets.
+
+### 9. Five runs, and the record — PR 9
 
 Deploy, then trigger five runs **consecutively**, each to a terminal state, capturing
 `wrangler workflows instances describe` for the parent and at least one child of each.
@@ -482,8 +553,14 @@ Five consecutive completions is the pass. Any failure resets the count — the c
 five in a row, not five of seven, because the failure being measured is intermittent and
 "best of" would launder exactly the luck the criterion exists to exclude.
 
-If a run fails, read where. A failure inside a child means its chunk is still too big —
-lower `GATHER_FEEDS_PER_CHILD` or `SUMMARIZE_ARTICLES_PER_CHILD` and restart the five. A
+If a run fails, read where. A failure inside a gather child means its chunk is still too
+big — and after step 8 the lever is no longer only `GATHER_FEEDS_PER_CHILD`. Read the
+child's per-step outputs: if the volumes came out balanced and the chunk still died, the
+per-child ceiling is lower than the allowlist's mean and the feed count has to come down
+(which also raises the child count, so check the poll-round arithmetic before doing it);
+if they came out unbalanced, the weights are wrong and `readSourceWeights`' window is what
+to look at, not the cap. For a summarize child it is still `SUMMARIZE_ARTICLES_PER_CHILD`.
+Either way, restart the five. A
 failure in the parent means the residue left after both moves does not fit 50 after all,
 and the term to suspect first is `shortlist`: `findSeenUrls` chunks 100 URLs per D1 query,
 which scales with candidates rather than with feeds, and `spec.md` records it as
@@ -503,7 +580,7 @@ deliberately unmitigated. That finding is written up rather than tuned around.
 - `probe/captures/` is the evidence pattern: commit the verbatim `describe` output at the
   moment it is taken, because feed volumes are perishable and dashboard traces expire in
   3 days (#22).
-- The `Part N of M of #75` marker on PRs 1–7, `Closes` on PR 8 only. Never
+- The `Part N of M of #75` marker on PRs 1–8, `Closes` on PR 9 only. Never
   `--body-file -` (`CLAUDE.md`, "Repeated mistakes").
 
 ## Verification
@@ -531,9 +608,9 @@ guard, confirm the check goes red, restore, confirm green. Record the pair in th
 | # | how |
 |---|---|
 | 1 | the command block above |
-| 2 | five consecutive deployed runs, captures committed (work order 8) |
+| 2 | five consecutive deployed runs, captures committed (work order 9) |
 | 3 | `grep -rn 'step\.do(' src/` returns only `src/lib/trace.ts`; a bare call inserted into `src/workflow.ts` fails `lint:ast` |
-| 4 | one attempt row in `describe` for a deliberately failing step (work order 3). Measured on the probe, not on `research-workflow`, so this criterion stays open for PR 8 |
+| 4 | one attempt row in `describe` for a deliberately failing step (work order 3). Measured on the probe, not on `research-workflow`, so this criterion stays open for PR 9 |
 | 5 | terminate a child mid-run; parent errors, `runs` row status is not a success |
 | 6 | re-run a child against a written `run_id`; `SELECT count(*)` unchanged |
 | 7 | vitest parity case: shortlist from children == shortlist from the current path, same inputs |

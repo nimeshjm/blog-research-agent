@@ -65,6 +65,12 @@ open pull request → record run.
   three fail with Workers error `1102`. Never parse many feeds or articles in one step
   regardless — one feed per step, one article per step is still what buys a *chance* of
   a fresh invocation, which is the only lever there is. I/O wait is free; parsing is not.
+  **The term is items parsed per invocation, not feeds.** Measured 2026-09-01 (#75) on
+  run `bd33248b`: a gather child chunked by *feed count* parsed 917 items across three
+  feeds and then died on its fourth, a 20-item feed, while four sibling children with
+  light chunks completed. Cost drains cumulatively across the chunk, and one feed (arXiv
+  cs.AI, 783 items) was 70% of the whole allowlist — so chunk by measured volume, never
+  by how many feeds a chunk holds.
 - **50 subrequests per *invocation*, not per step.** Measured 2026-08-31 (#75) on run
   `0199648c`: 46 gather steps then 15 article fetches, and every one of the 15 failed
   with the platform's own `Too many subrequests by single Worker invocation.` A

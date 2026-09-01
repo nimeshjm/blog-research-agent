@@ -73,6 +73,45 @@ design does not depend on closing it.
 Feed volumes are perishable — arXiv cs.SE returned 41 raw items on 2026-08-27 and 65 on
 2026-08-28 — so every number here carries its date and none is re-derivable.
 
+### Per-feed item volumes, measured 2026-09-01
+
+The calibration table requirement 3's volume-balanced distribution was designed against.
+Read from run `bd33248b`'s own gather step outputs, committed at `probe/captures/`: the
+failed child `g0`'s first three steps plus its four completed siblings' 36 are 39 of the
+46. Two throwaway probe children covered the seven feeds `g0` died before reaching —
+Cloudflare, GitHub, Stack Overflow, Martin Fowler, Will Larson, Simon Willison, The
+Pragmatic Engineer. Those two were read on 2026-09-01 and **not retained**, so alone among
+the numbers here they have no committed capture behind them.
+
+| feed | items | feed | items |
+|---|---|---|---|
+| arXiv cs.AI | **783** | Anthropic Research | 6 |
+| arXiv cs.SE | 80 | OpenAI Developer | 5 |
+| OpenAI | 54 | Ollama | 4 |
+| Simon Willison | 30 | Pinecone | 4 |
+| Claude | 29 | Surge AI | 4 |
+| Cloudflare | 20 | AI FIRST Podcast | 3 |
+| Stack Overflow | 16 | Weaviate | 3 |
+| GitHub | 10 | OpenAI Engineering | 2 |
+| Google Developers — AI | 10 | UK AI Safety Institute | 2 |
+| Cursor | 9 | Will Larson | 2 |
+| The Pragmatic Engineer | 9 | Dagster | 1 |
+| DX | 8 | Goodfire | 1 |
+| Honeycomb | 8 | *the other 19 feeds* | 0 |
+| Anthropic News | 7 | | |
+| Martin Fowler | 7 | **total** | **1,117** |
+
+**cs.AI alone is 783 of the 1,117 — 70%.** Everything else in the allowlist combined is
+334. That single number is why chunking by feed count decided the run: whichever of five
+children drew cs.AI carried 70% of the whole parse, and a feed count cannot say which
+child that is or that it matters.
+
+**This table is perishable and is not the design.** cs.AI returned 352 items on
+2026-08-27 and 783 five days later, which is the whole reason the implementation reads
+its weights out of `run_candidates` (`readSourceWeights`, `src/lib/d1.ts`) rather than
+carrying a copy of this table in code. It is recorded here as the calibration the design
+was checked against on one dated day, not as an input to it.
+
 ## Requirements
 
 1. **No step is retried.** `step.do` is invoked with a retry policy of zero attempts
@@ -107,6 +146,42 @@ Feed volumes are perishable — arXiv cs.SE returned 41 raw items on 2026-08-27 
    child processes at most `SUMMARIZE_ARTICLES_PER_CHILD` shortlisted candidates, the
    same value shape one requirement earlier, sized against the same 50-subrequest ceiling
    (`createSummarizeChildren`'s comment in `src/workflow.ts`) rather than the feed count.
+
+   **Amended 2026-09-01 (#75) after run `bd33248b`.** The feed count is no longer what
+   decides a child's workload. `GATHER_FEEDS_PER_CHILD` keeps its name and both of its
+   remaining jobs — it caps a child's *feed count*, which is that child's own
+   50-subrequest bound (one fetch plus one D1 `batch()` per feed), and `ceil(46 / 10)`
+   still derives how many children there are. What it never was is a CPU knob, and that
+   is the bug: child `g0` drew both arXiv feeds, parsed 917 items across three of them,
+   and died on its fourth (20 items) with `Worker exceeded CPU time limit.` while its
+   four siblings carried light chunks and completed.
+
+   So *which* feeds go to which child is now decided by measured **item volume**: sources
+   are distributed greedily, heaviest first, into the least-loaded child with room
+   (`chunkSourcesByVolume`, `src/workflow.ts`), weighted by per-source averages read from
+   `run_candidates` (`readSourceWeights`, `src/lib/d1.ts`) rather than from a table
+   written down here, which the section above shows would rot within a week.
+
+   **The number of children stays at five, and not only by arithmetic.**
+   `pollChildBatch` derives `max(1, floor(GATHER_POLL_SUBREQUEST_BUDGET / childCount))`
+   poll rounds from the parent's subrequest share, so a sixth child would leave the
+   parent a single round with no retry after its first sleep. Volume is therefore fixed
+   by rebalancing a fixed number of children rather than by adding children.
+
+   **This does not weaken requirement 6, and the distinction is the whole argument.** The
+   obvious alternative — cap a child at N items — asserts exactly what requirement 6
+   forbids: that N items fit and N+1 do not. Balancing across a fixed number of children
+   asserts no boundary at all. It bounds a *growth term*: the worst child's volume falls
+   from "whatever the heaviest feeds happen to sum to" toward the allowlist's mean, and
+   it does so wherever the platform's real ceiling turns out to sit. That is the same
+   argument feature 002 made for bounding the parse rather than fitting it to a measured
+   limit, one level up. There is deliberately **no per-child item cap** in the
+   implementation, and adding one later would be the regression.
+
+   The durable reason for the change is not this run. Parse cost scales with items
+   parsed; the knob counted feeds. That mismatch holds regardless of where today's
+   boundary sat, which matters because the risk table below records that two runs
+   disagree about where it sits.
 4. **A failed child fails the run**, visibly. It does not silently contribute zero
    candidates. This is the deliberate opposite of the dead-feed rule, which stays: a feed
    that cannot be fetched still contributes zero without failing anything.
@@ -206,6 +281,12 @@ Criterion 4 stays open for PR 5's captures.
 > feed count) is unaffected. Acceptance criterion 2 was **not** unaffected and has been
 > rewritten — see it for why its original wording would have passed the very run that
 > exposed all of this.
+>
+> **"Dead" was too strong, recorded 2026-09-01 (#75).** Run `bd33248b` killed a gather
+> child with `Worker exceeded CPU time limit.` the day after this amendment was written.
+> The risk table below now carries both runs and the contradiction between them rather
+> than either verdict. The design is untouched either way — a child instance is a
+> separate invocation, so it is a fresh budget for whichever of the two resources binds.
 
 
 The parent workflow keeps `select-topic`, `load-sources`, `shortlist`, synthesis and the
@@ -243,7 +324,7 @@ margin rather than fitted to two data points.
 
 | constraint | how this design respects it |
 |---|---|
-| **CPU is charged per invocation and a step boundary is not a reset** | The design stops relying on boundaries arriving. A child instance is a new invocation lineage by construction rather than by hope. |
+| **CPU is charged per invocation and a step boundary is not a reset** | The design stops relying on boundaries arriving. A child instance is a new invocation lineage by construction rather than by hope. **Extended 2026-09-01 (#75, run `bd33248b`):** a fresh invocation is not enough on its own, because the cost charged to it drains cumulatively across every feed in the chunk. Requirement 3 now balances that cost across children instead of counting feeds into them. |
 | **10,000 neurons/day** | Unchanged. Children do no inference; `NEURON_BUDGET_PER_RUN` and `neuronsFor()` stay in the parent. |
 | **50 subrequests per *invocation*** | Corrected 2026-08-31 (#75, run `0199648c`) from "per step", which is what this row said. One fetch per feed per step is unchanged and is no longer sufficient: 46 gather steps exhausted the budget before a single article fetch, all 15 failing with `Too many subrequests by single Worker invocation.` This, not CPU, is now the measured reason gather has to leave the parent's invocation. Parent polling adds one subrequest per child per poll. |
 | **1,024 steps per instance** | Improved, not worsened: the parent sheds 46 gather steps and gains roughly `46 / GATHER_FEEDS_PER_CHILD` create-and-poll steps. Each child holds its own budget. |
@@ -313,7 +394,7 @@ margin rather than fitted to two data points.
 | risk | mitigation |
 |---|---|
 | **`shortlist` can exhaust the parent's invocation on its own, and nothing upstream stops it.** `findSeenUrls` chunks 100 URLs per D1 query; at `SHORTLIST_MAX_CANDIDATES`'s 4,000-row ceiling that is **40 queries — 40 subrequests — in the parent's invocation before a single child is polled.** Gather and summarize both leaving the parent does not touch this. | **Not mitigated, and deliberately not tuned.** Measured volumes are nowhere near it: 7 queries on 2026-08-26 (~700 candidates), 3 on run `6f75e460` (264), because the 30-day gather window bounds the input long before the 4,000 ceiling does. So the ceiling is reachable only if that window is widened or the allowlist grows several-fold — which is exactly when someone would be changing feeds and not thinking about D1. The number to watch is candidates per run, not feeds; `findSeenUrls` already throws rather than truncating past 50 chunks, so the failure is loud. Recorded here so the next person to widen `GATHER_WINDOW_DAYS` finds it. |
-| **The premise the whole feature is built on may no longer hold.** Measured 2026-08-31 (`FINDINGS.md` §7.1): a single `run()` execution absorbed 5x10^8 arithmetic iterations in one isolate with no boundary and **no `1102`**, twice. Three survivals at that size across two builds (114, 149, 695 ms of wall for the burn), against deaths at 10^9 and above; a fourth run at 5x10^8 on the same build as the deaths is what rules out the build, not the size, being the variable. The account is **Free**, checked in the dashboard, and neither `wrangler.toml` sets `[limits]` — so the enforced ceiling sits above ~115 ms of arithmetic and below ~230 ms, an order of magnitude above the documented 10 ms with no configuration or plan to explain it. Read as a bound, not a CPU figure: the deltas are wall-clock and a `Math.sqrt` loop does not transfer to `parseFeed`'s allocation and GC behaviour. Four days earlier the same account was measured to fail on the third feed parse in an invocation. Both cannot be true of the same platform. | **Not mitigated. This is a stop, not a risk to carry.** If the ceiling in force is not 10 ms, gather in child instances solves a problem that may not exist, and PR 3 is the wrong next PR. The cheap decisive follow-up is `map` mode over the same 46 feeds, on the real parse path: §1 and §4 record that as a coin flip on identical input, so a run now is directly comparable against committed evidence in a way the synthetic burn is not. Neither `wrangler.toml` declares `[limits]`, so a per-script `cpu_ms` difference is already ruled out; the account plan is the remaining candidate and this instrument cannot see it. |
+| **Two runs contradict each other about the CPU premise, and neither settles it.** On 2026-08-31 run `0199648c` parsed all **46 feeds in the parent's own steps** with no `1102`, and `FINDINGS.md` §7.1 measured a single `run()` execution absorbing 5x10^8 arithmetic iterations in one isolate with no boundary, twice — three survivals at that size across two builds (114, 149, 695 ms of wall for the burn) against deaths at 10^9 and above, on a **Free** account with `[limits]` set in neither `wrangler.toml`, which reads as an enforced ceiling above ~115 ms of arithmetic and below ~230 ms. This row previously concluded from that pair that the premise was dead. On 2026-09-01 run `bd33248b` then killed a gather **child** on its fourth feed with `Worker exceeded CPU time limit.`, 917 items already parsed in that invocation (`probe/captures/bd33248b-0fab-4abc-abce-92246a40b1b1-g0.txt`). Both cannot describe the same enforced ceiling, and fact 1 says the failure is non-deterministic, so neither run settles it alone. The candidate explanation is **volume**: cs.AI returned 352 items on 2026-08-27 and 783 on 2026-09-01, so the two runs were not parsing the same workload even though they were parsing the same 46 feeds. | **Not mitigated, and the contradiction is itself the finding — it is the evidence requirement 3's volume-balanced distribution is argued from.** Whatever the ceiling is, chunking that counts feeds while cost scales with items decides its own outcome by which chunk the heaviest feed lands in, and that holds on either reading of these two runs; the amendment therefore does not rest on `bd33248b` alone, which fact 1 forbids. The synthetic burn stays a bound rather than a CPU figure — a `Math.sqrt` loop does not transfer to `parseFeed`'s allocation and GC behaviour, which is exactly the gap the two real runs sit in. Neither `wrangler.toml` declares `[limits]`, so a per-script `cpu_ms` difference is ruled out; the account plan remains uninspectable from here. Criterion 2's five consecutive runs are what decide. |
 | ~~**A child instance is not a fresh subrequest budget either.**~~ **Closed 2026-08-31 by run `6f75e460`:** five gather children completed in 5-8 seconds and the parent, relieved of 46 feed fetches, summarised 14 articles where the previous run summarised 0. A child is a fresh budget. What remains open is narrower — whether moving the *articles* into children too leaves the parent's residue (`shortlist`, `synthesize`, `open-pull-request`) inside 50. That is arithmetic rather than inference: those are bounded and do not grow with the allowlist — but the resource in question changed on 2026-08-31. CPU is no longer what bites (`FINDINGS.md` §7.1, and run `0199648c` completed all 46 gathers with no `1102`); the 50-subrequest-per-invocation ceiling is. | Nothing measured it. It is adopted because it is the only remaining candidate with a mechanism story, and because `step.sleep` and retry are both measured *not* to be one. Criterion 2 is a repeated real run precisely because it is what decides — the same shape feature 002 used, and the same reason. If children do not help, the spec is wrong and the finding is worth as much as the fix would have been. |
 | **Free-tier limits on concurrent or daily Workflow instances are not recorded anywhere in this repo.** A design that creates ten instances per run may hit a ceiling nobody has cited. | `plan.md` must find and cite the number before choosing `GATHER_FEEDS_PER_CHILD`, and the design tolerates sequential children if concurrency is capped — children are independent, so running them one at a time costs wall-clock and nothing else. |
 | **Turning retries off removes a real recovery path** on the D1 and GitHub steps. | Accepted, and stated in the design section rather than buried. `fetchFeedItems` already insulates the gather path. Re-examine if a run fails on a step that would have recovered. |

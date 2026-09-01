@@ -3,10 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SEEN_URLS_CHUNK_SIZE, startRun, writeRunCandidates } from '../src/lib/d1';
 import { loadFeeds } from '../src/lib/feeds';
 import { InvalidDraftError } from '../src/lib/mdx';
-import type { ArticleSummary, Candidate, Draft, Env, GatherParams, SummarizeParams, Topic } from '../src/lib/types';
+import type { ArticleSummary, Candidate, Draft, Env, GatherParams, ParsedItem, Source, SummarizeParams, Topic } from '../src/lib/types';
 import {
+  chunkSourcesByVolume,
   createGatherChildren,
   createSummarizeChildren,
+  DEFAULT_SOURCE_WEIGHT,
   DUPLICATE_TOKEN_THRESHOLD,
   isGrounded,
   openPullRequest,
@@ -76,6 +78,10 @@ function candidate(overrides: Partial<Candidate> = {}): Candidate {
   };
 }
 
+function candidateRow(url: string): ParsedItem {
+  return { url, title: 'x', publishedAt: '2026-08-27T00:00:00Z', publishedMs: null };
+}
+
 function topic(overrides: Partial<Topic> = {}): Topic {
   return {
     id: 1,
@@ -129,21 +135,177 @@ function fakeGatherWorkflow(): {
   return { binding, created, setStatus: (id, status) => statuses.set(id, status) };
 }
 
+/**
+ * The measured per-feed item counts behind spec.md's calibration table
+ * (2026-09-01, run `bd33248b` plus two probe children). Held here as data so
+ * the dominant-feed case below is the real allowlist rather than a
+ * hand-picked shape that happens to prove the point. Perishable, and only
+ * ever an input to these tests - production reads its weights from D1.
+ */
+const CALIBRATION_2026_09_01: Record<string, number> = {
+  'arXiv cs.AI': 783, 'arXiv cs.SE': 80, 'OpenAI': 54, 'Simon Willison': 30, 'Claude': 29,
+  'Cloudflare': 20, 'Stack Overflow': 16, 'GitHub': 10, 'Google Developers — AI': 10,
+  'Cursor': 9, 'The Pragmatic Engineer': 9, 'DX': 8, 'Honeycomb': 8, 'Anthropic News': 7,
+  'Martin Fowler': 7, 'Anthropic Research': 6, 'OpenAI Developer': 5, 'Ollama': 4,
+  'Pinecone': 4, 'Surge AI': 4, 'AI FIRST Podcast': 3, 'Weaviate': 3, 'OpenAI Engineering': 2,
+  'UK AI Safety Institute': 2, 'Will Larson': 2, 'Dagster': 1, 'Goodfire': 1,
+};
+
+function calibrationWeights(sources: Source[]): Map<string, number> {
+  // Every source gets an explicit entry, zeroes included, so this reproduces
+  // the calibration table exactly. In production a feed with no rows is
+  // absent from the map and picks up DEFAULT_SOURCE_WEIGHT instead - D1
+  // stores rows, not absences, so it cannot tell "new" from "empty".
+  return new Map(sources.map((s) => [s.name, CALIBRATION_2026_09_01[s.name] ?? 0]));
+}
+
+function loadOf(chunk: Source[], weights: Map<string, number>): number {
+  return chunk.reduce((sum, s) => sum + (weights.get(s.name) ?? DEFAULT_SOURCE_WEIGHT), 0);
+}
+
+function syntheticSources(count: number): Source[] {
+  return Array.from({ length: count }, (_, i) => ({ name: `Feed ${i}`, feedUrl: `https://feed.test.example/${i}.xml` }));
+}
+
+describe('chunkSourcesByVolume()', () => {
+  it('isolates the dominant feed: cs.AI alone carries a child while the other 45 spread over four', () => {
+    const sources = loadFeeds();
+    const weights = calibrationWeights(sources);
+
+    const chunks = chunkSourcesByVolume(sources, weights, 10);
+
+    expect(chunks).toHaveLength(5);
+    // The failure this replaces: `bd33248b`'s g0 drew both arXiv feeds and
+    // died. Here cs.AI is the only non-empty feed in its chunk.
+    expect(chunks[0]!.filter((s) => weights.get(s.name)! > 0).map((s) => s.name)).toEqual(['arXiv cs.AI']);
+    expect(chunks.map((c) => loadOf(c, weights))).toEqual([783, 84, 84, 83, 83]);
+    expect(chunks.map((c) => c.length)).toEqual([6, 10, 10, 10, 10]);
+    // Membership, not only the aggregates: the totals above are identical
+    // under several different placements of the 19 empty feeds, so they do
+    // not on their own pin what this function returns.
+    expect(chunks.map((c) => c.map((s) => s.name))).toEqual([
+      ['arXiv cs.AI', 'Transluce', 'Windsurf Blog', 'Windsurf Changelog', 'Windsurf Next Changelog', 'xAI'],
+      [
+        'arXiv cs.SE', 'Weaviate', 'Dagster', 'Cohere', 'EleutherAI Papers', 'FAR.AI', 'Groq', 'Mistral AI',
+        'Paul Graham Essays', 'The Batch (DeepLearning.AI)',
+      ],
+      [
+        'OpenAI', 'Cursor', 'Honeycomb', 'Anthropic Research', 'Pinecone', 'OpenAI Engineering', 'Goodfire',
+        'OpenAI Research', 'Perplexity', 'Timaeus',
+      ],
+      [
+        'Simon Willison', 'Stack Overflow', 'GitHub', 'The Pragmatic Engineer', 'Anthropic News', 'OpenAI Developer',
+        'Surge AI', 'UK AI Safety Institute', 'AI at Meta', 'Anthropic Frontier Red Team',
+      ],
+      [
+        'Claude', 'Cloudflare', 'Google Developers — AI', 'DX', 'Martin Fowler', 'Ollama', 'AI FIRST Podcast',
+        'Will Larson', 'Anthropic Engineering', 'Chander Ramesh',
+      ],
+    ]);
+  });
+
+  it('the feed-count cap binds before the weight balance does', () => {
+    // One 1,000-item feed and nine trivial ones over two bins of five. Purely
+    // by weight every trivial feed would join bin 1; the cap stops bin 1 at
+    // five and forces the rest back onto the heavy bin.
+    const sources = syntheticSources(10);
+    const weights = new Map(sources.map((s, i) => [s.name, i === 0 ? 1000 : 1]));
+
+    const chunks = chunkSourcesByVolume(sources, weights, 5);
+
+    expect(chunks.map((c) => c.length)).toEqual([5, 5]);
+    expect(chunks[0]!.map((s) => s.name)).toContain('Feed 0');
+  });
+
+  it('is deterministic: the same inputs chunk identically twice, because the chunks key replayable child ids', () => {
+    const sources = loadFeeds();
+    const weights = calibrationWeights(sources);
+
+    const first = chunkSourcesByVolume(sources, weights, 10);
+    const second = chunkSourcesByVolume(sources, weights, 10);
+
+    expect(second.map((c) => c.map((s) => s.name))).toEqual(first.map((c) => c.map((s) => s.name)));
+    // And independent of the order sources arrive in - the sort is total.
+    const reversed = chunkSourcesByVolume([...sources].reverse(), weights, 10);
+    expect(reversed.map((c) => c.map((s) => s.name))).toEqual(first.map((c) => c.map((s) => s.name)));
+  });
+
+  it('empty history degrades to round-robin: every weight is the default, so bins fill evenly', () => {
+    const sources = syntheticSources(7);
+
+    const chunks = chunkSourcesByVolume(sources, new Map(), 3);
+
+    expect(chunks.map((c) => c.length)).toEqual([3, 2, 2]);
+  });
+
+  it('a source absent from history is weighted at the default, not at zero', () => {
+    // Without a non-zero default the newcomer would look free and pile onto
+    // whichever bin already holds the heavy feed.
+    const sources = [
+      { name: 'Known heavy', feedUrl: 'https://feed.test.example/heavy.xml' },
+      { name: 'Newcomer', feedUrl: 'https://feed.test.example/new.xml' },
+    ];
+    const weights = new Map([['Known heavy', DEFAULT_SOURCE_WEIGHT * 4]]);
+
+    const chunks = chunkSourcesByVolume(sources, weights, 1);
+
+    expect(chunks.map((c) => c.map((s) => s.name))).toEqual([['Known heavy'], ['Newcomer']]);
+    expect(loadOf(chunks[1]!, weights)).toBe(DEFAULT_SOURCE_WEIGHT);
+  });
+
+  it('no sources means no children', () => {
+    expect(chunkSourcesByVolume([], new Map(), 10)).toEqual([]);
+  });
+});
+
 describe('createGatherChildren()', () => {
-  it('chunks sources into GATHER_FEEDS_PER_CHILD-sized groups with deterministic ids', async () => {
+  it('derives the child count from GATHER_FEEDS_PER_CHILD and balances volume across it, with deterministic ids', async () => {
     const fake = fakeGatherWorkflow();
     const gatherEnv: Env = { ...env, GATHER_WORKFLOW: fake.binding, GATHER_FEEDS_PER_CHILD: '3' };
-    const sources = Array.from({ length: 7 }, (_, i) => ({ name: `Feed ${i}`, feedUrl: `https://feed.test.example/${i}.xml` }));
+    const sources = syntheticSources(7);
 
     const ids = await createGatherChildren(gatherEnv, 'parent-1', sources);
 
+    // `ceil(7 / 3) = 3` children, as the count-based chunking gave - but
+    // balanced 3/2/2 rather than filled 3/3/1, because no history means
+    // equal weights and equal weights are round-robin.
     expect(ids).toEqual(['parent-1-g0', 'parent-1-g1', 'parent-1-g2']);
     expect(fake.created.get('parent-1-g0')?.sources).toHaveLength(3);
-    expect(fake.created.get('parent-1-g1')?.sources).toHaveLength(3);
-    expect(fake.created.get('parent-1-g2')?.sources).toHaveLength(1);
+    expect(fake.created.get('parent-1-g1')?.sources).toHaveLength(2);
+    expect(fake.created.get('parent-1-g2')?.sources).toHaveLength(2);
     // runId on every child is the PARENT's instance id, not a child-specific one.
     expect(fake.created.get('parent-1-g0')?.runId).toBe('parent-1');
     expect(fake.created.get('parent-1-g2')?.index).toBe(2);
+  });
+
+  it('weights come from measured history, and the run being chunked is excluded from it', async () => {
+    const fake = fakeGatherWorkflow();
+    const gatherEnv: Env = { ...env, GATHER_WORKFLOW: fake.binding, GATHER_FEEDS_PER_CHILD: '1' };
+    const sources = [
+      { name: 'Heavy', feedUrl: 'https://feed.test.example/heavy.xml' },
+      { name: 'Light', feedUrl: 'https://feed.test.example/light.xml' },
+    ];
+
+    await writeRunCandidates(
+      env.DB,
+      'earlier-run',
+      'Heavy',
+      Array.from({ length: 50 }, (_, i) => candidateRow(`https://example.com/h${i}`)),
+    );
+    await writeRunCandidates(env.DB, 'earlier-run', 'Light', [candidateRow('https://example.com/l0')]);
+    // This run's own children, mid-flight. Counting them would flip the
+    // ordering on a replay while the child ids stayed the same.
+    await writeRunCandidates(
+      env.DB,
+      'parent-weights',
+      'Light',
+      Array.from({ length: 500 }, (_, i) => candidateRow(`https://example.com/now${i}`)),
+    );
+
+    await createGatherChildren(gatherEnv, 'parent-weights', sources);
+
+    expect(fake.created.get('parent-weights-g0')?.sources.map((s) => s.name)).toEqual(['Heavy']);
+    expect(fake.created.get('parent-weights-g1')?.sources.map((s) => s.name)).toEqual(['Light']);
   });
 
   it('is idempotent on replay: a second call against an already-created id set does not throw and returns the same ids', async () => {

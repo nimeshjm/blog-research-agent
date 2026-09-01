@@ -40,6 +40,15 @@ still what makes each unit small enough to survive whichever invocation it lands
 it is the only lever that exists. If a step is close to the limit, split it further;
 there are 1,024 available.
 
+**The term is items parsed per invocation, not feeds** — measured 2026-09-01 (#75), run
+`bd33248b`. That "one passes, two pass, three fail" reads as a feed budget and is not one:
+a gather child chunked by *feed count* parsed 917 items across three feeds and then died
+on its fourth, a 20-item feed, while four sibling children with light chunks completed.
+Cost drains cumulatively across whatever the invocation parses, and volume per feed is
+wildly uneven — arXiv cs.AI alone was 783 of the allowlist's 1,117 items that day. So when
+splitting work across invocations, balance measured item volume; a count of feeds says
+nothing about the cost being spent.
+
 **Orchestration belongs in the Workflow, never in `scheduled()`.** The cron handler gets
 10 ms of CPU and 15 minutes of wall-clock for the entire run, both fixed at the handler's
 outer boundary with no per-unit reprieve. A Workflow gives every step a wall-clock

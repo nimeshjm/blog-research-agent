@@ -271,6 +271,52 @@ export async function writeRunCandidates(
   return items.length;
 }
 
+interface SourceWeightRow {
+  source_name: string;
+  avg_items: number;
+}
+
+/**
+ * Mean candidates per run per source, over whatever `run_candidates` history
+ * the 7-day `RUN_CANDIDATE_RETENTION_DAYS` prune has left. Backs
+ * `createGatherChildren`'s volume-balanced chunking (spec.md requirement 3,
+ * amended 2026-09-01 after run `bd33248b`): parse cost scales with items,
+ * not with feeds, so the chunker needs a per-feed item estimate and this is
+ * the only non-perishable place to get one. A hand-maintained table would
+ * rot - arXiv cs.AI went from 352 items on 2026-08-27 to 783 on 2026-09-01.
+ *
+ * **The average is per *distinct run*, not per row.** A plain `COUNT(*)`
+ * would score a feed by how many runs it has appeared in as much as by its
+ * size, so a small feed present in every run could outweigh a large one
+ * added last week.
+ *
+ * **`excludeRunId` is load-bearing, not hygiene.** `run()` re-executes on
+ * replay (spec.md fact 2) and this run's own children write into
+ * `run_candidates` under this same `run_id` as they complete. Counting them
+ * would make a replay of `create-gather-children` compute different weights,
+ * hence different chunks, while the deterministic child ids
+ * (`${parentInstanceId}-g${index}`) stayed the same - children already
+ * created, silently carrying different params from the ones the replay
+ * thinks it asked for.
+ *
+ * A source with no rows in the window is simply absent from the result. The
+ * caller supplies the default; this function does not invent one, because it
+ * cannot tell a brand-new feed from one that has been returning nothing.
+ */
+export async function readSourceWeights(db: D1Database, excludeRunId: string): Promise<Map<string, number>> {
+  const result = await db
+    .prepare(
+      `SELECT source_name, CAST(COUNT(*) AS REAL) / COUNT(DISTINCT run_id) AS avg_items
+         FROM run_candidates
+        WHERE run_id != ?
+        GROUP BY source_name`,
+    )
+    .bind(excludeRunId)
+    .all<SourceWeightRow>();
+
+  return new Map(result.results.map((row) => [row.source_name, row.avg_items]));
+}
+
 interface RunCandidateRow {
   url: string;
   title: string;
