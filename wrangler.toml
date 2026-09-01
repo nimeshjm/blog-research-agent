@@ -112,6 +112,17 @@ name = "summarize-workflow"
 binding = "SUMMARIZE_WORKFLOW"
 class_name = "SummarizeWorkflow"
 
+# feature 003, extended 2026-09-01 (#75): the pull request's own Workflow, for
+# the same reason gather and summarize got theirs - its seven GitHub calls get
+# a fresh 50-subrequest budget instead of whatever the parent had left after
+# `shortlist` and two poll loops, which on run `0357f119` was not enough. There
+# is no per-child-size var to go with it: one run publishes one draft, so there
+# is nothing to chunk. See src/publish-workflow.ts.
+[[workflows]]
+name = "publish-workflow"
+binding = "PUBLISH_WORKFLOW"
+class_name = "PublishWorkflow"
+
 [observability]
 enabled = true
 

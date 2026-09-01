@@ -72,6 +72,23 @@ export const ATTR_GATHER_CHILD_INDEX = 'agent.gather.child_index';
 export const ATTR_SUMMARIZE_CHILDREN = 'agent.summarize.children';
 /** 0-based position among the parent's children, on a child's own `summarize:*` span - see `SummarizeParams.index`'s doc comment. */
 export const ATTR_SUMMARIZE_CHILD_INDEX = 'agent.summarize.child_index';
+/**
+ * Number of PublishWorkflow children, on the parent's
+ * `create-publish-children` / `await-publish-children` spans (feature 003,
+ * extended 2026-09-01 (#75)). Always 1 today, and carried anyway so a poll
+ * round's subrequest cost is readable off its own span the way the other two
+ * loops' are.
+ *
+ * There is deliberately no `agent.publish.child_index` counterpart: with one
+ * child it would disambiguate nothing, and an attribute is CPU against the
+ * budget its step's invocation may already be sharing.
+ *
+ * The pull request URL is not here and must not be - CLAUDE.md forbids a URL
+ * in a span attribute. It travels as the poll step's *output*, which is the
+ * permitted channel (see `ATTR_SUMMARIZE_SKIP_REASON` above for the same
+ * distinction).
+ */
+export const ATTR_PUBLISH_CHILDREN = 'agent.publish.children';
 
 // --- gen_ai.* ---------------------------------------------------------------
 // Matches AI Gateway's own exporter conventions, so the two line up if that
