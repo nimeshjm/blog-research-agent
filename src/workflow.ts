@@ -255,10 +255,10 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
     for (let round = 0; ; round++) {
       // Wait-then-poll, same reason as `await-gather-children` above. It buys
       // less here: run `0357f119`'s three summarize children completed between
-      // 62 s and 122 s after `createBatch`, so at
-      // `SUMMARIZE_POLL_INTERVAL` this loop still expects two rounds rather
-      // than the three that run spent - the round it drops is the guaranteed-
-      // empty one, not the one that finds the children still working.
+      // 62 s and 122 s after `createBatch`, so at `SUMMARIZE_POLL_INTERVAL`'s
+      // 90 s this loop expects one round where that run spent three, and two
+      // if a child lands past the first poll. Either way the round it drops is
+      // the guaranteed-empty one, not one that finds children still working.
       await step.sleep(`await-summarize-children-wait:${round}`, SUMMARIZE_POLL_INTERVAL);
       const state = summarizeState;
       const outcome: SummarizePollResult = await traceStep(`await-summarize-children:${round}`, {}, async (span) => {
@@ -930,7 +930,7 @@ export async function createSummarizeChildren(
 }
 
 /**
- * Poll interval for `await-summarize-children`. Deliberately double
+ * Poll interval for `await-summarize-children`. Deliberately a multiple of
  * `GATHER_POLL_INTERVAL`'s 30 s: `step.sleep` costs no subrequest, no step,
  * and no concurrency (`GATHER_POLL_INTERVAL`'s own comment), so lengthening
  * it is the cheap lever for wall-clock margin and does not touch the
@@ -949,13 +949,19 @@ export async function createSummarizeChildren(
  * criterion 2's five consecutive runs are what actually settles whether
  * this margin is enough, not this arithmetic.
  *
- * **Measured 2026-09-01 (#75), and 60 s survives it.** Run `0357f119`'s three
- * children took between 62 s and 122 s to converge - the estimate above was
- * the right order of magnitude, and a 30 s interval would have needed two
- * more rounds to cover the same wall-clock, which is exactly the subrequest
- * `SUMMARIZE_POLL_SUBREQUEST_BUDGET` no longer has to spare.
+ * **60 s -> 90 s on 2026-09-01 (#75), because the round count came down.**
+ * Run `0357f119`'s three children took between 62 s and 122 s to converge, so
+ * the 10-30 s-per-call estimate above was the right order of magnitude. But
+ * `SUMMARIZE_POLL_SUBREQUEST_BUDGET` now allows three rounds rather than
+ * five, and at 60 s that would have shortened the slowest child this loop
+ * tolerates from ~240 s to ~180 s - a 1.2x margin over the 150 s worst case
+ * the paragraph above sizes against, where it used to be 1.6x. Lengthening
+ * the interval is what gives that back: 90/180/270 s costs exactly the same
+ * three subrequests per round, and round 0 at 90 s can now catch the measured
+ * convergence outright where 60 s never could. The interval is the free
+ * lever and the round count is the dear one, so spend the free one.
  */
-const SUMMARIZE_POLL_INTERVAL = '60 seconds';
+const SUMMARIZE_POLL_INTERVAL = '90 seconds';
 /**
  * The poll backstop is a subrequest budget, not a round count
  * (`pollChildBatch`'s own comment) - see `createSummarizeChildren`'s
@@ -966,10 +972,12 @@ const SUMMARIZE_POLL_INTERVAL = '60 seconds';
  * 5` rounds and was sized when nothing about a summarize child's latency had
  * been measured. Run `0357f119` measured it: three children created at
  * 13:57:17 were still running when polled 62 s later and were complete when
- * polled at 122 s. With the loop now waiting before each poll, rounds land at
- * roughly 60 s, 120 s and 180 s, so `floor(9 / 3) = 3` covers that
- * convergence with a round to spare rather than five rounds of headroom
- * against a guess.
+ * polled at 122 s. With the loop now waiting before each poll and
+ * `SUMMARIZE_POLL_INTERVAL` at 90 s, rounds land at 90 s, 180 s and 270 s, so
+ * `floor(9 / 3) = 3` covers that measured window twice over - round 0 may
+ * catch it and round 1 must - rather than holding five rounds of headroom
+ * against a guess. The wall-clock the dropped rounds would have bought is
+ * bought back by the interval instead, which costs nothing.
  *
  * The reduction is not optional slack, either: ~29 fixed subrequests leave
  * ~21 for both poll loops, and the old 10 + 15 = 25 never fitted inside that.

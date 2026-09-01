@@ -307,7 +307,7 @@ that turned into a PR of its own has.
 
 | file | change |
 |---|---|
-| `src/workflow.ts` | both poll loops wait before polling rather than after; the poll state is threaded from each round's output into the next round's input; `SUMMARIZE_POLL_SUBREQUEST_BUDGET` 15 → 9; the fixed-cost recount against run `0357f119`'s measured 20 |
+| `src/workflow.ts` | both poll loops wait before polling rather than after; the poll state is threaded from each round's output into the next round's input; `SUMMARIZE_POLL_SUBREQUEST_BUDGET` 15 → 9 and `SUMMARIZE_POLL_INTERVAL` 60 s → 90 s; the fixed-cost recount against run `0357f119`'s measured 20 |
 | `src/lib/workflow-children.ts` | `pollChildBatch` polls only the children still pending and carries the finished ones' validated outputs forward; `validate` becomes a parameter so the carried state is typed; `initialChildPollState` |
 | `src/lib/types.ts` | `ChildPollState`, `GatherPollState`, `SummarizePollState`, `SummarizeChildOutput`; both poll results become discriminated unions |
 | `src/summarize-workflow.ts` | the child's return type named at its source rather than spelled out twice |
@@ -584,15 +584,15 @@ than 1 and the fixed-cost recount in `createSummarizeChildren`'s comment goes fr
 
 Step 6 sized the parent's poll cost as "one subrequest per child per round" and treated an
 extra round as free. Run `0357f119` priced it: 19 of the parent's 50 subrequests went on
-polling, and the run died in `open-pull-request` at roughly 46. Two changes, and neither
-touches the intervals.
+polling, and the run died in `open-pull-request` at roughly 46. Two changes to how the
+loops spend, plus the one interval adjustment the second of them forces.
 
 **Wait, then poll.** Both loops polled and then slept, so round 0 fired about a second
 after `createBatch` and could only ever return `{ done: false }` — 5 subrequests for
 gather, 3 for summarize, every run, with no possible outcome other than "not yet".
 Inverting the loop lands round 0 past the measured convergence (gather 5-8 s against a 30 s
-wait; summarize 62-122 s against a 60 s wait), which takes gather from 2 rounds to 1 and
-summarize from 3 to 2. `step.sleep` counts toward neither the 1,024-step limit nor
+wait; summarize 62-122 s against a 90 s wait), which takes gather from 2 rounds to 1 and
+summarize from 3 to 1 or 2. `step.sleep` counts toward neither the 1,024-step limit nor
 concurrency, so the wall-clock is the cheap side of this trade and the subrequest is the
 dear one.
 
@@ -621,7 +621,12 @@ and `record-success`'s 2 still estimated — ~29, not the ~22 step 8 recorded wh
 candidates per run were 264. That leaves ~21 for both loops, which 10 + 15 never fitted.
 `GATHER_POLL_SUBREQUEST_BUDGET` stays 10, because `floor(10 / 5) = 2` is the smallest cap
 that leaves a retry at all; `SUMMARIZE_POLL_SUBREQUEST_BUDGET` goes to 9, giving
-`floor(9 / 3) = 3` rounds at 60/120/180 s against a 62-122 s measured convergence.
+`floor(9 / 3) = 3` rounds against a 62-122 s measured convergence. Dropping rounds
+shortens the slowest child the loop tolerates, so `SUMMARIZE_POLL_INTERVAL` goes 60 s -> 90 s
+in the same move: 90/180/270 s costs the same three subrequests per round as 60/120/180
+would, holds the margin over the 150 s worst case step 7 sized a child against at 1.8x
+where five rounds of 60 s gave 1.6x, and lets round 0 catch the measured convergence
+outright. The interval is the free lever; the round count is the dear one.
 
 **What this does not fix.** The parent still spends `open-pull-request`'s 7 GitHub calls in
 its own invocation, and `shortlist`'s term grows with candidates per run. The first is a
