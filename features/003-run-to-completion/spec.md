@@ -112,6 +112,38 @@ its weights out of `run_candidates` (`readSourceWeights`, `src/lib/d1.ts`) rathe
 carrying a copy of this table in code. It is recorded here as the calibration the design
 was checked against on one dated day, not as an input to it.
 
+### What run `0357f119` settled, 2026-09-01
+
+Deployed run `0357f119-a281-4053-8876-3099e5a8b152`, 13:56 UTC, capture at
+`probe/captures/0357f119-a281-4053-8876-3099e5a8b152.txt`. It is the furthest any run in
+this build has reached, and it died at the last step.
+
+**What it proved.** Volume-balanced chunking works: five gather children returned **1,118
+candidates from all 46 feeds** with no `1102` anywhere, where `bd33248b` had lost a child
+to CPU the day before against the same allowlist. Every step from `start-run` through
+`synthesize` then worked, in order and once each — `shortlist` survived 1,118 candidates,
+three summarize children returned real summaries, and `synthesize` produced a **real
+draft**: a slug, a title, a description, four tags, a brief citing its sources, and a
+body. Nothing in the pipeline between the topic and the draft is unproven any more.
+
+**What it exposed.** The parent's residue against 50. `Last Successful Step:
+synthesize-1`, then `open-pull-request` failed on the platform's own `Too many
+subrequests by single Worker invocation.` The accounting, from that capture's own step
+list: ~3 D1 calls for `start-run` and `select-topic`, 2 for `create-gather-children`
+(`createBatch` plus `readSourceWeights`), **13 for `shortlist`** (one
+`readRunCandidates` plus `ceil(1118 / 100) = 12` `findSeenUrls` chunks), 1 for
+`create-summarize-children`, 1 inference for `synthesize` — 20 — plus **19 spent
+polling children** (2 gather rounds x 5 children, 3 summarize rounds x 3), which is ~39
+before a step whose own cost is 7 GitHub calls.
+
+**Ten of those 19 polls could not have found anything.** Both loops polled before they
+slept, so round 0 fired about a second after `createBatch`: `await-gather-children:0` at
+13:56:44 against children created at 13:56:44, `await-summarize-children:0` at 13:57:17
+against children created at 13:57:17. Both returned `{"done": false}` necessarily. The
+same capture also dates the convergence the poll cadence is now sized against: gather was
+complete by the 13:57:16 poll, and summarize was still running at 62 s (13:58:19) and
+complete at 122 s (13:59:19).
+
 ## Requirements
 
 1. **No step is retried.** `step.do` is invoked with a retry policy of zero attempts
@@ -389,16 +421,27 @@ margin rather than fitted to two data points.
    not against feed count or child count, and small enough in practice that the `create-*`
    steps' own id arrays are a closer comparison than "an integer" ever was.
 
+   **Extended again 2026-09-01 (#75).** A poll round that is *not* the last one now
+   outputs a `ChildPollState` — the child ids still pending, plus the validated output of
+   every child that has already finished — because that is what lets a later round skip
+   the children it already has and still hand `combine` all of them
+   (`pollChildBatch`, `src/lib/workflow-children.ts`). It is held to the same size claim
+   and passes it for the same reason: both fields are keyed by child id, and the carried
+   outputs are the very same per-child results the terminal round already contained. What
+   changed is how many step outputs hold them, not how large the largest one is — the
+   ceiling is still `SHORTLIST_TOP_N`, and it stays that way only while summarize children
+   partition a capped shortlist rather than sharing an uncapped one.
+
 ## Risks and mitigations
 
 | risk | mitigation |
 |---|---|
-| **`shortlist` can exhaust the parent's invocation on its own, and nothing upstream stops it.** `findSeenUrls` chunks 100 URLs per D1 query; at `SHORTLIST_MAX_CANDIDATES`'s 4,000-row ceiling that is **40 queries — 40 subrequests — in the parent's invocation before a single child is polled.** Gather and summarize both leaving the parent does not touch this. | **Not mitigated, and deliberately not tuned.** Measured volumes are nowhere near it: 7 queries on 2026-08-26 (~700 candidates), 3 on run `6f75e460` (264), because the 30-day gather window bounds the input long before the 4,000 ceiling does. So the ceiling is reachable only if that window is widened or the allowlist grows several-fold — which is exactly when someone would be changing feeds and not thinking about D1. The number to watch is candidates per run, not feeds; `findSeenUrls` already throws rather than truncating past 50 chunks, so the failure is loud. Recorded here so the next person to widen `GATHER_WINDOW_DAYS` finds it. |
+| **`shortlist` can exhaust the parent's invocation on its own, and nothing upstream stops it.** `findSeenUrls` chunks 100 URLs per D1 query; at `SHORTLIST_MAX_CANDIDATES`'s 4,000-row ceiling that is **40 queries — 40 subrequests — in the parent's invocation before a single child is polled.** Gather and summarize both leaving the parent does not touch this. **Partly fired 2026-09-01 on run `0357f119`: 1,118 candidates, 13 subrequests in `shortlist`, and the parent died at `open-pull-request`.** | **Still not mitigated, and still deliberately not tuned — but no longer hypothetical.** The estimate this row was filed with (3 queries at run `6f75e460`'s 264 candidates) went stale in five days: `0357f119` gathered 1,118 and spent 13, and `shortlist` is now the largest single term in the parent's fixed cost. That did not kill the run on its own — 13 of 50 is not 40 — but it is what made the poll loops' 19 unaffordable, so the mitigation this run actually motivated is **cheaper polling** (`pollChildBatch`, and the wait-then-poll ordering in `run()`), not a change to `shortlist`. **The 12 queries are a floor, not a knob:** D1 caps a prepared statement at 100 bound parameters, so the chunk size is the platform's and `findSeenUrls` cannot be tuned below `ceil(candidates / 100)` without a different dedupe strategy altogether. The number to watch is still candidates per run, and it quadrupled in five days; `findSeenUrls` throws rather than truncating past 50 chunks, so the ceiling itself stays loud. Recorded here so the next person to widen `GATHER_WINDOW_DAYS` — or to wonder why the parent's fixed cost moved — finds it. |
 | **Two runs contradict each other about the CPU premise, and neither settles it.** On 2026-08-31 run `0199648c` parsed all **46 feeds in the parent's own steps** with no `1102`, and `FINDINGS.md` §7.1 measured a single `run()` execution absorbing 5x10^8 arithmetic iterations in one isolate with no boundary, twice — three survivals at that size across two builds (114, 149, 695 ms of wall for the burn) against deaths at 10^9 and above, on a **Free** account with `[limits]` set in neither `wrangler.toml`, which reads as an enforced ceiling above ~115 ms of arithmetic and below ~230 ms. This row previously concluded from that pair that the premise was dead. On 2026-09-01 run `bd33248b` then killed a gather **child** on its fourth feed with `Worker exceeded CPU time limit.`, 917 items already parsed in that invocation (`probe/captures/bd33248b-0fab-4abc-abce-92246a40b1b1-g0.txt`). Both cannot describe the same enforced ceiling, and fact 1 says the failure is non-deterministic, so neither run settles it alone. The candidate explanation is **volume**: cs.AI returned 352 items on 2026-08-27 and 783 on 2026-09-01, so the two runs were not parsing the same workload even though they were parsing the same 46 feeds. | **Not mitigated, and the contradiction is itself the finding — it is the evidence requirement 3's volume-balanced distribution is argued from.** Whatever the ceiling is, chunking that counts feeds while cost scales with items decides its own outcome by which chunk the heaviest feed lands in, and that holds on either reading of these two runs; the amendment therefore does not rest on `bd33248b` alone, which fact 1 forbids. The synthetic burn stays a bound rather than a CPU figure — a `Math.sqrt` loop does not transfer to `parseFeed`'s allocation and GC behaviour, which is exactly the gap the two real runs sit in. Neither `wrangler.toml` declares `[limits]`, so a per-script `cpu_ms` difference is ruled out; the account plan remains uninspectable from here. Criterion 2's five consecutive runs are what decide. |
 | ~~**A child instance is not a fresh subrequest budget either.**~~ **Closed 2026-08-31 by run `6f75e460`:** five gather children completed in 5-8 seconds and the parent, relieved of 46 feed fetches, summarised 14 articles where the previous run summarised 0. A child is a fresh budget. What remains open is narrower — whether moving the *articles* into children too leaves the parent's residue (`shortlist`, `synthesize`, `open-pull-request`) inside 50. That is arithmetic rather than inference: those are bounded and do not grow with the allowlist — but the resource in question changed on 2026-08-31. CPU is no longer what bites (`FINDINGS.md` §7.1, and run `0199648c` completed all 46 gathers with no `1102`); the 50-subrequest-per-invocation ceiling is. | Nothing measured it. It is adopted because it is the only remaining candidate with a mechanism story, and because `step.sleep` and retry are both measured *not* to be one. Criterion 2 is a repeated real run precisely because it is what decides — the same shape feature 002 used, and the same reason. If children do not help, the spec is wrong and the finding is worth as much as the fix would have been. |
 | **Free-tier limits on concurrent or daily Workflow instances are not recorded anywhere in this repo.** A design that creates ten instances per run may hit a ceiling nobody has cited. | `plan.md` must find and cite the number before choosing `GATHER_FEEDS_PER_CHILD`, and the design tolerates sequential children if concurrency is capped — children are independent, so running them one at a time costs wall-clock and nothing else. |
 | **Turning retries off removes a real recovery path** on the D1 and GitHub steps. | Accepted, and stated in the design section rather than buried. `fetchFeedItems` already insulates the gather path. Re-examine if a run fails on a step that would have recovered. |
-| **Polling children costs subrequests and parent CPU.** | One subrequest per child per poll, in a parent step that parses nothing. The parent's cost is counts and status reads; requirement 5 is what keeps it that way. |
+| **Polling children costs subrequests and parent CPU.** **Fired 2026-09-01 on run `0357f119`: 19 of the parent's 50 subrequests, 10 of them on rounds that could not have found anything.** | One subrequest per *pending* child per poll, in a parent step that parses nothing. Two things changed on 2026-09-01 (#75) and neither is a tuning of the interval: each loop now waits before its first poll, so round 0 lands past the point children are measured to converge rather than a second after `createBatch`; and a child that has already completed is not polled again, its validated output being carried in the poll step's own output instead (`pollChildBatch`, `src/lib/workflow-children.ts`). Together those take the two loops from 19 subrequests to about 11 on the same run's shape. The parent's cost is still counts and status reads; requirement 5 is what keeps it that way, and the carried outputs are held to it explicitly. |
 | **The failure is non-deterministic, so a green run proves less than it looks.** | Criterion 2 requires five consecutive, with the arithmetic stated. This risk is the reason that criterion is not "a run completes". |
 | **Per-feed subrequest cost, not CPU, is what sizes `GATHER_FEEDS_PER_CHILD`** — corrected 2026-08-31 (#75); CPU is no longer the binding resource. | Requirement 6 keeps the design independent of the number. Unlike CPU, this one *is* measurable ahead of a run: a feed costs one fetch plus its D1 write. Criterion 2 still validates the choice. |
 
