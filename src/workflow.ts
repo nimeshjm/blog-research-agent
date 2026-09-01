@@ -167,6 +167,18 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
     // `summarize:<url>` already do - the round stays out of the attribute.
     let gathered = 0;
     for (let round = 0; ; round++) {
+      // The wait comes *before* the poll, not after it. A round 0 that fires a
+      // second after `createBatch` is guaranteed to find nothing complete and
+      // to spend one subrequest per child finding that out: run `0357f119`
+      // (2026-09-01) spent 5 of the parent's 50 that way here and 3 more in
+      // the summarize loop below, then died inside `open-pull-request` on the
+      // platform's own subrequest error. Gather's children converge in 5-8 s
+      // (run `6f75e460`), so waiting first lands round 0 past convergence and
+      // turns this loop's two rounds into one. `step.sleep` costs neither a
+      // step nor concurrency (Workflows limits docs; plan.md's question 1),
+      // so the wall-clock this spends on an already-finished batch is free
+      // where the poll round it replaces was not.
+      await step.sleep(`await-gather-children-wait:${round}`, GATHER_POLL_INTERVAL);
       const outcome: GatherPollResult = await traceStep(`await-gather-children:${round}`, {}, async (span) => {
         const result = await pollGatherChildren(this.env, childIds, round);
         span.setAttribute(ATTR_GATHER_CHILDREN, childIds.length);
@@ -176,9 +188,6 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
         gathered = outcome.total;
         break;
       }
-      // Costs neither a step nor concurrency (Workflows limits docs;
-      // plan.md's question 1) - only ever a subrequest, spent on the next poll.
-      await step.sleep(`await-gather-children-wait:${round}`, GATHER_POLL_INTERVAL);
     }
 
     // Batched dedupe against seen_urls happens inside shortlistCandidates.
@@ -230,6 +239,13 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
     // Per-round step names, same reason as `await-gather-children` above.
     let summaries: ArticleSummary[] = [];
     for (let round = 0; ; round++) {
+      // Wait-then-poll, same reason as `await-gather-children` above. It buys
+      // less here: run `0357f119`'s three summarize children completed between
+      // 62 s and 122 s after `createBatch`, so at
+      // `SUMMARIZE_POLL_INTERVAL` this loop still expects two rounds rather
+      // than the three that run spent - the round it drops is the guaranteed-
+      // empty one, not the one that finds the children still working.
+      await step.sleep(`await-summarize-children-wait:${round}`, SUMMARIZE_POLL_INTERVAL);
       const outcome: SummarizePollResult = await traceStep(`await-summarize-children:${round}`, {}, async (span) => {
         const result = await pollSummarizeChildren(this.env, summarizeChildIds, round);
         span.setAttribute(ATTR_SUMMARIZE_CHILDREN, summarizeChildIds.length);
@@ -240,7 +256,6 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
         neuronsSpent += outcome.neuronsSpent;
         break;
       }
-      await step.sleep(`await-summarize-children-wait:${round}`, SUMMARIZE_POLL_INTERVAL);
     }
 
     if (!isGrounded(summaries)) {
@@ -670,9 +685,9 @@ const GATHER_POLL_INTERVAL = '30 seconds';
  * recount (~22 fixed + this + summarize's = ~47 of 50). 10 still gives real
  * margin specifically for gather: run `6f75e460` measured all five children
  * completing in 5-8 seconds, so at the `GATHER_FEEDS_PER_CHILD = 10` default
- * (5 children) `floor(10 / 5) = 2` rounds - one retry after one 30 s sleep -
- * is generous against a measured few-second convergence, not tight against
- * it.
+ * (5 children) `floor(10 / 5) = 2` rounds - polls at roughly 30 s and 60 s,
+ * now that the loop waits before each one - is generous against a measured
+ * few-second convergence, not tight against it.
  */
 const GATHER_POLL_SUBREQUEST_BUDGET = 10;
 

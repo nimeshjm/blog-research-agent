@@ -1,9 +1,21 @@
+import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 import { env as testEnv } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SEEN_URLS_CHUNK_SIZE, startRun, writeRunCandidates } from '../src/lib/d1';
 import { loadFeeds } from '../src/lib/feeds';
 import { InvalidDraftError } from '../src/lib/mdx';
-import type { ArticleSummary, Candidate, Draft, Env, GatherParams, ParsedItem, Source, SummarizeParams, Topic } from '../src/lib/types';
+import type {
+  ArticleSummary,
+  Candidate,
+  Draft,
+  Env,
+  GatherParams,
+  ParsedItem,
+  ResearchParams,
+  Source,
+  SummarizeParams,
+  Topic,
+} from '../src/lib/types';
 import {
   chunkSourcesByVolume,
   createGatherChildren,
@@ -15,6 +27,7 @@ import {
   pollGatherChildren,
   pollSummarizeChildren,
   proposeTopic,
+  ResearchWorkflow,
   selectTopic,
   SHORTLIST_MAX_CANDIDATES,
   SHORTLIST_TOP_N,
@@ -1316,5 +1329,96 @@ describe('openPullRequest()', () => {
     await expect(openPullRequest(env, draft())).rejects.toThrow(/image/);
     expect(fake.prPostCount()).toBe(0);
     expect(fake.branches.size).toBe(0);
+  });
+});
+
+/**
+ * `run()`'s own orchestration, which no per-function test can see: the fake
+ * `step` records the order steps and sleeps are requested in and returns a
+ * canned output for each step **without running its body**, the same device
+ * `recordingStep` in test/trace.test.ts uses. Nothing here touches D1, the
+ * model or GitHub - the assertion is about the sequence `run()` asks for.
+ */
+function orchestrationStep(outputs: Record<string, unknown>): { step: WorkflowStep; calls: string[] } {
+  const calls: string[] = [];
+  const step = {
+    do(name: string, _config: unknown, _callback?: unknown) {
+      calls.push(name);
+      if (!(name in outputs)) return Promise.reject(new Error(`orchestrationStep: no canned output for step ${name}`));
+      return Promise.resolve(outputs[name]);
+    },
+    sleep(name: string, _duration: unknown) {
+      calls.push(name);
+      return Promise.resolve(undefined);
+    },
+  } as unknown as WorkflowStep;
+  return { step, calls };
+}
+
+async function runOrchestration(overrides: Record<string, unknown> = {}): Promise<string[]> {
+  const outputs: Record<string, unknown> = {
+    'start-run': null,
+    'select-topic': topic(),
+    'load-sources': [] as Source[],
+    'create-gather-children': ['child-g0', 'child-g1'],
+    'await-gather-children:0': { done: true, total: 7 },
+    // Two of each, because `MIN_SOURCES` and `isGrounded` gate the paths
+    // between the two poll loops; the values themselves are never read by a
+    // step body here. Left as the helpers' defaults so this block adds no
+    // `no-hardcoded-urls` warnings, the same reason test/trace.test.ts drops
+    // a scheme from its step name.
+    shortlist: [candidate(), candidate()],
+    'create-summarize-children': ['child-s0'],
+    'await-summarize-children:0': { done: true, summaries: [summary(), summary()], neuronsSpent: 11 },
+    synthesize: { draft: {} as Draft, neurons: 22 },
+    'open-pull-request': 'pr-url',
+    'record-success': null,
+    ...overrides,
+  };
+  const { step, calls } = orchestrationStep(outputs);
+  const event = {
+    instanceId: 'parent-orchestration',
+    workflowName: 'research-workflow',
+    payload: {} as ResearchParams,
+  } as unknown as WorkflowEvent<ResearchParams>;
+
+  // `WorkflowEntrypoint`'s constructor accepts only a real runtime
+  // `ExecutionContext`, which `cloudflare:test` cannot hand out, so the
+  // instance is built off the prototype instead and given the one thing
+  // `run()` reads from `this`.
+  const workflow = Object.create(ResearchWorkflow.prototype) as ResearchWorkflow;
+  Object.defineProperty(workflow, 'env', { value: env });
+
+  await workflow.run(event, step);
+  return calls;
+}
+
+describe('ResearchWorkflow.run() poll ordering', () => {
+  // The whole point of the change: round 0 used to fire ~1 s after
+  // `createBatch` and could only ever return `{ done: false }`, at one
+  // subrequest per child (run `0357f119`: 5 wasted for gather, 3 for
+  // summarize). Asserted as adjacency, not as "a sleep happens somewhere",
+  // which the old poll-then-sleep order would also satisfy.
+  it('sleeps before the first poll of each child batch, not after it', async () => {
+    const calls = await runOrchestration();
+
+    expect(calls.indexOf('await-gather-children-wait:0')).toBe(calls.indexOf('await-gather-children:0') - 1);
+    expect(calls.indexOf('await-summarize-children-wait:0')).toBe(calls.indexOf('await-summarize-children:0') - 1);
+    expect(calls.indexOf('create-gather-children')).toBe(calls.indexOf('await-gather-children-wait:0') - 1);
+  });
+
+  it('pairs every later round with its own preceding sleep', async () => {
+    const calls = await runOrchestration({
+      'await-gather-children:0': { done: false, total: 0 },
+      'await-gather-children:1': { done: true, total: 7 },
+    });
+
+    expect(calls.slice(calls.indexOf('create-gather-children'), calls.indexOf('shortlist'))).toEqual([
+      'create-gather-children',
+      'await-gather-children-wait:0',
+      'await-gather-children:0',
+      'await-gather-children-wait:1',
+      'await-gather-children:1',
+    ]);
   });
 });
