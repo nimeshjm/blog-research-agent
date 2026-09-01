@@ -50,12 +50,24 @@ the deploy workflow needs live in this repo's GitHub secrets (`CLOUDFLARE_API_TO
 
 ## Architecture
 
-Cron trigger → creates a `ResearchWorkflow` instance → steps: select topic → one step
-per feed → one step per article (fetch, extract, summarize) → synthesize brief + draft →
-open pull request → record run.
+Cron trigger → creates a `ResearchWorkflow` instance → steps: select topic → create and
+poll `GatherWorkflow` children (one step per feed, inside a child) → shortlist → create
+and poll `SummarizeWorkflow` children (one step per article, inside a child) → synthesize
+brief + draft → create and poll a `PublishWorkflow` child (opens the pull request) →
+record run.
 
-`src/index.ts` is a thin `scheduled()` handler. All orchestration lives in
-`src/workflow.ts`. All inference goes through `src/lib/llm.ts`.
+**Every block of per-item work runs in a child Workflow instance, not in the parent's own
+steps** — feature 003, `spec.md` requirement 2, extended twice by measurement. The reason
+is the subrequest bullet below: 50 is charged per *invocation*, and a child instance is a
+separate invocation with its own 50 (measured, run `6f75e460`). The parent keeps
+`select-topic`, `load-sources`, `shortlist`, `synthesize` and the `runs`-row bookkeeping,
+which are bounded; `record-success` runs last, because the `pr_url` it writes comes back
+from the publish child.
+
+`src/index.ts` is a thin `scheduled()` handler. Parent orchestration lives in
+`src/workflow.ts`; each child is its own file (`src/gather-workflow.ts`,
+`src/summarize-workflow.ts`, `src/publish-workflow.ts`) with its own class, binding and
+`[[workflows]]` block. All inference goes through `src/lib/llm.ts`.
 
 ## Platform rules (free tier — these are the ones that bite)
 
@@ -109,8 +121,10 @@ open pull request → record run.
   `env.AI.run`. This includes `src/index.ts`.
 - Every `step.do` goes through `tracedStep` / the `tracerFor` binding. A bare `step.do` in
   `src/workflow.ts` is a step that vanishes from the trace.
-- A step span carries `agent.workflow.instance_id`, which is what groups the eleven
-  per-step spans into one run. `tracerFor` binds it so no call site can forget.
+- A step span carries `agent.workflow.instance_id`, which is what groups a run's per-step
+  spans into one run. `tracerFor` binds it so no call site can forget. A child's spans
+  carry the *child's* own instance id, so a run is read as the parent's spans plus its
+  children's, not as one flat set.
 - `enterSpan` inside the step body, never wrapping `step.do` — replay would emit a span per
   attempt and time nothing.
 - No span opened in `run()` outside a step body; `run()` re-executes on replay.

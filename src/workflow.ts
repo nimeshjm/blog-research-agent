@@ -14,17 +14,8 @@ import {
 } from './lib/d1';
 import { fetchFeedItems } from './lib/feed-fetch';
 import { loadFeeds } from './lib/feeds';
-import {
-  createBranch,
-  listBlogPostSlugs,
-  openPullRequest as githubOpenPullRequest,
-  putFile,
-  readBaseRefSha,
-  readRepoFile,
-} from './lib/github';
-import type { GithubConfig } from './lib/github';
+import { listBlogPostSlugs } from './lib/github';
 import { createLlm, neuronsFor } from './lib/llm';
-import { blogPostPath, renderMdx, validateAgainstContentConfig, validateDraft } from './lib/mdx';
 import { buildReduceMessages, normaliseCitations, parseReduceResponse } from './lib/prompts';
 import type { ReduceParseFailure } from './lib/prompts';
 import { createChildBatch, initialChildPollState, pollChildBatch } from './lib/workflow-children';
@@ -36,6 +27,9 @@ import type {
   GatherParams,
   GatherPollResult,
   GatherPollState,
+  PublishParams,
+  PublishPollResult,
+  PublishPollState,
   ResearchParams,
   RunOutcome,
   Source,
@@ -49,6 +43,7 @@ import {
   ATTR_GATHER_CHILDREN,
   ATTR_NEURONS_BUDGET,
   ATTR_NEURONS_SPENT,
+  ATTR_PUBLISH_CHILDREN,
   ATTR_RUN_STATUS,
   ATTR_SOURCES_GATHERED,
   ATTR_SOURCES_SHORTLISTED,
@@ -81,6 +76,16 @@ import {
  * `createSummarizeChildren`'s comment for the arithmetic, including the 1
  * MiB step-result sizing that lets a child return the summaries themselves
  * rather than a side channel.
+ *
+ * The pull request is opened in a `PublishWorkflow` child for the third time
+ * on the same argument (requirement 2, extended 2026-09-01 after run
+ * `0357f119` got all the way to `open-pull-request` with a real draft and
+ * failed inside it on the same subrequest error): its seven GitHub calls are
+ * no longer this invocation's problem either. What is left here is
+ * `select-topic`, `load-sources`, `shortlist`, `synthesize` and the `runs`-row
+ * bookkeeping - and `record-success` still runs here, after the child, because
+ * the `pr_url` it writes is what the child returns. See
+ * `createPublishChildren`'s comment for the parent's recounted bill.
  *
  * No step is retried (spec.md requirement 1; `tracedStep`'s zero-retry
  * policy). Every step body stays idempotent anyway, because `run()` itself
@@ -299,10 +304,43 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
     });
     neuronsSpent += synthesis.neurons;
 
-    // 5. Branch-only write. The agent never pushes to BLOG_BASE_BRANCH.
-    const prUrl = await traceStep('open-pull-request', {}, async () => {
-      return openPullRequest(this.env, synthesis.draft);
+    // 5. Branch-only write, and it runs in a `PublishWorkflow` child rather
+    //    than here (spec.md requirement 2, extended 2026-09-01) - see
+    //    `createPublishChildren`'s comment for why and for the recounted
+    //    subrequest arithmetic. The agent never pushes to BLOG_BASE_BRANCH:
+    //    that rule now lives entirely in src/publish-workflow.ts, which is
+    //    the only file left that reads the variable.
+    //
+    //    Same create/poll/validate shape as the two loops above, with one
+    //    child instead of a chunked set - so a poll round costs exactly one
+    //    subrequest, and `combine` receives a one-element array.
+    const publishChildIds = await traceStep('create-publish-children', {}, async (span) => {
+      const ids = await createPublishChildren(this.env, event.instanceId, synthesis.draft);
+      span.setAttribute(ATTR_PUBLISH_CHILDREN, ids.length);
+      return ids;
     });
+
+    // Per-round step names, and wait-then-poll, for the same reasons the two
+    // loops above give. `record-success` deliberately comes *after* this
+    // loop: the `runs` row's `pr_url` is what the child returns, so the
+    // parent still owns the bookkeeping and still writes it last (spec.md
+    // requirement 8).
+    let prUrl = '';
+    let publishState: PublishPollState = initialChildPollState(publishChildIds);
+    for (let round = 0; ; round++) {
+      await step.sleep(`await-publish-children-wait:${round}`, PUBLISH_POLL_INTERVAL);
+      const state = publishState;
+      const outcome: PublishPollResult = await traceStep(`await-publish-children:${round}`, {}, async (span) => {
+        const result = await pollPublishChildren(this.env, publishChildIds, state, round);
+        span.setAttribute(ATTR_PUBLISH_CHILDREN, publishChildIds.length);
+        return result;
+      });
+      if (outcome.done) {
+        prUrl = outcome.prUrl;
+        break;
+      }
+      publishState = outcome.state;
+    }
 
     await traceStep(
       'record-success',
@@ -697,8 +735,8 @@ const GATHER_POLL_INTERVAL = '30 seconds';
  * as "a deliberately small slice of the 50" when this was the *only* poll
  * loop in the parent; `SUMMARIZE_POLL_SUBREQUEST_BUDGET` now shares that
  * same invocation, and 30 + 30 sums past the 50 both backstops are meant to
- * stay clear of. See `createSummarizeChildren`'s comment for the full
- * recount (~29 fixed + this + summarize's = ~48 of 50).
+ * stay clear of. See `createPublishChildren`'s comment for the full recount
+ * (23 fixed + this + summarize's + publish's = 46 of 50).
  *
  * **Held at 10 on 2026-09-01 (#75) while summarize's came down.** 2 rounds
  * is the smallest cap that leaves a retry at all, and `floor(10 / 5)` is
@@ -835,37 +873,17 @@ export async function shortlistCandidates(env: Env, runId: string, topic: Topic)
  * than the 46-feed allowlist gather already has data on. At
  * `SHORTLIST_TOP_N = 15` this gives `ceil(15 / 5) = 3` children.
  *
- * **The parent's remaining invocation, recounted 2026-09-01 (#75) against a
- * real run rather than against an estimate.** Run `0357f119` reached
- * `open-pull-request` and died inside it, which puts a measurement under most
- * of the terms: `start-run` + `select-topic` (~3 D1 calls: reclaim, claim,
- * attach) + `load-sources` (0) + `create-gather-children` (2: the
- * `createBatch` plus the `readSourceWeights` read the volume-balanced
- * chunking added on 2026-09-01) + `shortlist` (**13** at that run's 1,118
- * candidates: one `readRunCandidates` plus `findSeenUrls` chunked at 100 -
- * `ceil(1118 / 100) = 12`) + `create-summarize-children` (1) + `synthesize`
- * (1 AI call) is 20 measured; `open-pull-request` (7 GitHub calls) and
- * `record-success` (2) remain estimates, because that run failed inside the
- * first and never reached the second. So **~29 fixed subrequests**, not the
- * ~22 this comment carried while the `shortlist` term was 4 at run
- * `6f75e460`'s 264 candidates - candidates per run went 264 -> 1,118 in five
- * days, and `shortlist` is the term that follows them. Those 12
- * `findSeenUrls` queries are a floor rather than a knob: D1 caps a statement
- * at 100 bound parameters, so the chunk size is the platform's.
- *
- * That leaves ~21 of the parent's 50 for both poll loops, which
- * `GATHER_POLL_SUBREQUEST_BUDGET` (10) and `SUMMARIZE_POLL_SUBREQUEST_BUDGET`
- * (9) now sum inside - the previous 10 + 15 = 25 did not, and run `0357f119`
- * spent 19 of them on the way to its 50th subrequest. See those constants'
- * own comments for the round-count consequence, and `pollChildBatch`
- * (src/lib/workflow-children.ts) for why a round now costs one subrequest per
- * *pending* child rather than per child. This still does not make the
- * parent's remaining invocation *safe*: ~29 fixed plus that run's 19 polls is
- * ~48 of 50, cheaper polling buys roughly 8 of it back, and the 7 GitHub
- * calls are the next thing that has to leave this invocation. `shortlist`
- * alone can still cost far more than 13 at `SHORTLIST_MAX_CANDIDATES`'s
- * 4,000-row ceiling - spec.md's risk table records that rather than tuning
- * around it.
+ * **The parent's remaining invocation is counted in one place**, and it is no
+ * longer here: `createPublishChildren`'s comment below carries it, because the
+ * term this one used to argue about - `open-pull-request`'s 7 GitHub calls -
+ * left the parent's invocation on 2026-09-01 (#75) and that is the change the
+ * recount is anchored on. The figure this comment reached, ~29 fixed against a
+ * measured 20 on run `0357f119`, is 23 there for that reason. What still
+ * belongs here is only the half that concerns this function: `shortlist`'s 13
+ * at 1,118 candidates is now the largest single term in the fixed cost and the
+ * only one that follows the feed allowlist, and `SHORTLIST_MAX_CANDIDATES`'s
+ * 4,000-row ceiling would make it 41 - spec.md's risk table records that
+ * rather than tuning around it.
  *
  * **The neuron budget is split, not shared - and the split bounds slices,
  * not spend.** `availableBudget` (this function's own parameter, `run()`'s
@@ -979,9 +997,13 @@ const SUMMARIZE_POLL_INTERVAL = '90 seconds';
  * against a guess. The wall-clock the dropped rounds would have bought is
  * bought back by the interval instead, which costs nothing.
  *
- * The reduction is not optional slack, either: ~29 fixed subrequests leave
- * ~21 for both poll loops, and the old 10 + 15 = 25 never fitted inside that.
- * Run `0357f119` spent 19 of them and died in `open-pull-request`.
+ * The reduction is not optional slack, either: the ~29 fixed subrequests in
+ * force when it was made left ~21 for both poll loops, and the old 10 + 15 =
+ * 25 never fitted inside that. Run `0357f119` spent 19 of them and died in
+ * `open-pull-request`. Publication leaving the parent later the same day took
+ * the fixed cost to 23 (`createPublishChildren`'s recount) and so gave the
+ * 15 back on paper - it is not taken back, because the reason this is 9 is the
+ * measured 62-122 s convergence above, not the room there happens to be.
  */
 const SUMMARIZE_POLL_SUBREQUEST_BUDGET = 9;
 
@@ -1044,6 +1066,144 @@ function validateSummarizeOutput(output: unknown, childId: string): SummarizeChi
     throw new Error(`summarize child ${childId} returned a non-count neuronsSpent`);
   }
   return { summaries: o.summaries, neuronsSpent: o.neuronsSpent };
+}
+
+/**
+ * Creates the run's single `PublishWorkflow` child (spec.md requirement 2,
+ * extended 2026-09-01 (#75)), so `open-pull-request`'s seven GitHub calls are
+ * spent in a fresh 50-subrequest budget rather than in whatever the parent has
+ * left. Run `0357f119` is why: it reached that step with `synthesize` already
+ * done and a real draft in hand, and failed on the platform's own `Too many
+ * subrequests by single Worker invocation.`
+ *
+ * **One child, and therefore no chunk size.** A run publishes one draft, so
+ * unlike `GATHER_FEEDS_PER_CHILD` and `SUMMARIZE_ARTICLES_PER_CHILD` there is
+ * no per-child workload to cap and `wrangler.toml` gains no var. The one-element
+ * array is still `createChildBatch`'s shape rather than a bare `create()`: the
+ * duplicate-id-verified-against-reality mechanism that makes this idempotent on
+ * replay (`run()` re-executes from the top - spec.md fact 2) is worth more than
+ * the array wrapper costs, and `pollChildBatch` on the other side wants an id
+ * list either way.
+ *
+ * **What the child is handed, and why it fits.** A whole `Draft`, via
+ * `PublishParams` - see that type's doc comment for the 1 MiB event-payload
+ * limit this sits two orders of magnitude under, and for why every field is
+ * either fixed-size or capped by `SHORTLIST_TOP_N` rather than growing with
+ * the allowlist.
+ *
+ * **The parent's remaining invocation, recounted 2026-09-01 (#75) with
+ * publication gone too.** Taking run `0357f119`'s measured terms and removing
+ * the one this PR moves: `start-run` + `select-topic` (~3 D1 calls) +
+ * `load-sources` (0) + `create-gather-children` (2) + `shortlist` (**13** at
+ * that run's 1,118 candidates: one `readRunCandidates` plus `ceil(1118 / 100) =
+ * 12` `findSeenUrls` chunks) + `create-summarize-children` (1) + `synthesize`
+ * (1 AI call) + `create-publish-children` (1) + `record-success` (2) = **23
+ * fixed**, where it was ~29 with `open-pull-request`'s 7 in it. On that run's
+ * own poll shape - roughly 11 subrequests across the two existing loops after
+ * PR #89's wait-then-poll and skip-the-finished changes, plus 1 for a publish
+ * round that lands past a child measured in seconds - the parent spends about
+ * **35 of 50**, against the ~48 that killed `0357f119`.
+ *
+ * The pessimal figure is worth stating too, because it is what the backstops
+ * actually permit: 23 fixed plus every poll budget exhausted
+ * (`GATHER_POLL_SUBREQUEST_BUDGET` 10 + `SUMMARIZE_POLL_SUBREQUEST_BUDGET` 9 +
+ * `PUBLISH_POLL_SUBREQUEST_BUDGET` 4) is **46 of 50**, which fits where 29 +
+ * 10 + 9 would not have. Four spare is not margin, and that is deliberate: the
+ * backstops are there to fail loudly before the platform does, and a run
+ * reaching all three of them has a worse problem than four subrequests.
+ *
+ * **`shortlist` is still the term that grows and still is not mitigated.** It
+ * was 4 at run `6f75e460`'s 264 candidates and 13 at `0357f119`'s 1,118 five
+ * days later; D1 caps a statement at 100 bound parameters, so `ceil(candidates
+ * / 100)` is a floor set by the platform rather than a knob here. With
+ * publication moved out, it is now the largest single term in the 23 and the
+ * only one that follows the feed allowlist - spec.md's risk table records that
+ * rather than tuning around it.
+ */
+export async function createPublishChildren(env: Env, parentInstanceId: string, draft: Draft): Promise<string[]> {
+  return createChildBatch(env.PUBLISH_WORKFLOW, [
+    { id: `${parentInstanceId}-p0`, params: { draft } satisfies PublishParams },
+  ]);
+}
+
+/**
+ * Poll cadence for `await-publish-children`. Shorter than either of the other
+ * two because the work is shorter: a publish child makes seven sequential
+ * GitHub REST calls and nothing else - no feed parse, no model call - so its
+ * convergence is gather's order of magnitude (5-8 s, run `6f75e460`) rather
+ * than summarize's (62-122 s, run `0357f119`). 15 s is the wait-first
+ * ordering's whole point applied to that: round 0 lands past a child measured
+ * in single-digit seconds instead of a second after `createBatch`.
+ *
+ * Not measured for *this* child, which has never run - it is the same
+ * seven calls `open-pull-request` made in the parent, which no capture times
+ * individually. Acceptance criterion 2's five runs are what settle it, and the
+ * round count below is sized so a wrong guess here costs rounds rather than
+ * the run.
+ */
+const PUBLISH_POLL_INTERVAL = '15 seconds';
+/**
+ * The poll backstop is a subrequest budget, not a round count
+ * (`pollChildBatch`'s own comment) - but at **one** child the two coincide:
+ * `max(1, floor(budget / childCount))` divides by 1, so this number *is* the
+ * round count. That makes it the cheapest of the three backstops per round of
+ * tolerance bought, which is why 4 rounds costs 4 subrequests here where
+ * summarize's 3 rounds cost 9.
+ *
+ * 4 rather than more: 23 fixed subrequests (`createPublishChildren`'s recount)
+ * plus gather's 10 and summarize's 9 leaves 8, and taking half of it keeps a
+ * few spare for the redirects the arithmetic cannot see. 4 rounds at
+ * `PUBLISH_POLL_INTERVAL` covers 60 s against a child expected to finish in
+ * seconds - generous rather than tight, and the interval is the free lever if
+ * that turns out wrong (`SUMMARIZE_POLL_INTERVAL`'s comment has the argument).
+ */
+const PUBLISH_POLL_SUBREQUEST_BUDGET = 4;
+
+/**
+ * One `await-publish-children` round, via `pollChildBatch`
+ * (src/lib/workflow-children.ts). One child, so a round costs one subrequest
+ * and `combine` receives a one-element array - `[url]` destructured rather
+ * than joined, because there is nothing to aggregate. A child that is
+ * `errored` or `terminated` fails this step immediately, which is what makes a
+ * failed publication a failed run rather than a `runs` row claiming success
+ * with a null `pr_url` (spec.md requirement 4).
+ */
+export async function pollPublishChildren(
+  env: Env,
+  childIds: string[],
+  state: PublishPollState,
+  round: number,
+): Promise<PublishPollResult> {
+  const outcome = await pollChildBatch(
+    env.PUBLISH_WORKFLOW,
+    childIds,
+    state,
+    round,
+    PUBLISH_POLL_SUBREQUEST_BUDGET,
+    'publish',
+    validatePublishOutput,
+    ([url]) => url ?? '',
+  );
+  return outcome.done ? { done: true, prUrl: outcome.result } : outcome;
+}
+
+/**
+ * `InstanceStatus.output` is `unknown` - this is what actually enforces a
+ * publish child's "returns the pull request URL" contract, per plan.md's
+ * question 3 ("validates rather than casts"), the same rule
+ * `validateGatherOutput` applies to a gather child's count.
+ *
+ * Non-empty is the substance of it: `githubOpenPullRequest` returns GitHub's
+ * own `html_url`, so an empty string means the child completed without ever
+ * reaching a pull request, and letting that through would write a `runs` row
+ * with `status = 'succeeded'` and a blank `pr_url` - exactly the outcome
+ * acceptance criterion 2 is stated against.
+ */
+function validatePublishOutput(output: unknown, childId: string): string {
+  if (typeof output !== 'string' || output === '') {
+    throw new Error(`publish child ${childId} returned no pull request URL`);
+  }
+  return output;
 }
 
 /** kebab-case, ASCII-only, matching mdx.ts's `SLUG_RE`. Falls back to a topic-id-based slug if a title yields nothing usable. */
@@ -1149,56 +1309,6 @@ function renderBrief(topic: Topic, summaries: ArticleSummary[]): string {
     lines.push(`- [${s.title}](${s.url}) — ${practice}`);
   }
   return lines.join('\n');
-}
-
-/**
- * Validates frontmatter (statically, then against the blog's live
- * `content.config.ts`), creates `research/<yyyy-mm-dd>-<slug>`, commits
- * `src/content/blog/<slug>/index.mdx`, opens the PR with the brief as its
- * body. Idempotent on retry - see the module-level comment below for the
- * mechanism-by-mechanism breakdown; every write here delegates to
- * `src/lib/github.ts`'s own idempotent primitives, none of it reimplemented.
- *
- * The agent never pushes to `BLOG_BASE_BRANCH`: `prParams.base` below is the
- * only read of it, inline inside a `base:` property so
- * `base-branch-not-a-write-target` can prove that structurally, and it is
- * only ever passed to `readBaseRefSha` (a GET) and as the PR's `base` field
- * - never to `createBranch` or `putFile`, which are what could write to it.
- */
-export async function openPullRequest(env: Env, draft: Draft): Promise<string> {
-  validateDraft(draft);
-
-  const config: GithubConfig = { apiBase: env.GITHUB_API_BASE, token: env.GITHUB_TOKEN, repo: env.BLOG_REPO };
-
-  // Dynamic check against the live schema - spec.md: "the PR step reads it
-  // ... rather than trusting the copy above, so a schema change upstream
-  // surfaces as a failed step instead of a broken build." A missing schema
-  // file is itself surfaced the same way (readRepoFile returns null here
-  // only on 404; any other failure already threw inside it).
-  const schemaSource = await readRepoFile(config, 'src/content.config.ts');
-  if (schemaSource === null) {
-    throw new Error('openPullRequest: src/content.config.ts not found in the blog repo - cannot validate frontmatter');
-  }
-  validateAgainstContentConfig(schemaSource);
-
-  const prParams = {
-    title: draft.title,
-    body: draft.brief,
-    head: `research/${draft.date}-${draft.slug}`,
-    base: env.BLOG_BASE_BRANCH,
-  };
-
-  const baseSha = await readBaseRefSha(config, prParams.base);
-  await createBranch(config, prParams.head, baseSha); // idempotent: 422 (already exists) is success
-
-  await putFile(config, {
-    path: blogPostPath(draft.slug),
-    content: renderMdx(draft),
-    message: `Add research draft: ${draft.title}`,
-    branch: prParams.head,
-  }); // idempotent: reads the file's current sha on that branch first
-
-  return githubOpenPullRequest(config, prParams); // idempotent: reuses an existing open PR for this head
 }
 
 async function recordOutcome(

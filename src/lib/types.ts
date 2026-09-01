@@ -7,6 +7,8 @@ export interface Env {
   GATHER_WORKFLOW: Workflow<GatherParams>;
   /** feature 003, extended 2026-08-31 (#75): the child Workflow article summarization runs in, not the parent's own steps. See src/summarize-workflow.ts. */
   SUMMARIZE_WORKFLOW: Workflow<SummarizeParams>;
+  /** feature 003, extended 2026-09-01 (#75): the child Workflow the pull request is opened from, not the parent's own steps. See src/publish-workflow.ts. */
+  PUBLISH_WORKFLOW: Workflow<PublishParams>;
 
   BLOG_REPO: string;
   BLOG_BASE_BRANCH: string;
@@ -209,6 +211,40 @@ export type SummarizePollState = ChildPollState<SummarizeChildOutput>;
 export type SummarizePollResult =
   | { done: true; summaries: ArticleSummary[]; neuronsSpent: number }
   | { done: false; state: SummarizePollState };
+
+/**
+ * `PublishWorkflow`'s input (feature 003, extended 2026-09-01 (#75) once run
+ * `0357f119` reached `open-pull-request` and died inside it on the parent's
+ * own subrequest ceiling). Exactly one instance per run - there is nothing to
+ * chunk, so this carries no `index` and `wrangler.toml` gains no
+ * per-child-size var.
+ *
+ * **One field, because `Draft` already carries the brief.** `draft.brief` is
+ * the pull request body and `draft.body` is the post, both computed in the
+ * parent's `synthesize` step (`synthesizeDraft`, src/workflow.ts), so the
+ * child receives a finished `Draft` and authors nothing.
+ *
+ * **It fits the platform's params limit with room to spare.** A Workflow's
+ * maximum event payload is **1 MiB (2^20 bytes)** on Free and Paid alike
+ * ([Workflows limits](https://developers.cloudflare.com/workflows/reference/limits/)),
+ * the same figure as the non-stream step-result cap `createSummarizeChildren`
+ * sizes its return against. A draft body is 1,000-2,800 words
+ * (`.claude/skills/blog-voice/SKILL.md`), roughly 6-20 KB of UTF-8, plus a
+ * brief of one line per shortlisted source (at most `SHORTLIST_TOP_N` = 15)
+ * and a handful of short frontmatter fields - a few tens of KB against 1,048,576,
+ * two orders of magnitude under. Unlike a candidate list it also does not grow
+ * with the feed allowlist: every field is either fixed-size or capped by
+ * `SHORTLIST_TOP_N`.
+ */
+export interface PublishParams {
+  draft: Draft;
+}
+
+/** A publish child returns the pull request URL, so that is what is carried. */
+export type PublishPollState = ChildPollState<string>;
+
+/** Outcome of one `await-publish-children` poll round (src/workflow.ts), the same union shape and for the same reason as `GatherPollResult`. */
+export type PublishPollResult = { done: true; prUrl: string } | { done: false; state: PublishPollState };
 
 /** Recorded in the `runs` table for observability and budget tracking. */
 export interface RunOutcome {

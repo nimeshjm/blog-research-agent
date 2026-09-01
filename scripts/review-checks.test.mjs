@@ -656,6 +656,20 @@ const rows = [
         "ATTR_SUMMARIZE_CHILD_INDEX, ATTR_SUMMARIZE_SKIP_REASON, tracerForRenamed } from './lib/trace'",
       );
       mustReplace(dir, 'src/summarize-workflow.ts', 'tracerFor(step, event)', 'tracerForRenamed(step, event)');
+      // Extended 2026-09-01 (#75): PublishWorkflow is the fourth. `tracerBoundNames`
+      // is a set of *identifier names* collected across every src file, so
+      // one file left calling `tracerFor` keeps `traceStep` in that set and
+      // `src/workflow.ts`'s own dozen calls carry on resolving through the
+      // renamed binding - the sentinel then never fires and this row passes
+      // while proving nothing. That is exactly what it did until this pair
+      // was added.
+      mustReplace(
+        dir,
+        'src/publish-workflow.ts',
+        "import { tracerFor } from './lib/trace'",
+        "import { tracerForRenamed } from './lib/trace'",
+      );
+      mustReplace(dir, 'src/publish-workflow.ts', 'tracerFor(step, event)', 'tracerForRenamed(step, event)');
     },
   },
   // -------------------------------------------------------------------------

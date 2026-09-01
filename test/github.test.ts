@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createBranch, GithubError, listBlogPostSlugs, openPullRequest, putFile, readBaseRefSha, readRepoFile } from '../src/lib/github';
+import { createBranch, GithubError, listBlogPostSlugs, openPullRequest, putFile, readBaseRefSha, readRepoFile, refExists } from '../src/lib/github';
 import type { GithubConfig } from '../src/lib/github';
 
 const config: GithubConfig = {
@@ -45,14 +45,86 @@ describe('createBranch()', () => {
     await expect(createBranch(config, 'research/2026-08-27-x', 'sha1')).resolves.toBeUndefined();
   });
 
-  it('treats 422 (branch already exists) as success, for a retried step', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('already exists', { status: 422 })));
+  /**
+   * `run()` re-executes on replay (feature 003 spec.md fact 2), and run
+   * `0357f119` (2026-09-01) left `research/2026-09-01-...` behind in the blog
+   * repo when it died after pushing but before opening the pull request - so a
+   * same-slug branch is a case that happens, not only a hypothetical retry.
+   */
+  it('treats 422 as success when the ref really is there - checked, not assumed', async () => {
+    const paths: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input)).pathname;
+        paths.push(`${init?.method ?? 'GET'} ${path}`);
+        if ((init?.method ?? 'GET') === 'POST') return new Response('already exists', { status: 422 });
+        return jsonResponse(200, { object: { sha: 'existing-sha' } });
+      }),
+    );
+
     await expect(createBranch(config, 'research/2026-08-27-x', 'sha1')).resolves.toBeUndefined();
+    expect(paths).toEqual([
+      'POST /repos/nimeshjm/nimeshjm.com/git/refs',
+      'GET /repos/nimeshjm/nimeshjm.com/git/ref/heads/research/2026-08-27-x',
+    ]);
+  });
+
+  /**
+   * The reason the check above is a check. GitHub answers 422 to `Reference
+   * update failed` (branch protection) and `Object does not exist` (an unknown
+   * `fromSha`) as well as to `Reference already exists`; returning on any 422,
+   * which this did until 2026-09-01, turned those into a silent success whose
+   * first symptom was a 404 from `putFile`.
+   */
+  it('a 422 with no such ref throws, rather than passing as an existing branch', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if ((init?.method ?? 'GET') === 'POST') return new Response('reference update failed', { status: 422 });
+        return new Response('not found', { status: 404 });
+      }),
+    );
+
+    await expect(createBranch(config, 'research/2026-08-27-x', 'sha1')).rejects.toThrow(GithubError);
   });
 
   it('throws GithubError on any other failure status', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
     await expect(createBranch(config, 'research/2026-08-27-x', 'sha1')).rejects.toThrow(GithubError);
+  });
+});
+
+describe('refExists()', () => {
+  /**
+   * A `research/<date>-<slug>` branch name carries slashes, and GitHub's
+   * `GET /git/ref/{ref}` wants them intact - a whole-name `encodeURIComponent`
+   * would send `heads/research%2F...` and be answered 404, reporting every
+   * branch the agent ever creates as missing and turning `createBranch`'s
+   * already-exists path into a hard failure.
+   */
+  it('sends the branch path with its slashes intact, encoding only within each segment', async () => {
+    const seen: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        seen.push(String(input));
+        return jsonResponse(200, { object: { sha: 'abc' } });
+      }),
+    );
+
+    expect(await refExists(config, 'research/2026-08-27-x')).toBe(true);
+    expect(seen).toEqual(['https://api.test.example/repos/nimeshjm/nimeshjm.com/git/ref/heads/research/2026-08-27-x']);
+  });
+
+  it('reports a 404 as absent rather than throwing', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    expect(await refExists(config, 'research/2026-08-27-x')).toBe(false);
+  });
+
+  it('throws GithubError on a failure that is not a 404 - an absent answer must mean absent', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
+    await expect(refExists(config, 'research/2026-08-27-x')).rejects.toThrow(GithubError);
   });
 });
 

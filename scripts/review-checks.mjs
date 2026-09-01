@@ -239,6 +239,8 @@ const DYNAMIC_STEP_PREFIXES = new Set([
   'await-gather-children-wait',
   'await-summarize-children',
   'await-summarize-children-wait',
+  'await-publish-children',
+  'await-publish-children-wait',
 ]);
 const INFERENCE_STEP_PREFIXES = new Set(['summarize', 'synthesize']);
 
