@@ -3,7 +3,6 @@ import { env as testEnv } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SEEN_URLS_CHUNK_SIZE, startRun, writeRunCandidates } from '../src/lib/d1';
 import { loadFeeds } from '../src/lib/feeds';
-import { InvalidDraftError } from '../src/lib/mdx';
 import type {
   ArticleSummary,
   Candidate,
@@ -12,6 +11,8 @@ import type {
   GatherParams,
   GatherPollState,
   ParsedItem,
+  PublishParams,
+  PublishPollState,
   ResearchParams,
   Source,
   SummarizeChildOutput,
@@ -23,12 +24,13 @@ import { initialChildPollState } from '../src/lib/workflow-children';
 import {
   chunkSourcesByVolume,
   createGatherChildren,
+  createPublishChildren,
   createSummarizeChildren,
   DEFAULT_SOURCE_WEIGHT,
   DUPLICATE_TOKEN_THRESHOLD,
   isGrounded,
-  openPullRequest,
   pollGatherChildren,
+  pollPublishChildren,
   pollSummarizeChildren,
   proposeTopic,
   ResearchWorkflow,
@@ -733,6 +735,185 @@ describe('pollSummarizeChildren()', () => {
   });
 });
 
+/** Not a real URL of anything - just the bounded string a publish child returns. */
+const PR_URL = 'https://github.test.example/nimeshjm/nimeshjm.com/pull/1';
+
+/**
+ * Same shape as `fakeGatherWorkflow()` and `fakeSummarizeWorkflow()` above,
+ * generalized no further than those two were - a publish child's output is a
+ * single URL string, so this fake's default completed status carries one.
+ */
+function fakePublishWorkflow(): {
+  binding: Env['PUBLISH_WORKFLOW'];
+  created: Map<string, PublishParams>;
+  setStatus: (id: string, status: InstanceStatus) => void;
+  /** As `fakeGatherWorkflow`'s: one entry is one parent subrequest. */
+  polled: string[];
+} {
+  const created = new Map<string, PublishParams>();
+  const statuses = new Map<string, InstanceStatus>();
+  const polled: string[] = [];
+  const defaultStatus: InstanceStatus = { status: 'complete', output: PR_URL };
+
+  const binding = {
+    createBatch: async (options: WorkflowInstanceCreateOptions<PublishParams>[]) => {
+      for (const o of options) {
+        if (o.id !== undefined && created.has(o.id)) {
+          throw new Error(`Workflow instance ${o.id} already exists`);
+        }
+      }
+      for (const o of options) {
+        if (o.id === undefined) continue;
+        created.set(o.id, o.params as PublishParams);
+        if (!statuses.has(o.id)) statuses.set(o.id, defaultStatus);
+      }
+      return options.map((o) => ({ id: o.id }) as unknown as WorkflowInstance);
+    },
+    get: async (id: string) => {
+      if (!created.has(id)) throw new Error(`Workflow instance ${id} does not exist`);
+      return {
+        id,
+        status: async () => {
+          polled.push(id);
+          return statuses.get(id) ?? defaultStatus;
+        },
+      } as unknown as WorkflowInstance;
+    },
+  } as unknown as Env['PUBLISH_WORKFLOW'];
+
+  return { binding, created, polled, setStatus: (id, status) => statuses.set(id, status) };
+}
+
+function publishDraft(overrides: Partial<Draft> = {}): Draft {
+  return {
+    slug: 'agentic-code-review',
+    title: 'Why agentic code review catches more bugs',
+    description: 'A tension worth stating.',
+    date: '2026-08-27',
+    authors: ['nimeshjm'],
+    tags: ['ai'],
+    draft: true,
+    brief: '# Research brief',
+    body: '## Heading\n\nProse.',
+    sources: [],
+    ...overrides,
+  };
+}
+
+describe('createPublishChildren()', () => {
+  it('creates exactly one child, carrying the whole draft, under a deterministic id', async () => {
+    const fake = fakePublishWorkflow();
+    const publishEnv: Env = { ...env, PUBLISH_WORKFLOW: fake.binding };
+
+    const ids = await createPublishChildren(publishEnv, 'parent-1', publishDraft());
+
+    expect(ids).toEqual(['parent-1-p0']);
+    // The brief travels as part of the Draft - the child authors nothing and
+    // needs no second field for the PR body.
+    expect(fake.created.get('parent-1-p0')?.draft).toEqual(publishDraft());
+  });
+
+  it('is idempotent on replay: a second call against an already-created id does not throw and returns the same id', async () => {
+    const fake = fakePublishWorkflow();
+    const publishEnv: Env = { ...env, PUBLISH_WORKFLOW: fake.binding };
+
+    const first = await createPublishChildren(publishEnv, 'parent-replay', publishDraft());
+    const second = await createPublishChildren(publishEnv, 'parent-replay', publishDraft());
+
+    expect(second).toEqual(first);
+    expect(fake.created.size).toBe(1); // not doubled
+  });
+
+  it('a genuine creation failure (not a duplicate id) still throws', async () => {
+    const failing: Env['PUBLISH_WORKFLOW'] = {
+      createBatch: async () => {
+        throw new Error('quota exceeded');
+      },
+      get: async () => {
+        throw new Error('Workflow instance does not exist');
+      },
+    } as unknown as Env['PUBLISH_WORKFLOW'];
+    const publishEnv: Env = { ...env, PUBLISH_WORKFLOW: failing };
+
+    await expect(createPublishChildren(publishEnv, 'parent-fail', publishDraft())).rejects.toThrow('quota exceeded');
+  });
+});
+
+describe('pollPublishChildren()', () => {
+  async function createChild(): Promise<{ fake: ReturnType<typeof fakePublishWorkflow>; publishEnv: Env; ids: string[] }> {
+    const fake = fakePublishWorkflow();
+    const publishEnv: Env = { ...env, PUBLISH_WORKFLOW: fake.binding };
+    const ids = await createPublishChildren(publishEnv, 'parent-poll', publishDraft());
+    return { fake, publishEnv, ids };
+  }
+
+  const fresh = (ids: string[]): PublishPollState => initialChildPollState<string>(ids);
+
+  it('reads the pull request URL back off the completed child', async () => {
+    const { fake, publishEnv, ids } = await createChild();
+    fake.setStatus(ids[0]!, { status: 'complete', output: PR_URL });
+
+    const result = await pollPublishChildren(publishEnv, ids, fresh(ids), 0);
+
+    expect(result).toEqual({ done: true, prUrl: PR_URL });
+    expect(fake.polled).toEqual(ids); // one child, so one subrequest per round
+  });
+
+  it('returns done: false while the child has not reached complete', async () => {
+    const { fake, publishEnv, ids } = await createChild();
+    fake.setStatus(ids[0]!, { status: 'running' } as InstanceStatus);
+
+    const result = await pollPublishChildren(publishEnv, ids, fresh(ids), 0);
+
+    expect(result).toEqual({ done: false, state: { pending: ids, outputs: {} } });
+  });
+
+  // spec.md requirement 4, and the difference that matters most here: a
+  // publication that failed must fail the run rather than let `record-success`
+  // write a `runs` row claiming success.
+  it('fails (visibly) the moment the child is errored, rather than recording a success with no PR', async () => {
+    const { fake, publishEnv, ids } = await createChild();
+    fake.setStatus(ids[0]!, { status: 'errored' } as InstanceStatus);
+
+    await expect(pollPublishChildren(publishEnv, ids, fresh(ids), 0)).rejects.toThrow(/publish child .* errored/);
+  });
+
+  it('fails when the child is terminated', async () => {
+    const { fake, publishEnv, ids } = await createChild();
+    fake.setStatus(ids[0]!, { status: 'terminated' } as InstanceStatus);
+
+    await expect(pollPublishChildren(publishEnv, ids, fresh(ids), 0)).rejects.toThrow(/publish child .* terminated/);
+  });
+
+  // At one child the derived cap `max(1, floor(budget / childCount))` divides
+  // by 1, so PUBLISH_POLL_SUBREQUEST_BUDGET *is* the round count: rounds 0-3
+  // poll, and the round that would be the fifth is where the backstop fires.
+  it('fails rather than hangs once the derived round cap is reached, which at one child equals the budget', async () => {
+    const { fake, publishEnv, ids } = await createChild();
+    fake.setStatus(ids[0]!, { status: 'running' } as InstanceStatus);
+
+    await expect(pollPublishChildren(publishEnv, ids, fresh(ids), 3)).resolves.toMatchObject({ done: false });
+    await expect(pollPublishChildren(publishEnv, ids, fresh(ids), 4)).rejects.toThrow(/after 4 polls/);
+  });
+
+  it('validates the completed output rather than casting it - a non-string output fails the step', async () => {
+    const { fake, publishEnv, ids } = await createChild();
+    fake.setStatus(ids[0]!, { status: 'complete', output: { html_url: PR_URL } });
+
+    await expect(pollPublishChildren(publishEnv, ids, fresh(ids), 0)).rejects.toThrow(/no pull request URL/);
+  });
+
+  // An empty string would reach `record-success` as a `pr_url` of '', which is
+  // exactly the "succeeded with nothing published" row acceptance criterion 2
+  // is stated against.
+  it('validates that the URL is non-empty, not merely a string', async () => {
+    const { fake, publishEnv, ids } = await createChild();
+    fake.setStatus(ids[0]!, { status: 'complete', output: '' });
+
+    await expect(pollPublishChildren(publishEnv, ids, fresh(ids), 0)).rejects.toThrow(/no pull request URL/);
+  });
+});
+
 describe('shortlistCandidates()', () => {
   it('caps at SHORTLIST_MAX_CANDIDATES in SQL, before the seen_urls dedupe', async () => {
     const runId = 'run-shortlist-cap';
@@ -1179,22 +1360,6 @@ function chatFixture(content: string, finishReason = 'stop'): unknown {
   };
 }
 
-/** Trimmed copy of the real src/content.config.ts - see test/mdx.test.ts's copy for provenance. */
-const REAL_CONTENT_CONFIG = `const blog = defineCollection({
-  loader: glob({ pattern: '**/*.{md,mdx}', base: './src/content/blog' }),
-  schema: ({ image }) =>
-    z.object({
-      title: z.string(),
-      description: z.string(),
-      date: z.coerce.date(),
-      order: z.number().optional(),
-      image: image().optional(),
-      tags: z.array(z.string()).optional(),
-      authors: z.array(z.string()).optional(),
-      draft: z.boolean().optional(),
-    }),
-})`;
-
 function summary(overrides: Partial<ArticleSummary> = {}): ArticleSummary {
   return {
     url: 'https://example.com/a',
@@ -1299,154 +1464,6 @@ describe('isGrounded()', () => {
   });
 });
 
-describe('openPullRequest()', () => {
-  /**
-   * A stateful fake of the whole GitHub surface `openPullRequest` touches -
-   * `test/github.test.ts` already proves each primitive (`createBranch`,
-   * `putFile`, `openPullRequest`) in isolation; this proves the
-   * *composition* stays idempotent end to end, per plan.md's step-5
-   * verification row: "openPullRequest run twice against a fixture produces
-   * one PR."
-   */
-  function fakeGithub(schemaSource: string) {
-    const repo = env.BLOG_REPO;
-    const branches = new Set<string>();
-    const files = new Map<string, { content: string; sha: string }>();
-    let openPrUrl: string | null = null;
-    let prPostCount = 0;
-    let branchPostCount = 0;
-    let fileShaCounter = 0;
-    const putBranches: string[] = [];
-
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = new URL(String(input));
-      const method = init?.method ?? 'GET';
-      const path = url.pathname;
-      const contentsPrefix = `/repos/${repo}/contents/`;
-
-      if (path === `${contentsPrefix}src/content.config.ts` && method === 'GET') {
-        return jsonResponse(200, { content: btoa(schemaSource), encoding: 'base64' });
-      }
-      if (path === `/repos/${repo}/git/ref/heads/main` && method === 'GET') {
-        return jsonResponse(200, { object: { sha: 'base-sha' } });
-      }
-      if (path === `/repos/${repo}/git/refs` && method === 'POST') {
-        branchPostCount++;
-        const body = JSON.parse(String(init?.body)) as { ref: string };
-        const branch = body.ref.replace('refs/heads/', '');
-        if (branches.has(branch)) return new Response('exists', { status: 422 });
-        branches.add(branch);
-        return jsonResponse(201, {});
-      }
-      if (path.startsWith(contentsPrefix) && path !== `${contentsPrefix}src/content.config.ts` && method === 'GET') {
-        const filePath = path.slice(contentsPrefix.length);
-        const branch = url.searchParams.get('ref') ?? '';
-        const existing = files.get(`${branch}:${filePath}`);
-        if (existing === undefined) return new Response('not found', { status: 404 });
-        return jsonResponse(200, { sha: existing.sha });
-      }
-      if (path.startsWith(contentsPrefix) && method === 'PUT') {
-        const filePath = path.slice(contentsPrefix.length);
-        const body = JSON.parse(String(init?.body)) as { content: string; branch: string };
-        fileShaCounter++;
-        putBranches.push(body.branch);
-        files.set(`${body.branch}:${filePath}`, { content: body.content, sha: `sha-${fileShaCounter}` });
-        return jsonResponse(200, {});
-      }
-      if (path === `/repos/${repo}/pulls` && method === 'GET') {
-        return jsonResponse(200, openPrUrl === null ? [] : [{ html_url: openPrUrl }]);
-      }
-      if (path === `/repos/${repo}/pulls` && method === 'POST') {
-        prPostCount++;
-        openPrUrl = `https://github.com/${repo}/pull/1`;
-        return jsonResponse(201, { html_url: openPrUrl });
-      }
-      throw new Error(`fakeGithub: unhandled ${method} ${path}`);
-    });
-
-    return {
-      fetchMock,
-      branches,
-      files,
-      putBranches,
-      prPostCount: () => prPostCount,
-      branchPostCount: () => branchPostCount,
-    };
-  }
-
-  function draft(overrides: Partial<Draft> = {}): Draft {
-    return {
-      slug: 'agentic-code-review',
-      title: 'Why agentic code review catches more bugs',
-      description: 'A tension worth stating.',
-      date: '2026-08-27',
-      authors: ['nimeshjm'],
-      tags: ['ai'],
-      draft: true,
-      brief: '# Research brief\n\n- [Article A](https://example.com/a)',
-      body: '## Heading\n\nProse.',
-      sources: ['https://example.com/a'],
-      ...overrides,
-    };
-  }
-
-  it('run twice against the same draft produces exactly one PR, one branch, one file version', async () => {
-    const fake = fakeGithub(REAL_CONTENT_CONFIG);
-    vi.stubGlobal('fetch', fake.fetchMock);
-
-    const d = draft();
-    const url1 = await openPullRequest(env, d);
-    const url2 = await openPullRequest(env, d);
-
-    expect(url1).toBe(url2);
-    expect(fake.prPostCount()).toBe(1); // mechanism: existing-open-PR-by-head reuse (github.ts's findOpenPullRequest)
-    expect(fake.branchPostCount()).toBe(2); // both attempts POST; the second's 422 is treated as success (mechanism: existing-branch reuse)
-    expect(fake.branches.size).toBe(1);
-    expect(fake.putBranches).toEqual(['research/2026-08-27-agentic-code-review', 'research/2026-08-27-agentic-code-review']); // mechanism: existing-file-sha reuse on the retry PUT
-  });
-
-  it('never writes to BLOG_BASE_BRANCH - only ever reads its ref, and only research/* branches receive commits', async () => {
-    const fake = fakeGithub(REAL_CONTENT_CONFIG);
-    vi.stubGlobal('fetch', fake.fetchMock);
-
-    await openPullRequest(env, draft());
-
-    expect(fake.branches.has(env.BLOG_BASE_BRANCH)).toBe(false);
-    for (const b of fake.putBranches) expect(b).not.toBe(env.BLOG_BASE_BRANCH);
-  });
-
-  it('the committed frontmatter carries draft: true and no image key', async () => {
-    const fake = fakeGithub(REAL_CONTENT_CONFIG);
-    vi.stubGlobal('fetch', fake.fetchMock);
-
-    await openPullRequest(env, draft());
-
-    const [key] = [...fake.files.keys()];
-    const content = key !== undefined ? fake.files.get(key)?.content : undefined;
-    const decoded = content !== undefined ? atob(content) : '';
-    expect(decoded).toMatch(/^draft: true$/m);
-    expect(decoded).not.toMatch(/^image:/m);
-  });
-
-  it('rejects a statically-invalid draft before making any GitHub call', async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
-
-    await expect(openPullRequest(env, draft({ slug: 'has a space' }))).rejects.toThrow(InvalidDraftError);
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('throws, and opens no PR, when the live schema now requires a field renderMdx does not emit', async () => {
-    const mutatedSchema = REAL_CONTENT_CONFIG.replace('image: image().optional(),', 'image: image(),');
-    const fake = fakeGithub(mutatedSchema);
-    vi.stubGlobal('fetch', fake.fetchMock);
-
-    await expect(openPullRequest(env, draft())).rejects.toThrow(/image/);
-    expect(fake.prPostCount()).toBe(0);
-    expect(fake.branches.size).toBe(0);
-  });
-});
-
 /**
  * `run()`'s own orchestration, which no per-function test can see: the fake
  * `step` records the order steps and sleeps are requested in and returns a
@@ -1454,13 +1471,21 @@ describe('openPullRequest()', () => {
  * `recordingStep` in test/trace.test.ts uses. Nothing here touches D1, the
  * model or GitHub - the assertion is about the sequence `run()` asks for.
  */
-function orchestrationStep(outputs: Record<string, unknown>): { step: WorkflowStep; calls: string[] } {
+function orchestrationStep(outputs: Record<string, unknown>, liveNames: string[] = []): { step: WorkflowStep; calls: string[] } {
   const calls: string[] = [];
+  const live = new Set(liveNames);
   const step = {
-    do(name: string, _config: unknown, _callback?: unknown) {
+    do(name: string, _config: unknown, callback?: unknown) {
       calls.push(name);
+      // A named step whose body is allowed to run for real, against the
+      // pool's own D1 - the only way to see what a step *wrote* rather than
+      // what `run()` asked for.
+      if (live.has(name) && typeof callback === 'function') return (callback as () => Promise<unknown>)();
       if (!(name in outputs)) return Promise.reject(new Error(`orchestrationStep: no canned output for step ${name}`));
-      return Promise.resolve(outputs[name]);
+      const canned = outputs[name];
+      // A canned `Error` stands in for a step that throws - which is how a
+      // failed child reaches `run()` (spec.md requirement 4).
+      return canned instanceof Error ? Promise.reject(canned) : Promise.resolve(canned);
     },
     sleep(name: string, _duration: unknown) {
       calls.push(name);
@@ -1470,7 +1495,7 @@ function orchestrationStep(outputs: Record<string, unknown>): { step: WorkflowSt
   return { step, calls };
 }
 
-async function runOrchestration(overrides: Record<string, unknown> = {}): Promise<string[]> {
+async function runOrchestration(overrides: Record<string, unknown> = {}, liveNames: string[] = []): Promise<string[]> {
   const outputs: Record<string, unknown> = {
     'start-run': null,
     'select-topic': topic(),
@@ -1486,11 +1511,12 @@ async function runOrchestration(overrides: Record<string, unknown> = {}): Promis
     'create-summarize-children': ['child-s0'],
     'await-summarize-children:0': { done: true, summaries: [summary(), summary()], neuronsSpent: 11 },
     synthesize: { draft: {} as Draft, neurons: 22 },
-    'open-pull-request': 'pr-url',
+    'create-publish-children': ['child-p0'],
+    'await-publish-children:0': { done: true, prUrl: PR_URL },
     'record-success': null,
     ...overrides,
   };
-  const { step, calls } = orchestrationStep(outputs);
+  const { step, calls } = orchestrationStep(outputs, liveNames);
   const event = {
     instanceId: 'parent-orchestration',
     workflowName: 'research-workflow',
@@ -1519,6 +1545,7 @@ describe('ResearchWorkflow.run() poll ordering', () => {
 
     expect(calls.indexOf('await-gather-children-wait:0')).toBe(calls.indexOf('await-gather-children:0') - 1);
     expect(calls.indexOf('await-summarize-children-wait:0')).toBe(calls.indexOf('await-summarize-children:0') - 1);
+    expect(calls.indexOf('await-publish-children-wait:0')).toBe(calls.indexOf('await-publish-children:0') - 1);
     expect(calls.indexOf('create-gather-children')).toBe(calls.indexOf('await-gather-children-wait:0') - 1);
   });
 
@@ -1535,5 +1562,74 @@ describe('ResearchWorkflow.run() poll ordering', () => {
       'await-gather-children-wait:1',
       'await-gather-children:1',
     ]);
+  });
+});
+
+describe('ResearchWorkflow.run() publication in a child instance', () => {
+  /**
+   * spec.md requirement 2's third extension: the parent no longer opens the
+   * pull request itself, so `open-pull-request` must not appear among its
+   * steps at all - it is the child's step name now
+   * (test/publish-workflow.test.ts asserts that side). Asserted as absence
+   * rather than as "create-publish-children exists", because a parent that
+   * created the child *and* kept its own GitHub calls would satisfy the
+   * latter and spend the seven subrequests this PR exists to move.
+   */
+  it('creates the child instead of opening the pull request itself, and records the URL it returns afterwards', async () => {
+    const calls = await runOrchestration();
+
+    expect(calls).not.toContain('open-pull-request');
+    expect(calls.slice(calls.indexOf('synthesize'))).toEqual([
+      'synthesize',
+      'create-publish-children',
+      'await-publish-children-wait:0',
+      'await-publish-children:0',
+      'record-success',
+    ]);
+  });
+
+  it('polls a second publish round when the first finds the child still running', async () => {
+    const calls = await runOrchestration({
+      'await-publish-children:0': { done: false, state: { pending: ['child-p0'], outputs: {} } },
+      'await-publish-children:1': { done: true, prUrl: PR_URL },
+    });
+
+    expect(calls.slice(calls.indexOf('create-publish-children'))).toEqual([
+      'create-publish-children',
+      'await-publish-children-wait:0',
+      'await-publish-children:0',
+      'await-publish-children-wait:1',
+      'await-publish-children:1',
+      'record-success',
+    ]);
+  });
+
+  // spec.md requirement 4 at the run level: a poll step that throws is a step
+  // that fails the run, and `record-success` is never reached - so no `runs`
+  // row can claim success without a pull request behind it.
+  it('a failed publish child fails the run, and record-success never runs', async () => {
+    const failure = new Error('publish child child-p0 errored');
+    await expect(
+      runOrchestration({
+        'await-publish-children:0': failure,
+      }),
+    ).rejects.toThrow('publish child child-p0 errored');
+  });
+
+  /**
+   * The one thing the parent still owns. `record-success`'s body runs for real
+   * here - against the pool's D1, not a canned result - because the point is
+   * that the `pr_url` the child returned is what lands in the `runs` row.
+   */
+  it('writes the child-returned pr_url into the runs row', async () => {
+    await env.DB.prepare("INSERT INTO topics (id, title, status, origin) VALUES (1, 't', 'in_progress', 'human')").run();
+
+    await runOrchestration({}, ['record-success']);
+
+    const row = await env.DB.prepare('SELECT status, pr_url FROM runs WHERE instance_id = ?')
+      .bind('parent-orchestration')
+      .first<{ status: string; pr_url: string | null }>();
+    expect(row?.status).toBe('succeeded');
+    expect(row?.pr_url).toBe(PR_URL);
   });
 });
