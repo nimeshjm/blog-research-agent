@@ -19,6 +19,12 @@ reject it cheaply if it has been read too broadly. It is taken to mean: no `step
 retry policy anywhere in this Worker — a failing step fails the run immediately instead
 of retrying. It is not read as forbidding a future feature from re-running a whole run.
 
+**Extended 2026-09-01 ([#92](https://github.com/nimeshjm/blog-research-agent/issues/92)).**
+Nor is it read as forbidding the *parent* from replacing a **child instance** that died on
+a recognised transient platform error. That decision is taken at the parent/child seam,
+where the error is inspectable, and involves no `step.do` retry policy anywhere. See
+requirement 4's narrowing, and requirement 1, which is unchanged.
+
 **Turning retries off does not by itself complete a run.** It converts five slow minutes
 into an immediate failure, which is an improvement in honesty and in wasted wall-clock,
 and no improvement at all in reach. The intent's Outcome is 46 feeds reaching
@@ -174,11 +180,79 @@ allowlist.** It was 4 at run `6f75e460`'s 264 candidates. The risk table below r
 rather than tuning it, and the reason is unchanged: D1 caps a statement at 100 bound
 parameters, so `ceil(candidates / 100)` is the platform's floor, not a knob here.
 
+### What run `54ce776b` settled, 2026-09-01
+
+Deployed run `54ce776b-ad41-4562-bf34-1984b47464eb`, 18:32 UTC, captures at
+`probe/captures/54ce776b-ad41-4562-bf34-1984b47464eb.txt` and its summarize child
+`…-s0.txt`. It is the first run in this build to fail on something that is not a resource.
+
+**What it proved.** Everything the previous findings fixed held at full volume, and
+nothing was near a ceiling. Five gather children returned **1,123 candidates from all 46
+feeds**; `shortlist` passed on them; PR #89's wait-then-poll change worked exactly as
+designed — `await-gather-children:0` found gather already complete in one round, and
+`await-summarize-children:0` found **two of the three** summarize children already
+complete. The parent had spent about **30 of its 50** subrequests when it died: ~3 D1 for
+`start-run` + `select-topic`, 2 for `create-gather-children`, **13** for `shortlist`
+(1 + `ceil(1123 / 100) = 12`), 1 for `create-summarize-children`, 5 on the single gather
+round and 6 across four summarize rounds (3 + 1 + 1 + 1, only pending children polled).
+
+**What it exposed.** Summarize child `s0` returned three real summaries in 11 s, 24 s and
+12 s, then sat in its fourth article's step for **four minutes** and errored with the
+platform's own
+
+```
+Error: WorkflowInternalError: Attempt failed due to internal workflows error
+```
+
+— **one** attempt row on that step, which is requirement 1's policy being honoured on a
+platform error a third time. That nothing this Worker throws is underneath it is read off
+`wrangler describe`'s *rendering*, not off `InstanceStatus.error`, which nothing here has
+printed: the same command renders the parent's own `new Error('summarize child … errored')`
+as `Error: summarize child … errored`, so the class most likely sits in `message` with
+`name: 'Error'`. That is an inference from the rendering and is recorded as one — which
+field carries the class is the measurement requirement 4's narrowing needs and does not
+have. `pollChildBatch` saw `errored` at
+round 3 and failed the run, exactly as requirement 4 says it must, discarding the gather,
+the shortlist, two complete children and three summaries' worth of neurons. The neurons
+are unrecorded, which is [#91](https://github.com/nimeshjm/blog-research-agent/issues/91)
+on a fresh example rather than anything new.
+
+This is **not** fallout from that day's Cloudflare incident (D1 + Workflows + OAuth
+clients, `https://www.cloudflarestatus.com/incidents/3mjmdcmm86nx`): that incident was
+**Resolved at 12:05 UTC**, over six hours earlier. It is recorded here as an independent
+transient — and one occurrence is not a rate.
+
+**The poll cadence is not what was slow, and the step outputs are what say so.** Four
+rounds at 90 s, ~6 minutes, reads like summarize converging slower than the 62–122 s band
+PR #89 sized `SUMMARIZE_POLL_INTERVAL` against. It is not: `await-summarize-children:0`
+already carried `s1` and `s2` complete with `pending: ["…-s0"]`, and rounds 1, 2 and 3
+each carried that identical single-element list. Two of three children converged **inside
+the first round**. The extra rounds are the hung child, not the cadence. Recorded so that
+the next reader of this run's seven-minute wall clock does not retune a number that
+measured correctly.
+
+**Where the round cap sat.** `pollChildBatch` derives `maxRounds = max(1,
+floor(SUMMARIZE_POLL_SUBREQUEST_BUDGET / childIds.length))` — 3, at a budget of 9 and
+three children — so round 3 is the round that throws. This run threw on the errored child
+at round 3 and would have thrown on the cap at round 4. That is not a coincidence worth
+admiring; it is why requirement 4's narrowing has to buy extra rounds rather than reuse
+spare ones.
+
 ## Requirements
 
 1. **No step is retried.** `step.do` is invoked with a retry policy of zero attempts
    beyond the first, everywhere in the Worker. A step that throws fails its instance
    immediately.
+
+   **Unchanged 2026-09-01 (#92), and deliberately — the obvious fix was examined and
+   rejected.** Run `54ce776b` died on a *transient platform* error rather than on a
+   resource, which is the one class a retry genuinely recovers, and it still does not move
+   this requirement. `step.do`'s retry configuration is chosen **before the body runs**, so
+   a step cannot branch on the class of error it is about to hit: a policy loose enough to
+   retry a `WorkflowInternalError` would also retry the `1102`s and the subrequest
+   exhaustions, which fact 4 measured to be pointless. The recovery therefore goes where
+   the error *is* inspectable before anything is decided — the parent/child seam, in
+   requirement 4.
 2. **Gather, article summarisation *and publication* run in child Workflow instances**,
    not in the parent's own `run()`. The parent creates children, waits for them, and reads
    their results; no feed is parsed, no article is fetched and no pull request is opened in
@@ -265,6 +339,61 @@ parameters, so `ceil(candidates / 100)` is the platform's floor, not a knob here
 4. **A failed child fails the run**, visibly. It does not silently contribute zero
    candidates. This is the deliberate opposite of the dead-feed rule, which stays: a feed
    that cannot be fetched still contributes zero without failing anything.
+
+   **Narrowed 2026-09-01 ([#92](https://github.com/nimeshjm/blog-research-agent/issues/92))
+   after run `54ce776b`, and to one error class only.** A child that errored with a
+   **recognised transient platform error class** — the class that run produced is
+   `WorkflowInternalError` — is replaced **once** and re-polled. Every other child failure
+   still fails the run immediately, unchanged.
+
+   Four clauses, none of them decoration:
+
+   - **Fail closed.** Only an explicitly recognised transient class is replaced. Anything
+     unrecognised, and specifically `Worker exceeded CPU time limit.` or `Too many
+     subrequests by single Worker invocation.`, still fails the run — replacing a child
+     that exhausted a resource spends the same resource again, which is requirement 1's
+     own measured argument (fact 4) applied one level up. An error class earns its way
+     onto the list by being argued in, so an empty list is a valid outcome of the
+     implementation and a wildcard is not.
+   - **Bounded, and bounded durably.** Never twice for the same child; and the whole
+     mechanism — the replacement plus the extra poll rounds it needs — is capped by an
+     explicit **subrequest allowance** that keeps the parent's pessimal total inside 50.
+     "Once per child" on its own bounds nothing useful, because nine children could each
+     be replaced once; the allowance is what makes the ledger arithmetic in the design
+     section true, and at today's 46 pessimal it permits one replacement per run. The
+     record of what has already been replaced travels in the poll step's **own output**,
+     never a closure, because `run()` re-executes on replay (fact 2) — the same argument
+     criterion 8's second extension already makes for the carried per-child outputs.
+   - **Deterministic on replay.** A replacement that is *created* rather than restarted
+     takes its own deterministic id, derived from the existing
+     `${parentInstanceId}-s${index}` scheme, so a replay recreates the same replacement
+     instead of a fresh one per replay. A replacement that is *restarted* keeps the
+     original id and needs no scheme — see the design section for which is which and for
+     why this spec does not choose between them.
+   - **Recorded.** The replacement's id reaches the poll step's output and a count reaches
+     the poll span, so a replaced child is visible in `wrangler workflows instances
+     describe` and in the trace rather than inferable only from a wall clock. The
+     recognised error string itself must **not** reach a span attribute — `error.type`
+     only, per `CLAUDE.md`'s attribute rule.
+
+   **This does narrow requirement 4, the tension is real, and it is argued here rather
+   than asserted away.** The requirement exists so a failure is never quietly degraded
+   into a thinner run. A bounded replacement is not that, on the three readings that
+   matter: the run's **output** is unchanged, because the replacement produces the
+   summaries the dead child would have produced rather than a shortfall; the **failure is
+   still reported**, because the replacement is recorded in the step output and on the
+   span; and a **replacement that also fails still fails the run**, so nothing is
+   swallowed. What is genuinely conceded is *immediacy* — a run whose replacement also
+   fails now takes one or two extra poll rounds to say so. That cost is bounded by the
+   poll interval rather than open-ended, and it is the trade this narrowing makes.
+
+   The reason this lands on requirement 4 rather than requirement 1 is a platform fact,
+   stated under requirement 1: `step.do`'s retry configuration is chosen before the body
+   runs. At the parent/child seam the error is inspectable before anything is decided —
+   `InstanceStatus.error` is `{ name: string; message: string } | undefined`
+   (`@cloudflare/workers-types`), and `pollChildBatch` (`src/lib/workflow-children.ts`)
+   already reads an `InstanceStatus` for every pending child every round and throws on
+   `errored` / `terminated` without ever looking at `error`.
 5. **The parent's own CPU cost does not grow with the number of children.** It holds
    counts, never candidates — the same rule feature 002 applied to `gather` within one
    instance, applied again one level up.
@@ -422,6 +551,71 @@ the binding is typed `Workflow<TParams>` and one class for all three would mean 
 binding carrying a three-way union the parent must narrow before it can validate any of
 it.
 
+### Replacing a transient child, at the seam where the error is inspectable
+
+Requirement 4's narrowing needs one mechanism and there are two candidates. **Which one is
+not decided here**, for the same reason `GATHER_FEEDS_PER_CHILD`'s value is not: the fact
+that decides it has not been measured.
+
+**Recreate.** A second instance under a deterministic id derived from the first, created
+through `createChildBatch` and polled through `pollChildBatch` exactly as the original
+was. It uses nothing this repo has not already measured, and `createChildBatch`'s
+existing verified-against-reality tolerance of an already-existing id is what makes it
+idempotent on replay. It re-spends whatever the dead child had already produced — up to
+`SUMMARIZE_ARTICLES_PER_CHILD` model calls, against `NEURON_BUDGET_PER_RUN`'s 6,000 for a
+run that costs ~4,300 — and it needs a full child duration to converge, 62–122 s measured,
+so roughly two extra poll rounds at `SUMMARIZE_POLL_INTERVAL`'s 90 s.
+
+**Restart.** `WorkflowInstance.restart(options?)` is declared in the *non-experimental*
+`@cloudflare/workers-types`, and with `from` the [Workers
+API](https://developers.cloudflare.com/workflows/build/workers-api/) documents that "the
+cached results of every earlier step are reused, while the target step and any steps that
+follow it run again". If that holds for an instance already in `errored`, the child
+resumes at **one** article rather than five — 11–24 s on this run's own completed steps —
+so one extra poll round suffices, the three summaries are not paid for twice, and the
+deterministic-id question disappears because the id never changes. Three facts behind it
+are unread, and each is disqualifying on its own:
+
+- whether `restart()` is valid on an instance already in `errored`. `terminate()`'s
+  declaration says explicitly that it throws on an errored, terminated or complete
+  instance and `restart()`'s says nothing, which is suggestive and is not proof;
+- whether the parent can name the failing step at all. `restart({ from })` needs a step
+  name, `InstanceStatus` does not carry one, and the parent knows the URLs it handed the
+  child but not which of them died. Without it, the only restart available is
+  from-the-beginning, which gives up the entire saving;
+- whether any of it holds on a deployed Free-plan instance. The changelog records
+  `restart()` reaching *local development* (2026-03-23) and `wrangler --local`
+  (2026-04-01), and nothing read here speaks to the deployed case. Types are not the
+  runtime.
+
+**The costing, against the parent's own ledger** — 23 fixed and 46 pessimal
+(`createPublishChildren`'s comment, `src/workflow.ts`), four spare:
+
+| mechanism | create or restart | extra poll rounds | pessimal total |
+|---|---|---|---|
+| recreate | 1 | 2, at 1 subrequest each — only the replacement is pending | **49 of 50** |
+| restart | 1 | 1 | **48 of 50** |
+
+Both fit, and neither leaves room for a second replacement — which is why the bound in
+requirement 4 is stated in subrequests rather than as "once per child": at 46 pessimal the
+allowance buys one replacement per run. The extra rounds are genuinely extra rather than
+slack being reclaimed: this run hit `pollChildBatch`'s round cap of `max(1, floor(9 / 3))`
+in the same round the child errored, so there were no spare rounds to reuse. If the
+parent's fixed cost grows — `shortlist` is the term that follows the allowlist, and it
+quadrupled in five days — this is the first thing that stops fitting, and the honest
+answer then is that the allowance goes rather than that the arithmetic is restated.
+
+**Not every child is equally safe to replace, and publication is the exception.** A
+summarize child writes nothing outside its own return value, so replacing one has no side
+effects at all; a gather child's writes are idempotent under `run_candidates`'
+`(run_id, url)` primary key (requirement 7). A publish child is neither: `createBranch`
+and the commit are idempotent by requirement 7's blog-repo extension, but
+`openPullRequest` throws on any non-ok response and GitHub answers 422 to *A pull request
+already exists*, so a publish child that errored *after* opening the pull request would
+hand its replacement a guaranteed failure. Whether the allowance is spendable by all three
+poll loops or by summarize alone is left to the implementation, with that asymmetry as the
+input rather than as a discovery.
+
 ### What is deliberately not decided here
 
 `GATHER_FEEDS_PER_CHILD` gets a number in `plan.md`, from measurement, not here. The
@@ -466,6 +660,17 @@ margin rather than fitted to two data points.
    whatever the platform's failure message says next month. The `fetch-threw` clause is
    the one symptom kept, because #85 made it self-reporting and because a run can reach
    `succeeded` on a thin set of articles without it being visible in the `runs` row.
+
+   **What run `54ce776b` says about it, 2026-09-01 (#92).** The criterion grades an
+   outcome, and it therefore cannot tell a transient platform error apart from a design
+   fault — correctly, because from the criterion's point of view there is no difference: a
+   run that does not open a pull request did not complete, and the count resets. What the
+   run changes is the confidence behind the number below. The 0.6⁵ ≈ 8% was computed
+   against the *CPU* failure rate fact 1 measured; a second, independent failure class
+   with an entirely unmeasured rate multiplies into it, and one occurrence is not a rate.
+   Requirement 4's narrowing is what stops a single `WorkflowInternalError` resetting the
+   sequence. It does not make the criterion easier to pass by luck, because a replacement
+   that also fails still fails the run.
 
    Five, not one, and consecutive, not five of seven. Feature 002's criterion 5 was a
    single real run, and fact 1 makes a single run a coin: three of five identical probe
@@ -529,6 +734,7 @@ margin rather than fitted to two data points.
 | **Free-tier limits on concurrent or daily Workflow instances are not recorded anywhere in this repo.** A design that creates ten instances per run may hit a ceiling nobody has cited. | `plan.md` must find and cite the number before choosing `GATHER_FEEDS_PER_CHILD`, and the design tolerates sequential children if concurrency is capped — children are independent, so running them one at a time costs wall-clock and nothing else. |
 | **Turning retries off removes a real recovery path** on the D1 and GitHub steps. | Accepted, and stated in the design section rather than buried. `fetchFeedItems` already insulates the gather path. Re-examine if a run fails on a step that would have recovered. |
 | **Polling children costs subrequests and parent CPU**, and there are now three loops paying it. **Fired 2026-09-01 on run `0357f119`: 19 of the parent's 50 subrequests, 10 of them on rounds that could not have found anything.** | One subrequest per *pending* child per poll, in a parent step that parses nothing. Two things changed on 2026-09-01 (#75), and neither is a tuning of the cadence: each loop now waits before its first poll, so round 0 lands past the point children are measured to converge rather than a second after `createBatch`; and a child that has already completed is not polled again, its validated output being carried in the poll step's own output instead (`pollChildBatch`, `src/lib/workflow-children.ts`). Together those take the two loops from 19 subrequests to about 11 on the same run's shape. `SUMMARIZE_POLL_INTERVAL` then goes 60 s → 90 s as a consequence rather than a lever: a smaller round cap shortens the slowest child the loop tolerates, and a longer wait gives that back at no subrequest cost. A third loop then joined them the same day, for publication - at one child it costs one subrequest per round, and `PUBLISH_POLL_SUBREQUEST_BUDGET` is the cheapest of the three backstops per round of tolerance bought, because `max(1, floor(budget / childCount))` divides by one. The parent's cost is still counts, status reads and one bounded URL; requirement 5 is what keeps it that way, and the carried outputs are held to it explicitly. |
+| **A transient platform error in one child discards the whole run, and nothing here measures how often.** **Fired 2026-09-01 on run `54ce776b`:** summarize child `s0` returned three good summaries, hung four minutes on its fourth article and errored with `WorkflowInternalError: Attempt failed due to internal workflows error` — the platform's own surface as `wrangler describe` renders it, one attempt row. Every other child was complete and the parent was at ~30 of 50 subrequests, so this is not a resource this design can spend less of. | **Partly mitigated by requirement 4's narrowing, and the residue is stated rather than closed.** A recognised transient class buys one bounded, recorded replacement; every other failure still fails the run immediately, and the fail-closed clause is what keeps a resource exhaustion from being retried into the same wall. Three things stay open. The **rate** is unmeasured, so criterion 2's 0.6⁵ arithmetic now carries a second unquantified term. A **second** occurrence inside one run still ends it, by design. And the neurons the dead child spent stay unrecorded, which is [#91](https://github.com/nimeshjm/blog-research-agent/issues/91) rather than this row. The mechanism — recreate or `restart()` — is deliberately undecided on the three unread facts named in the design section, and the choice is worth one subrequest of tolerance and roughly three model calls, not a redesign. |
 | **The failure is non-deterministic, so a green run proves less than it looks.** | Criterion 2 requires five consecutive, with the arithmetic stated. This risk is the reason that criterion is not "a run completes". |
 | **Per-feed subrequest cost, not CPU, is what sizes `GATHER_FEEDS_PER_CHILD`** — corrected 2026-08-31 (#75); CPU is no longer the binding resource. | Requirement 6 keeps the design independent of the number. Unlike CPU, this one *is* measurable ahead of a run: a feed costs one fetch plus its D1 write. Criterion 2 still validates the choice. |
 

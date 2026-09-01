@@ -1,0 +1,69 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.128.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         summarize-workflow
+Instance Id:           54ce776b-ad41-4562-bf34-1984b47464eb-s0
+Version Id:            287a58a0-1c64-4e3d-9108-417f9f86ffb1
+Status:                ❌ Errored
+Trigger:               🔗 Binding
+Queued:                01/09/2026, 18:33:19
+Success:               ❌ No
+Start:                 01/09/2026, 18:33:23
+End:                   01/09/2026, 18:38:34
+Duration:              5 minutes
+Last Successful Step:  summarize:https://arxiv.org/abs/2608.29971-1
+Error:                 Error: WorkflowInternalError: Attempt failed due to internal workflows error
+Steps:
+
+  Name:      summarize:https://arxiv.org/abs/2608.28708-1
+  Type:      🎯 Step
+  Start:     01/09/2026, 18:33:23
+  End:       01/09/2026, 18:33:34
+  Duration:  11 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2608.28708\",\"title\":\"STEP: A Modular Silent Trial Engine for Operational Evaluation of Digital Pathology AI in Routine Workflow\",\"summary\":\"The paper introduces STEP, a modular software platform that orchestrates prospective silent trials of computational pathology AI across heterogeneous clinical and compute environments. By abstracting trial logic from site‑specific data and infrastructure through adapter interfaces, STEP provides features such as scheduled case discovery, per‑slide inference submission, idempotent execution, failure recovery, audit logging, and support for local, LSF, and Slurm compute back‑ends. The system was successfully deployed at three institutions to evaluate the EAGLE model for EGFR mutation prediction, demonstrating reduced engineering duplication and enabling systematic real‑world assessment before clinical deployment.\",\"relevance\":0.98,\"claims\":[\"STEP provides a reusable, modular engine for orchestrating prospective silent trials of patho[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 01/09/2026, 18:33:23 │ 01/09/2026, 18:33:34 │ 11 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2608.28725-1
+  Type:      🎯 Step
+  Start:     01/09/2026, 18:33:34
+  End:       01/09/2026, 18:33:58
+  Duration:  24 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2608.28725\",\"title\":\"Beyond the Answer Key: Robustness Evaluation of Large Language Models for Step-Level Mathematical Verification\",\"summary\":\"The paper presents a benchmark of linear equations designed to test large language models (LLMs) in the role of step‑level evaluators, assessing not only final‑answer correctness but also the correctness of each reasoning step and the identification of the first error. Experiments on several open‑source LLMs show a pronounced robustness gap: models that handle canonical solution traces well often reject or mis‑localize errors in logically equivalent but perturbed traces, with false‑rejection rates up to 85%. Supervised fine‑tuning, distillation, and test‑time compute can improve robustness, but gains are model‑specific and may trade off canonical performance. The authors argue that process‑level verification should be measured separately from solver accuracy even in simple algebraic domains.\",\"relevance\":0.22,\"claims\":[\"LLMs ex[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 01/09/2026, 18:33:34 │ 01/09/2026, 18:33:58 │ 24 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2608.29971-1
+  Type:      🎯 Step
+  Start:     01/09/2026, 18:33:58
+  End:       01/09/2026, 18:34:10
+  Duration:  12 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2608.29971\",\"title\":\"EDGE: Engine for Deterministic Graph Evaluation through Conversation Simulation from Graph Structured DSL Configuration\",\"summary\":\"The paper presents EDGE, a formal evaluation framework that models agentic AI systems as directed graphs defined by a domain‑specific language (AgentGraph) and exhaustively enumerates conversational paths to assess behavioral consistency. By replaying these trajectories and introducing metrics for determinism, structural adherence, and semantic consistency, the authors demonstrate that agents built with explicit graph‑structured transitions exhibit higher determinism than less structured designs.\",\"relevance\":0.4,\"claims\":[\"Introduces a DSL‑based graph representation (AgentGraph) for modeling agent reasoning.\",\"Uses exhaustive graph traversal to generate a complete set of conversational paths for evaluation.\",\"Replays generated trajectories to compare actual outputs against the intended DSL specification.\",\"Defines new[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 01/09/2026, 18:33:58 │ 01/09/2026, 18:34:10 │ 12 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2308.08025-1
+  Type:      🎯 Step
+  Start:     01/09/2026, 18:34:10
+  End:       01/09/2026, 18:38:34
+  Duration:  4 minutes
+  Success:   ❌ No
+  Output:    null
+┌──────────────────────┬──────────────────────┬───────────┬──────────┬───────────────────────────────────────────────────────────────────────┐
+│ Start                │ End                  │ Duration  │ State    │ Error                                                                 │
+├──────────────────────┼──────────────────────┼───────────┼──────────┼───────────────────────────────────────────────────────────────────────┤
+│ 01/09/2026, 18:34:10 │ 01/09/2026, 18:38:34 │ 4 minutes │ ❌ Error │ WorkflowInternalError: Attempt failed due to internal workflows error │
+└──────────────────────┴──────────────────────┴───────────┴──────────┴───────────────────────────────────────────────────────────────────────┘
