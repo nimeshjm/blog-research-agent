@@ -150,8 +150,10 @@ export function tracedStep<T extends Rpc.Serializable<T>>(
 
 /**
  * Binds the run-level attributes once so no call site can forget them. Every
- * step span carries the instance id, which is what makes the eleven spans
- * groupable into one run.
+ * step span carries the instance id, which is what makes a run's spans
+ * groupable into one run - the count is not fixed and has not been since the
+ * per-item work moved into child instances, each of which reports under its
+ * own id.
  */
 export function tracerFor(step: WorkflowStep, event: WorkflowEvent<unknown>) {
   const base: SpanAttributes = {
