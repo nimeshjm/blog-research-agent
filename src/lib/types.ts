@@ -141,14 +141,40 @@ export interface GatherParams {
 }
 
 /**
- * Outcome of one `await-gather-children` poll round (src/workflow.ts).
- * `done: false` means at least one child has not yet reached `complete`;
- * `total` is meaningless until `done` is true.
+ * What one poll round of a child batch hands to the next: which children are
+ * still worth a `status()` call, and the validated output of every child that
+ * has already finished (`pollChildBatch`, src/lib/workflow-children.ts).
+ *
+ * It travels as part of the poll step's own *output*, never in a closure:
+ * `run()` re-executes from the top on every replay (spec.md fact 2), so a
+ * replayed round has to recompute from its input, and a step output is the
+ * only thing the platform persists. `outputs` is what makes it safe to stop
+ * polling a finished child - `combine` still needs every child's result, so a
+ * child no longer polled must have its result carried.
+ *
+ * Bounded, which requirement 5 and criterion 8 hold this to: both fields are
+ * keyed by child id, so they are sized by child count, and a summarize
+ * child's output is capped by its own chunk of `SHORTLIST_TOP_N`. Carrying
+ * outputs forward means every round now holds what only the final round used
+ * to; the ceiling is unchanged, and it stays unchanged only while that
+ * per-child cap does.
  */
-export interface GatherPollResult {
-  done: boolean;
-  total: number;
+export interface ChildPollState<TOutput> {
+  pending: string[];
+  outputs: Record<string, TOutput>;
 }
+
+/** A gather child returns its candidate count, so that is what is carried. */
+export type GatherPollState = ChildPollState<number>;
+
+/**
+ * Outcome of one `await-gather-children` poll round (src/workflow.ts). A
+ * discriminated union rather than a `done` flag with meaningless siblings:
+ * `state` is what the next round needs and `total` is what the run needs, and
+ * carrying both on the terminal round would put every child's output in the
+ * final step result twice.
+ */
+export type GatherPollResult = { done: true; total: number } | { done: false; state: GatherPollState };
 
 /**
  * `SummarizeWorkflow`'s input (feature 003, extended 2026-08-31 (#75) once
@@ -171,16 +197,18 @@ export interface SummarizeParams {
   index: number;
 }
 
-/**
- * Outcome of one `await-summarize-children` poll round (src/workflow.ts).
- * `done: false` means at least one child has not yet reached `complete`;
- * `summaries`/`neuronsSpent` are meaningless until `done` is true.
- */
-export interface SummarizePollResult {
-  done: boolean;
+/** What one `SummarizeWorkflow` child returns, validated - `synthesize` needs the summaries themselves, not a count (requirement 5's size reading). */
+export interface SummarizeChildOutput {
   summaries: ArticleSummary[];
   neuronsSpent: number;
 }
+
+export type SummarizePollState = ChildPollState<SummarizeChildOutput>;
+
+/** Outcome of one `await-summarize-children` poll round (src/workflow.ts), the same union shape and for the same reason as `GatherPollResult`. */
+export type SummarizePollResult =
+  | { done: true; summaries: ArticleSummary[]; neuronsSpent: number }
+  | { done: false; state: SummarizePollState };
 
 /** Recorded in the `runs` table for observability and budget tracking. */
 export interface RunOutcome {

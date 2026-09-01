@@ -10,12 +10,16 @@ import type {
   Draft,
   Env,
   GatherParams,
+  GatherPollState,
   ParsedItem,
   ResearchParams,
   Source,
+  SummarizeChildOutput,
   SummarizeParams,
+  SummarizePollState,
   Topic,
 } from '../src/lib/types';
+import { initialChildPollState } from '../src/lib/workflow-children';
 import {
   chunkSourcesByVolume,
   createGatherChildren,
@@ -121,9 +125,12 @@ function fakeGatherWorkflow(): {
   binding: Env['GATHER_WORKFLOW'];
   created: Map<string, GatherParams>;
   setStatus: (id: string, status: InstanceStatus) => void;
+  /** Every id `status()` was called on, in order - one entry is one parent subrequest. */
+  polled: string[];
 } {
   const created = new Map<string, GatherParams>();
   const statuses = new Map<string, InstanceStatus>();
+  const polled: string[] = [];
 
   const binding = {
     createBatch: async (options: WorkflowInstanceCreateOptions<GatherParams>[]) => {
@@ -141,11 +148,17 @@ function fakeGatherWorkflow(): {
     },
     get: async (id: string) => {
       if (!created.has(id)) throw new Error(`Workflow instance ${id} does not exist`);
-      return { id, status: async () => statuses.get(id) ?? { status: 'complete', output: 0 } } as unknown as WorkflowInstance;
+      return {
+        id,
+        status: async () => {
+          polled.push(id);
+          return statuses.get(id) ?? { status: 'complete', output: 0 };
+        },
+      } as unknown as WorkflowInstance;
     },
   } as unknown as Env['GATHER_WORKFLOW'];
 
-  return { binding, created, setStatus: (id, status) => statuses.set(id, status) };
+  return { binding, created, polled, setStatus: (id, status) => statuses.set(id, status) };
 }
 
 /**
@@ -364,12 +377,15 @@ describe('pollGatherChildren()', () => {
     return { fake, gatherEnv, ids };
   }
 
+  /** The state round 0 starts from: every child pending, nothing carried. */
+  const fresh = (ids: string[]): GatherPollState => initialChildPollState<number>(ids);
+
   it('sums each complete child output once every child is complete', async () => {
     const { fake, gatherEnv, ids } = await createChildren(2);
     fake.setStatus(ids[0]!, { status: 'complete', output: 3 });
     fake.setStatus(ids[1]!, { status: 'complete', output: 4 });
 
-    const result = await pollGatherChildren(gatherEnv, ids, 0);
+    const result = await pollGatherChildren(gatherEnv, ids, fresh(ids), 0);
 
     expect(result).toEqual({ done: true, total: 7 });
   });
@@ -379,9 +395,9 @@ describe('pollGatherChildren()', () => {
     fake.setStatus(ids[0]!, { status: 'complete', output: 3 });
     fake.setStatus(ids[1]!, { status: 'running' });
 
-    const result = await pollGatherChildren(gatherEnv, ids, 0);
+    const result = await pollGatherChildren(gatherEnv, ids, fresh(ids), 0);
 
-    expect(result).toEqual({ done: false, total: 0 });
+    expect(result).toEqual({ done: false, state: { pending: [ids[1]], outputs: { [ids[0]!]: 3 } } });
   });
 
   it('fails (visibly) the moment a child is errored, rather than contributing zero silently', async () => {
@@ -389,21 +405,21 @@ describe('pollGatherChildren()', () => {
     fake.setStatus(ids[0]!, { status: 'errored', error: { name: 'Error', message: 'boom' } });
     fake.setStatus(ids[1]!, { status: 'complete', output: 1 });
 
-    await expect(pollGatherChildren(gatherEnv, ids, 0)).rejects.toThrow(/errored/);
+    await expect(pollGatherChildren(gatherEnv, ids, fresh(ids), 0)).rejects.toThrow(/errored/);
   });
 
   it('fails when a child is terminated', async () => {
     const { fake, gatherEnv, ids } = await createChildren(1);
     fake.setStatus(ids[0]!, { status: 'terminated' });
 
-    await expect(pollGatherChildren(gatherEnv, ids, 0)).rejects.toThrow(/terminated/);
+    await expect(pollGatherChildren(gatherEnv, ids, fresh(ids), 0)).rejects.toThrow(/terminated/);
   });
 
   it('fails rather than hangs once the poll round cap is reached', async () => {
     const { fake, gatherEnv, ids } = await createChildren(1);
     fake.setStatus(ids[0]!, { status: 'running' });
 
-    await expect(pollGatherChildren(gatherEnv, ids, 1000)).rejects.toThrow(/still not complete/);
+    await expect(pollGatherChildren(gatherEnv, ids, fresh(ids), 1000)).rejects.toThrow(/still not complete/);
   });
 
   // Pins the cap's arithmetic (GATHER_POLL_SUBREQUEST_BUDGET / children) at a
@@ -418,15 +434,40 @@ describe('pollGatherChildren()', () => {
     const { fake, gatherEnv, ids } = await createChildren(5);
     for (const id of ids) fake.setStatus(id, { status: 'running' });
 
-    await expect(pollGatherChildren(gatherEnv, ids, 1)).resolves.toEqual({ done: false, total: 0 });
-    await expect(pollGatherChildren(gatherEnv, ids, 2)).rejects.toThrow(/still not complete after 2 polls/);
+    await expect(pollGatherChildren(gatherEnv, ids, fresh(ids), 1)).resolves.toEqual({ done: false, state: { pending: ids, outputs: {} } });
+    await expect(pollGatherChildren(gatherEnv, ids, fresh(ids), 2)).rejects.toThrow(/still not complete after 2 polls/);
+  });
+
+  // The other half of #75's polling cost: 19 of run `0357f119`'s 50
+  // subrequests went on `status()` calls, some of them re-reading children
+  // that had finished rounds earlier. The finished child is set to `errored`
+  // between the two rounds, so a round that re-polled it would throw instead
+  // of returning - which is what makes this an assertion about the
+  // subrequest, not just about the arithmetic.
+  it('does not re-poll a child that already completed, and carries its output forward', async () => {
+    const { fake, gatherEnv, ids } = await createChildren(2);
+    fake.setStatus(ids[0]!, { status: 'complete', output: 3 });
+    fake.setStatus(ids[1]!, { status: 'running' });
+
+    const first = await pollGatherChildren(gatherEnv, ids, fresh(ids), 0);
+    if (first.done) throw new Error('expected round 0 to be incomplete');
+    expect(first.state).toEqual({ pending: [ids[1]], outputs: { [ids[0]!]: 3 } });
+
+    fake.setStatus(ids[0]!, { status: 'errored', error: { name: 'Error', message: 'boom' } });
+    fake.setStatus(ids[1]!, { status: 'complete', output: 4 });
+    fake.polled.length = 0;
+
+    const second = await pollGatherChildren(gatherEnv, ids, first.state, 1);
+
+    expect(second).toEqual({ done: true, total: 7 });
+    expect(fake.polled).toEqual([ids[1]]);
   });
 
   it('validates a complete child\'s output rather than casting it - a non-count output fails the step', async () => {
     const { fake, gatherEnv, ids } = await createChildren(1);
     fake.setStatus(ids[0]!, { status: 'complete', output: 'not-a-count' });
 
-    await expect(pollGatherChildren(gatherEnv, ids, 0)).rejects.toThrow(/non-count/);
+    await expect(pollGatherChildren(gatherEnv, ids, fresh(ids), 0)).rejects.toThrow(/non-count/);
   });
 });
 
@@ -440,9 +481,12 @@ function fakeSummarizeWorkflow(): {
   binding: Env['SUMMARIZE_WORKFLOW'];
   created: Map<string, SummarizeParams>;
   setStatus: (id: string, status: InstanceStatus) => void;
+  /** As `fakeGatherWorkflow`'s: one entry is one parent subrequest. */
+  polled: string[];
 } {
   const created = new Map<string, SummarizeParams>();
   const statuses = new Map<string, InstanceStatus>();
+  const polled: string[] = [];
 
   const binding = {
     createBatch: async (options: WorkflowInstanceCreateOptions<SummarizeParams>[]) => {
@@ -462,12 +506,15 @@ function fakeSummarizeWorkflow(): {
       if (!created.has(id)) throw new Error(`Workflow instance ${id} does not exist`);
       return {
         id,
-        status: async () => statuses.get(id) ?? { status: 'complete', output: { summaries: [], neuronsSpent: 0 } },
+        status: async () => {
+          polled.push(id);
+          return statuses.get(id) ?? { status: 'complete', output: { summaries: [], neuronsSpent: 0 } };
+        },
       } as unknown as WorkflowInstance;
     },
   } as unknown as Env['SUMMARIZE_WORKFLOW'];
 
-  return { binding, created, setStatus: (id, status) => statuses.set(id, status) };
+  return { binding, created, polled, setStatus: (id, status) => statuses.set(id, status) };
 }
 
 describe('createSummarizeChildren()', () => {
@@ -541,6 +588,8 @@ describe('pollSummarizeChildren()', () => {
     return { fake, summarizeEnv, ids };
   }
 
+  const fresh = (ids: string[]): SummarizePollState => initialChildPollState<SummarizeChildOutput>(ids);
+
   it('concatenates every complete child\'s summaries and sums their neuron spend once every child is complete', async () => {
     const { fake, summarizeEnv, ids } = await createChildrenFor(2);
     const a = summary({ url: 'https://example.com/a' });
@@ -548,7 +597,7 @@ describe('pollSummarizeChildren()', () => {
     fake.setStatus(ids[0]!, { status: 'complete', output: { summaries: [a], neuronsSpent: 200 } });
     fake.setStatus(ids[1]!, { status: 'complete', output: { summaries: [b], neuronsSpent: 150 } });
 
-    const result = await pollSummarizeChildren(summarizeEnv, ids, 0);
+    const result = await pollSummarizeChildren(summarizeEnv, ids, fresh(ids), 0);
 
     expect(result).toEqual({ done: true, summaries: [a, b], neuronsSpent: 350 });
   });
@@ -558,9 +607,12 @@ describe('pollSummarizeChildren()', () => {
     fake.setStatus(ids[0]!, { status: 'complete', output: { summaries: [], neuronsSpent: 0 } });
     fake.setStatus(ids[1]!, { status: 'running' });
 
-    const result = await pollSummarizeChildren(summarizeEnv, ids, 0);
+    const result = await pollSummarizeChildren(summarizeEnv, ids, fresh(ids), 0);
 
-    expect(result).toEqual({ done: false, summaries: [], neuronsSpent: 0 });
+    expect(result).toEqual({
+      done: false,
+      state: { pending: [ids[1]], outputs: { [ids[0]!]: { summaries: [], neuronsSpent: 0 } } },
+    });
   });
 
   it('fails (visibly) the moment a child is errored, rather than contributing zero silently', async () => {
@@ -568,53 +620,116 @@ describe('pollSummarizeChildren()', () => {
     fake.setStatus(ids[0]!, { status: 'errored', error: { name: 'Error', message: 'boom' } });
     fake.setStatus(ids[1]!, { status: 'complete', output: { summaries: [], neuronsSpent: 0 } });
 
-    await expect(pollSummarizeChildren(summarizeEnv, ids, 0)).rejects.toThrow(/errored/);
+    await expect(pollSummarizeChildren(summarizeEnv, ids, fresh(ids), 0)).rejects.toThrow(/errored/);
   });
 
   it('fails when a child is terminated', async () => {
     const { fake, summarizeEnv, ids } = await createChildrenFor(1);
     fake.setStatus(ids[0]!, { status: 'terminated' });
 
-    await expect(pollSummarizeChildren(summarizeEnv, ids, 0)).rejects.toThrow(/terminated/);
+    await expect(pollSummarizeChildren(summarizeEnv, ids, fresh(ids), 0)).rejects.toThrow(/terminated/);
   });
 
   it('fails rather than hangs once the poll round cap is reached', async () => {
     const { fake, summarizeEnv, ids } = await createChildrenFor(1);
     fake.setStatus(ids[0]!, { status: 'running' });
 
-    await expect(pollSummarizeChildren(summarizeEnv, ids, 1000)).rejects.toThrow(/still not complete/);
+    await expect(pollSummarizeChildren(summarizeEnv, ids, fresh(ids), 1000)).rejects.toThrow(/still not complete/);
   });
 
   // Pins the cap's arithmetic (SUMMARIZE_POLL_SUBREQUEST_BUDGET / children)
   // at a concrete child count - see createGatherChildren's sibling test for
   // why this is pinned rather than left to "a large round eventually fails".
-  it('at 3 children (SUMMARIZE_ARTICLES_PER_CHILD default over SHORTLIST_TOP_N), the derived cap is round 5, not a fixed round count', async () => {
+  // SUMMARIZE_POLL_SUBREQUEST_BUDGET dropped from 15 to 9 on 2026-09-01
+  // (#75), which is what moves this from round 5 to round 3.
+  it('at 3 children (SUMMARIZE_ARTICLES_PER_CHILD default over SHORTLIST_TOP_N), the derived cap is round 3, not a fixed round count', async () => {
     const { fake, summarizeEnv, ids } = await createChildrenFor(3);
     for (const id of ids) fake.setStatus(id, { status: 'running' });
 
-    await expect(pollSummarizeChildren(summarizeEnv, ids, 4)).resolves.toEqual({ done: false, summaries: [], neuronsSpent: 0 });
-    await expect(pollSummarizeChildren(summarizeEnv, ids, 5)).rejects.toThrow(/still not complete after 5 polls/);
+    await expect(pollSummarizeChildren(summarizeEnv, ids, fresh(ids), 2)).resolves.toEqual({ done: false, state: { pending: ids, outputs: {} } });
+    await expect(pollSummarizeChildren(summarizeEnv, ids, fresh(ids), 3)).rejects.toThrow(/still not complete after 3 polls/);
+  });
+
+  it('does not re-poll a child that already completed, and carries its summaries forward', async () => {
+    const { fake, summarizeEnv, ids } = await createChildrenFor(2);
+    const a = summary({ title: 'Article A' });
+    const b = summary({ title: 'Article B' });
+    fake.setStatus(ids[0]!, { status: 'complete', output: { summaries: [a], neuronsSpent: 200 } });
+    fake.setStatus(ids[1]!, { status: 'running' });
+
+    const first = await pollSummarizeChildren(summarizeEnv, ids, fresh(ids), 0);
+    if (first.done) throw new Error('expected round 0 to be incomplete');
+
+    fake.setStatus(ids[0]!, { status: 'errored', error: { name: 'Error', message: 'boom' } });
+    fake.setStatus(ids[1]!, { status: 'complete', output: { summaries: [b], neuronsSpent: 150 } });
+    fake.polled.length = 0;
+
+    const second = await pollSummarizeChildren(summarizeEnv, ids, first.state, 1);
+
+    expect(second).toEqual({ done: true, summaries: [a, b], neuronsSpent: 350 });
+    expect(fake.polled).toEqual([ids[1]]);
+  });
+
+  // `run()` re-executes from the top on every replay (spec.md fact 2), so a
+  // round has to be a function of its input state rather than of anything
+  // accumulated in the parent's memory. Running the same middle round twice
+  // is what a replay looks like from this function's side; the summaries must
+  // not double up.
+  it('is deterministic when a middle round is replayed against the same input state', async () => {
+    const { fake, summarizeEnv, ids } = await createChildrenFor(2);
+    const a = summary({ title: 'Article A' });
+    const b = summary({ title: 'Article B' });
+    fake.setStatus(ids[0]!, { status: 'complete', output: { summaries: [a], neuronsSpent: 200 } });
+    fake.setStatus(ids[1]!, { status: 'running' });
+
+    const first = await pollSummarizeChildren(summarizeEnv, ids, fresh(ids), 0);
+    if (first.done) throw new Error('expected round 0 to be incomplete');
+    fake.setStatus(ids[1]!, { status: 'complete', output: { summaries: [b], neuronsSpent: 150 } });
+
+    const attempt = await pollSummarizeChildren(summarizeEnv, ids, first.state, 1);
+    const replay = await pollSummarizeChildren(summarizeEnv, ids, first.state, 1);
+
+    expect(attempt).toEqual({ done: true, summaries: [a, b], neuronsSpent: 350 });
+    expect(replay).toEqual(attempt);
+  });
+
+  // Completion order is whatever the platform's children happen to do;
+  // `synthesize`'s input should not depend on it.
+  it('combines in child id order, not in the order children completed', async () => {
+    const { fake, summarizeEnv, ids } = await createChildrenFor(2);
+    const a = summary({ title: 'Article A' });
+    const b = summary({ title: 'Article B' });
+    fake.setStatus(ids[0]!, { status: 'running' });
+    fake.setStatus(ids[1]!, { status: 'complete', output: { summaries: [b], neuronsSpent: 1 } });
+
+    const first = await pollSummarizeChildren(summarizeEnv, ids, fresh(ids), 0);
+    if (first.done) throw new Error('expected round 0 to be incomplete');
+    fake.setStatus(ids[0]!, { status: 'complete', output: { summaries: [a], neuronsSpent: 2 } });
+
+    const second = await pollSummarizeChildren(summarizeEnv, ids, first.state, 1);
+
+    expect(second).toEqual({ done: true, summaries: [a, b], neuronsSpent: 3 });
   });
 
   it('validates a complete child\'s output rather than casting it - a malformed output fails the step', async () => {
     const { fake, summarizeEnv, ids } = await createChildrenFor(1);
     fake.setStatus(ids[0]!, { status: 'complete', output: 'not-an-object' });
 
-    await expect(pollSummarizeChildren(summarizeEnv, ids, 0)).rejects.toThrow(/non-object/);
+    await expect(pollSummarizeChildren(summarizeEnv, ids, fresh(ids), 0)).rejects.toThrow(/non-object/);
   });
 
   it('validates the summaries array element shape rather than casting it', async () => {
     const { fake, summarizeEnv, ids } = await createChildrenFor(1);
     fake.setStatus(ids[0]!, { status: 'complete', output: { summaries: [{ url: 'x' }], neuronsSpent: 0 } });
 
-    await expect(pollSummarizeChildren(summarizeEnv, ids, 0)).rejects.toThrow(/malformed summaries/);
+    await expect(pollSummarizeChildren(summarizeEnv, ids, fresh(ids), 0)).rejects.toThrow(/malformed summaries/);
   });
 
   it('validates neuronsSpent rather than casting it', async () => {
     const { fake, summarizeEnv, ids } = await createChildrenFor(1);
     fake.setStatus(ids[0]!, { status: 'complete', output: { summaries: [], neuronsSpent: 'lots' } });
 
-    await expect(pollSummarizeChildren(summarizeEnv, ids, 0)).rejects.toThrow(/non-count neuronsSpent/);
+    await expect(pollSummarizeChildren(summarizeEnv, ids, fresh(ids), 0)).rejects.toThrow(/non-count neuronsSpent/);
   });
 });
 
@@ -1409,7 +1524,7 @@ describe('ResearchWorkflow.run() poll ordering', () => {
 
   it('pairs every later round with its own preceding sleep', async () => {
     const calls = await runOrchestration({
-      'await-gather-children:0': { done: false, total: 0 },
+      'await-gather-children:0': { done: false, state: { pending: ['child-g1'], outputs: { 'child-g0': 3 } } },
       'await-gather-children:1': { done: true, total: 7 },
     });
 

@@ -2,7 +2,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloud
 import { extractArticleText } from './lib/extract';
 import { createLlm, neuronsFor } from './lib/llm';
 import { buildMapMessages, parseMapResponse } from './lib/prompts';
-import type { ArticleSummary, Candidate, Env, SummarizeParams, Topic } from './lib/types';
+import type { ArticleSummary, Candidate, Env, SummarizeChildOutput, SummarizeParams, Topic } from './lib/types';
 import { ATTR_SUMMARIZE_CHILD_INDEX, ATTR_SUMMARIZE_SKIP_REASON, tracerFor } from './lib/trace';
 
 /**
@@ -43,7 +43,7 @@ export async function runSummarize(
   env: Env,
   step: WorkflowStep,
   event: WorkflowEvent<SummarizeParams>,
-): Promise<{ summaries: ArticleSummary[]; neuronsSpent: number }> {
+): Promise<SummarizeChildOutput> {
   const traceStep = tracerFor(step, event);
   const { candidates, topic, neuronBudget } = event.payload;
 
@@ -83,7 +83,7 @@ export async function runSummarize(
 }
 
 export class SummarizeWorkflow extends WorkflowEntrypoint<Env, SummarizeParams> {
-  run(event: WorkflowEvent<SummarizeParams>, step: WorkflowStep): Promise<{ summaries: ArticleSummary[]; neuronsSpent: number }> {
+  run(event: WorkflowEvent<SummarizeParams>, step: WorkflowStep): Promise<SummarizeChildOutput> {
     return runSummarize(this.env, step, event);
   }
 }
