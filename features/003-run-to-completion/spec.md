@@ -870,6 +870,12 @@ process as rework.
   correction, and that edit belongs in this feature's implementation.
 - **The intent's framing of the failure as happening at a feed.** It happens *around* feed
   10, non-deterministically (fact 1). #75 has been retitled to match.
+- **"the 50-subrequest ceiling on any one step"** (`intent.md`, Constraints). The ceiling is
+  per *invocation*, not per step — measured 2026-08-31 on run `0199648c`, where 46 gather
+  steps exhausted it before a single article fetch. The limits table above carries the
+  correction. The intent's phrasing was also shaped by a since-fixed false positive in
+  `cpu-premise-is-per-invocation` (#77, fixed in #82), so the wording no longer has a reason
+  to be bent around the guard either.
 
 ## Which of the intent's open questions this closes
 
