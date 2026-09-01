@@ -9,6 +9,7 @@ import {
   pruneRunCandidates,
   reclaimStaleTopics,
   readRunCandidates,
+  readSourceWeights,
   recordRunOutcome,
   SEEN_URLS_CHUNK_SIZE,
   startRun,
@@ -409,6 +410,57 @@ describe('writeRunCandidates()', () => {
       .bind('run-1')
       .first<{ n: number }>();
     expect(rows?.n).toBe(0);
+  });
+});
+
+describe('readSourceWeights()', () => {
+  it('averages per distinct run, not per row: a feed seen in many runs does not outweigh a bigger one seen in few', async () => {
+    // Small feed, 2 items in each of three runs. Big feed, 30 items in one.
+    for (const run of ['run-1', 'run-2', 'run-3']) {
+      await writeRunCandidates(env.DB, run, 'Small', [
+        candidate({ url: `https://example.com/${run}/s1` }),
+        candidate({ url: `https://example.com/${run}/s2` }),
+      ]);
+    }
+    await writeRunCandidates(
+      env.DB,
+      'run-1',
+      'Big',
+      Array.from({ length: 30 }, (_, i) => candidate({ url: `https://example.com/big/${i}` })),
+    );
+
+    const weights = await readSourceWeights(env.DB, 'run-now');
+
+    expect(weights.get('Small')).toBe(2);
+    expect(weights.get('Big')).toBe(30);
+  });
+
+  it("excludes the current run's own rows, so a replay computes the same weights the first pass did", async () => {
+    await writeRunCandidates(env.DB, 'run-history', 'Feed A', [candidate({ url: 'https://example.com/h1' })]);
+    // What this run's own children have written so far. Counting these would
+    // make the weights - and so the chunks - depend on how far the run got.
+    await writeRunCandidates(
+      env.DB,
+      'run-now',
+      'Feed A',
+      Array.from({ length: 40 }, (_, i) => candidate({ url: `https://example.com/now/${i}` })),
+    );
+
+    const weights = await readSourceWeights(env.DB, 'run-now');
+
+    expect(weights.get('Feed A')).toBe(1);
+  });
+
+  it('returns no entry for a source with no history, rather than inventing a zero', async () => {
+    await writeRunCandidates(env.DB, 'run-1', 'Feed A', [candidate({ url: 'https://example.com/a' })]);
+
+    const weights = await readSourceWeights(env.DB, 'run-now');
+
+    expect(weights.has('Feed B')).toBe(false);
+  });
+
+  it('empty history is an empty map, not a throw', async () => {
+    expect(await readSourceWeights(env.DB, 'run-now')).toEqual(new Map());
   });
 });
 

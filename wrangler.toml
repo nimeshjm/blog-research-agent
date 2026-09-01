@@ -52,15 +52,19 @@ NEURON_BUDGET_PER_RUN = "6000"
 # Base URL for src/lib/github.ts's REST client. Kept here, not a literal in
 # that file, so no-hardcoded-urls has nothing to flag.
 GITHUB_API_BASE = "https://api.github.com"
-# How many feeds one GatherWorkflow child parses (feature 003, spec.md
-# requirement 3). Sized against the 50-subrequest-per-invocation ceiling
-# (#75, run `0199648c`), not CPU (spec.md's amendment: that rationale is
-# dead): gatherCandidates costs one fetch plus one D1 batch() call per feed,
-# two Workers subrequests, so 10 feeds is 20 of 50 - comfortable margin
-# against a boundary nobody has measured to fall mid-child. See
-# createGatherChildren's comment in src/workflow.ts for the full arithmetic,
-# including the parent-side polling trade this number does NOT optimize for.
-# 46 feeds / 10 gives 5 children.
+# The most feeds one GatherWorkflow child parses (feature 003, spec.md
+# requirement 3, amended 2026-09-01 (#75) after run `bd33248b`). Two jobs,
+# and only the first is a limit: it caps a child's feed count against the
+# 50-subrequest-per-invocation ceiling (#75, run `0199648c`) - gatherCandidates
+# costs one fetch plus one D1 batch() call per feed, two Workers subrequests,
+# so 10 feeds is 20 of 50 - and `ceil(46 / 10) = 5` derives how many children
+# there are. It is NOT a CPU knob: chunking by feed count is what run
+# `bd33248b` killed a child on, because parse cost scales with items and one
+# chunk drew both arXiv feeds. What bounds CPU now is balancing item volume
+# across those 5 children (chunkSourcesByVolume in src/workflow.ts), and 5 is
+# also the ceiling the parent's poll budget allows. See createGatherChildren's
+# comment for the full arithmetic, including the parent-side polling trade
+# this number does NOT optimize for.
 GATHER_FEEDS_PER_CHILD = "10"
 # How many shortlisted candidates one SummarizeWorkflow child processes
 # (feature 003 requirement 2, extended 2026-08-31, #75, after run `6f75e460`

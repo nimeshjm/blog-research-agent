@@ -7,6 +7,7 @@ import {
   findSeenUrls,
   pruneRunCandidates,
   readRunCandidates,
+  readSourceWeights,
   reclaimStaleTopics,
   recordRunOutcome,
   startRun,
@@ -489,11 +490,102 @@ async function fetchFeedTitles(feedUrl: string): Promise<string[]> {
 }
 
 /**
- * Chunks `sources` into `GATHER_FEEDS_PER_CHILD`-sized groups and creates one
- * `GatherWorkflow` child per chunk (spec.md requirements 2/3). `runId`
- * passed to every child is the *parent's* own instance id, never the
+ * Weight for a source `readSourceWeights` returned nothing for: a feed added
+ * since the last run, a feed that has been returning nothing, or every feed
+ * on a first run against empty history. Those cases are indistinguishable -
+ * `run_candidates` stores rows, not absences - so they share one default.
+ *
+ * 25 is roughly the measured mean, 1,117 items across 46 feeds on 2026-09-01
+ * (spec.md's calibration table), rather than the median of 4. The asymmetry
+ * is the point: under-weighting a new *large* feed is the exact failure
+ * volume-balancing exists to prevent, while over-weighting a small one costs
+ * only a slightly uneven split. It also has to be non-zero - with every
+ * weight at 0 the placement below has nothing to balance and fills each bin
+ * to its cap in turn; with every weight equal and non-zero it degrades to
+ * round-robin, which is what count-based chunking did and is a fine floor.
+ */
+export const DEFAULT_SOURCE_WEIGHT = 25;
+
+/**
+ * Distributes `sources` across `ceil(sources.length / feedsPerChild)` bins by
+ * estimated *item volume* rather than by feed count (spec.md requirement 3,
+ * amended 2026-09-01 (#75) after run `bd33248b`).
+ *
+ * **Why volume.** Parse CPU scales with items parsed; the old chunking
+ * counted feeds. Child `g0` of `bd33248b` drew both arXiv feeds, parsed 917
+ * items across three feeds, and died with `Worker exceeded CPU time limit.`
+ * on its fourth (20 items) while its four siblings carried light chunks and
+ * finished. Cost drains cumulatively across a chunk, so what matters is a
+ * chunk's total, and balancing the totals is the whole change. This is true
+ * regardless of where today's boundary happens to sit - see requirement 6 and
+ * spec.md's note that this bounds a growth term rather than asserting a
+ * boundary.
+ *
+ * **Why the bin count is unchanged.** `ceil(sources.length / feedsPerChild)`
+ * is still what derives it, and it must stay at or below 5: `pollChildBatch`
+ * (src/lib/workflow-children.ts) computes `max(1, floor(
+ * GATHER_POLL_SUBREQUEST_BUDGET / childCount))` rounds, so at 6 children the
+ * parent gets a single poll round and no retry after its first sleep. That
+ * is why volume is fixed by *rebalancing* a fixed number of children rather
+ * than by adding children.
+ *
+ * **`feedsPerChild` keeps its name and changes its job.** It is no longer a
+ * CPU knob - it never was one, which is the bug - but the per-child
+ * *feed-count* cap, which is the child's own 50-subrequest bound: one fetch
+ * plus one D1 `batch()` per feed is two subrequests, so 10 feeds is 20 of a
+ * child's 50. A bin is skipped once it holds that many however light it is,
+ * which is why `g0` below ends up with cs.AI plus the overflow the other
+ * four bins have no room for.
+ *
+ * Greedy longest-processing-time-first: heaviest source first into the
+ * least-loaded bin with room. Deterministic in both orderings, because the
+ * child ids derived from these bins are replay keys - sources sort by weight
+ * descending then name ascending, and bins tie-break on load, then feed
+ * count, then index. The feed-count term is what makes an all-equal-weight
+ * input (a first run) come out as round-robin instead of filling bin 0 first.
+ */
+export function chunkSourcesByVolume(sources: Source[], weights: Map<string, number>, feedsPerChild: number): Source[][] {
+  if (sources.length === 0) return [];
+
+  const childCount = Math.ceil(sources.length / feedsPerChild);
+  const bins: { load: number; sources: Source[] }[] = Array.from({ length: childCount }, () => ({ load: 0, sources: [] }));
+
+  const weightOf = (s: Source): number => weights.get(s.name) ?? DEFAULT_SOURCE_WEIGHT;
+  const ordered = [...sources].sort((a, b) => weightOf(b) - weightOf(a) || a.name.localeCompare(b.name));
+
+  for (const source of ordered) {
+    let target = -1;
+    for (let i = 0; i < childCount; i++) {
+      const bin = bins[i]!;
+      if (bin.sources.length >= feedsPerChild) continue;
+      const best = target === -1 ? null : bins[target]!;
+      if (best === null || bin.load < best.load || (bin.load === best.load && bin.sources.length < best.sources.length)) {
+        target = i;
+      }
+    }
+    bins[target]!.sources.push(source);
+    bins[target]!.load += weightOf(source);
+  }
+
+  return bins.map((b) => b.sources);
+}
+
+/**
+ * Creates one `GatherWorkflow` child per chunk of `sources` (spec.md
+ * requirements 2/3), the chunks coming from `chunkSourcesByVolume` above.
+ * `runId` passed to every child is the *parent's* own instance id, never the
  * child's - see `GatherParams.runId`'s doc comment - so every child writes
  * into the same `run_candidates` rows and `shortlist` needs no change.
+ *
+ * **Weights are measured, not declared.** `readSourceWeights` (src/lib/d1.ts)
+ * averages `run_candidates` per source per distinct run, so the chunker
+ * tracks feed volume as it drifts - cs.AI went 352 -> 783 items in five days,
+ * and spec.md already warns that a hand-written table of these numbers rots.
+ * It excludes this run's own `run_id`: this run's children write under it as
+ * they complete, and counting them would make a replay of this step compute
+ * different weights, hence different chunks, behind child ids that stayed the
+ * same. It costs the parent one D1 call - the second subrequest of this step,
+ * counted in `createSummarizeChildren`'s fixed-cost recount below.
  *
  * **The subrequest arithmetic `GATHER_FEEDS_PER_CHILD` is sized against**
  * (`wrangler.toml`, read 2026-08-31 against #75's corrected premise - CPU is
@@ -544,9 +636,8 @@ async function fetchFeedTitles(feedUrl: string): Promise<string[]> {
  * result (plan.md's question 3).
  */
 export async function createGatherChildren(env: Env, parentInstanceId: string, sources: Source[]): Promise<string[]> {
-  const chunkSize = Number(env.GATHER_FEEDS_PER_CHILD);
-  const chunks: Source[][] = [];
-  for (let i = 0; i < sources.length; i += chunkSize) chunks.push(sources.slice(i, i + chunkSize));
+  const weights = await readSourceWeights(env.DB, parentInstanceId);
+  const chunks = chunkSourcesByVolume(sources, weights, Number(env.GATHER_FEEDS_PER_CHILD));
 
   const options = chunks.map((chunk, index) => ({
     id: `${parentInstanceId}-g${index}`,
@@ -574,7 +665,7 @@ const GATHER_POLL_INTERVAL = '30 seconds';
  * loop in the parent; `SUMMARIZE_POLL_SUBREQUEST_BUDGET` now shares that
  * same invocation, and 30 + 30 sums past the 50 both backstops are meant to
  * stay clear of. See `createSummarizeChildren`'s comment for the full
- * recount (~21 fixed + this + summarize's = ~46 of 50). 10 still gives real
+ * recount (~22 fixed + this + summarize's = ~47 of 50). 10 still gives real
  * margin specifically for gather: run `6f75e460` measured all five children
  * completing in 5-8 seconds, so at the `GATHER_FEEDS_PER_CHILD = 10` default
  * (5 children) `floor(10 / 5) = 2` rounds - one retry after one 30 s sleep -
@@ -699,11 +790,13 @@ export async function shortlistCandidates(env: Env, runId: string, topic: Topic)
  * **The parent's remaining invocation, recomputed now that summarize joins
  * gather in leaving it** (this function's own reason for existing):
  * `start-run` (1) + `select-topic` (~3-4: reclaim, claim, attach) +
- * `load-sources` (0) + `create-gather-children` (1) + `shortlist` (~4 at the
- * 264-candidate count run `6f75e460` measured: one `readRunCandidates` plus
- * `findSeenUrls` chunked at 100 - `ceil(264/100) = 3`) + `create-summarize-
- * children` (1) + `synthesize` (1 AI call) + `open-pull-request` (7 GitHub
- * calls) + `record-success` (2) is **~21 fixed subrequests**, leaving ~29 of
+ * `load-sources` (0) + `create-gather-children` (2: the `createBatch` plus
+ * the `readSourceWeights` read the volume-balanced chunking added on
+ * 2026-09-01) + `shortlist` (~4 at the 264-candidate count run `6f75e460`
+ * measured: one `readRunCandidates` plus `findSeenUrls` chunked at 100 -
+ * `ceil(264/100) = 3`) + `create-summarize-children` (1) + `synthesize` (1 AI
+ * call) + `open-pull-request` (7 GitHub calls) + `record-success` (2) is
+ * **~22 fixed subrequests**, leaving ~28 of
  * the parent's 50 for both poll loops combined - not 30 each, which is why
  * `GATHER_POLL_SUBREQUEST_BUDGET` (10) and `SUMMARIZE_POLL_SUBREQUEST_BUDGET`
  * (15) sum to 25 rather than each independently claiming "a small slice of
