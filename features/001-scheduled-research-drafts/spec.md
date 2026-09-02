@@ -294,6 +294,22 @@ Two prompt shapes, both on `@cf/openai/gpt-oss-120b` via `src/lib/llm.ts`:
   story belongs. Ranking in `shortlist` should therefore favour material that carries an
   attributable practice or finding over commentary.
 
+**Amended 2026-09-02 (#99): ranking also favours a curated source.** Sources carry a
+curation tier in `config/feeds.json` (`tierOf`, `src/lib/feeds.ts`), and `relevanceScore`
+adds a bounded offset for it — a priority source up, a deferred one down, in the same
+units as the practice and commentary signals above. The Anthropic and OpenAI feeds are
+priority; both arXiv feeds are deferred.
+
+It is an **offset and not a sort key**, and the difference is not a detail. Nothing
+writes `seen_urls` ([#100](https://github.com/nimeshjm/blog-research-agent/issues/100)),
+so every run's unseen set is the whole gathered set, and the priority feeds alone supply
+~103 candidates per run against the 15 slots below. Tier as a primary sort key would
+therefore mean the other 35 feeds and both arXiv feeds are gathered and never summarized
+— and would leave requirement 5's grounding gate resting on those nine feeds, with the
+allowlist's densest supply of attributable findings ranked out of reach. The offset
+dominates a same-topic tie and loses to a strong topic overlap, which is the intended
+shape. Neither tier ever removes a candidate.
+
 Map-reduce rather than one long-context call. The model holds 128k, so this is not a
 context workaround: it keeps each step's parse cheap against the 10 ms-per-invocation
 CPU budget, bounds spend per article rather than per run, and lets a single failed

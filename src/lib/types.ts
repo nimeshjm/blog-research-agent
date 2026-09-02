@@ -44,6 +44,12 @@ export interface Topic {
 export interface Source {
   name: string;
   feedUrl: string;
+  /**
+   * Curation priority, lower first. Optional in `config/feeds.json` and
+   * defaulted by `tierOf` (src/lib/feeds.ts) - see `SOURCE_TIER_DEFAULT`
+   * there for the values and for the two orderings this key drives.
+   */
+  tier?: number;
 }
 
 /**

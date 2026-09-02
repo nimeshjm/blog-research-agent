@@ -2,7 +2,7 @@ import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 import { env as testEnv } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SEEN_URLS_CHUNK_SIZE, startRun, writeRunCandidates } from '../src/lib/d1';
-import { loadFeeds } from '../src/lib/feeds';
+import { loadFeeds, SOURCE_TIER_PRIORITY, tierOf } from '../src/lib/feeds';
 import type {
   ArticleSummary,
   Candidate,
@@ -214,23 +214,59 @@ describe('chunkSourcesByVolume()', () => {
     // under several different placements of the 19 empty feeds, so they do
     // not on their own pin what this function returns.
     expect(chunks.map((c) => c.map((s) => s.name))).toEqual([
-      ['arXiv cs.AI', 'Transluce', 'Windsurf Blog', 'Windsurf Changelog', 'Windsurf Next Changelog', 'xAI'],
+      ['Transluce', 'Windsurf Blog', 'Windsurf Changelog', 'Windsurf Next Changelog', 'xAI', 'arXiv cs.AI'],
       [
-        'arXiv cs.SE', 'Weaviate', 'Dagster', 'Cohere', 'EleutherAI Papers', 'FAR.AI', 'Groq', 'Mistral AI',
-        'Paul Graham Essays', 'The Batch (DeepLearning.AI)',
+        'Weaviate', 'Dagster', 'Cohere', 'EleutherAI Papers', 'FAR.AI', 'Groq', 'Mistral AI',
+        'Paul Graham Essays', 'The Batch (DeepLearning.AI)', 'arXiv cs.SE',
       ],
       [
-        'OpenAI', 'Cursor', 'Honeycomb', 'Anthropic Research', 'Pinecone', 'OpenAI Engineering', 'Goodfire',
-        'OpenAI Research', 'Perplexity', 'Timaeus',
+        'OpenAI', 'Anthropic Research', 'OpenAI Engineering', 'OpenAI Research', 'Cursor', 'Honeycomb',
+        'Pinecone', 'Goodfire', 'Perplexity', 'Timaeus',
       ],
       [
-        'Simon Willison', 'Stack Overflow', 'GitHub', 'The Pragmatic Engineer', 'Anthropic News', 'OpenAI Developer',
-        'Surge AI', 'UK AI Safety Institute', 'AI at Meta', 'Anthropic Frontier Red Team',
+        'Anthropic News', 'OpenAI Developer', 'Anthropic Frontier Red Team', 'Simon Willison', 'Stack Overflow',
+        'GitHub', 'The Pragmatic Engineer', 'Surge AI', 'UK AI Safety Institute', 'AI at Meta',
       ],
       [
-        'Claude', 'Cloudflare', 'Google Developers — AI', 'DX', 'Martin Fowler', 'Ollama', 'AI FIRST Podcast',
-        'Will Larson', 'Anthropic Engineering', 'Chander Ramesh',
+        'Claude', 'Anthropic Engineering', 'Cloudflare', 'Google Developers — AI', 'DX', 'Martin Fowler',
+        'Ollama', 'AI FIRST Podcast', 'Will Larson', 'Chander Ramesh',
       ],
+    ]);
+  });
+
+  it('emits each chunk in tier order: priority sources before the rest, the deferred arXiv feeds last', () => {
+    const sources = loadFeeds();
+    const weights = calibrationWeights(sources);
+
+    const chunks = chunkSourcesByVolume(sources, weights, 10);
+
+    for (const chunk of chunks) {
+      const tiers = chunk.map((s) => tierOf(s));
+      expect(tiers).toEqual([...tiers].sort((a, b) => a - b));
+    }
+    // The point of the ordering, stated as the failure it guards: cs.AI is
+    // 783 of the allowlist's ~1,100 items, so a child that dies on the 10 ms
+    // CPU limit part-way through it (run `bd33248b`) loses only whatever
+    // follows it - and nothing does.
+    for (const name of ['arXiv cs.AI', 'arXiv cs.SE']) {
+      const chunk = chunks.find((c) => c.some((s) => s.name === name))!;
+      expect(chunk.at(-1)!.name).toBe(name);
+    }
+    // Assignment order is untouched: the bins are still balanced by weight.
+    expect(chunks.map((c) => loadOf(c, weights))).toEqual([783, 84, 84, 83, 83]);
+  });
+
+  it('a priority source leads its chunk even when it is the lightest feed in it', () => {
+    const sources: Source[] = [
+      { name: 'Heavy default', feedUrl: 'https://feed.test.example/heavy.xml' },
+      { name: 'Light priority', feedUrl: 'https://feed.test.example/light.xml', tier: SOURCE_TIER_PRIORITY },
+    ];
+    const weights = new Map([['Heavy default', 500], ['Light priority', 1]]);
+
+    // One bin, so this is purely about emission order - by weight alone the
+    // heavy feed would go first, which is exactly what the tier overrides.
+    expect(chunkSourcesByVolume(sources, weights, 2).map((c) => c.map((s) => s.name))).toEqual([
+      ['Light priority', 'Heavy default'],
     ]);
   });
 
@@ -1189,6 +1225,104 @@ describe('shortlistCandidates()', () => {
     expect(result[0]?.url).toBe('https://example.com/study');
   });
 
+  it('ranks a priority source above a deferred one on the strength of the tier offset alone', async () => {
+    const t = topic({ title: 'agentic code review', angle: null });
+    const runId = 'run-shortlist-tier';
+    // Without the offset the arXiv title wins outright: full topic overlap
+    // plus the practice signal (3 + 2) against a priority-source title that
+    // shares nothing with the topic (0). With it, 2 against 3.
+    await writeRunCandidates(env.DB, runId, 'Anthropic Engineering', [
+      candidate({ url: 'https://example.com/priority', title: 'Notes on something unrelated' }),
+    ]);
+    await writeRunCandidates(env.DB, runId, 'arXiv cs.AI', [
+      candidate({ url: 'https://example.com/deferred', title: 'A study of agentic code review results' }),
+    ]);
+
+    const result = await shortlistCandidates(env, runId, t);
+
+    expect(result.map((c) => c.url)).toEqual(['https://example.com/priority', 'https://example.com/deferred']);
+  });
+
+  it('lets a strongly on-topic deferred source outrank a weak priority one: the tier is an offset, not a gate', async () => {
+    const t = topic({ title: 'agentic code review at scale for teams', angle: null });
+    const runId = 'run-shortlist-tier-offset';
+    await writeRunCandidates(env.DB, runId, 'Anthropic News', [
+      candidate({ url: 'https://example.com/weak-priority', title: 'Announcing something unrelated' }),
+    ]);
+    await writeRunCandidates(env.DB, runId, 'arXiv cs.AI', [
+      candidate({ url: 'https://example.com/on-topic-paper', title: 'Agentic code review at scale for teams: benchmark results' }),
+    ]);
+
+    // 5 overlap + 2 practice - 3 tier = 4, against 0 overlap - 1 commentary
+    // + 3 tier = 2. This is the case a primary sort key on tier would get
+    // wrong, and the reason TIER_SCORE_WEIGHT is bounded.
+    const result = await shortlistCandidates(env, runId, t);
+
+    expect(result.map((c) => c.url)).toEqual(['https://example.com/on-topic-paper', 'https://example.com/weak-priority']);
+  });
+
+  it('leaves the 35 unmarked sources between the two: a default source outranks a deferred one on an equal title', async () => {
+    const t = topic({ title: 'agentic code review', angle: null });
+    const runId = 'run-shortlist-tier-default';
+    // Identical titles, so the whole ordering is the tier term - and the
+    // point is that the unmarked majority of the allowlist is not lumped in
+    // with arXiv.
+    const title = 'Agentic code review in practice';
+    await writeRunCandidates(env.DB, runId, 'Martin Fowler', [candidate({ url: 'https://example.com/default', title })]);
+    await writeRunCandidates(env.DB, runId, 'arXiv cs.SE', [candidate({ url: 'https://example.com/deferred', title })]);
+    await writeRunCandidates(env.DB, runId, 'Claude', [candidate({ url: 'https://example.com/priority', title })]);
+
+    const result = await shortlistCandidates(env, runId, t);
+
+    expect(result.map((c) => c.url)).toEqual([
+      'https://example.com/priority',
+      'https://example.com/default',
+      'https://example.com/deferred',
+    ]);
+  });
+
+  it('deferred sources still fill the slots the priority feeds leave, so a thin priority day still grounds', async () => {
+    const t = topic({ title: 'agentic code review', angle: null });
+    const runId = 'run-shortlist-tier-fallthrough';
+    // One priority item and SHORTLIST_TOP_N deferred ones: the deferred set
+    // must fill the remaining slots, or `isGrounded`'s MIN_SOURCES could not
+    // be met on a day when the priority feeds published once.
+    await writeRunCandidates(env.DB, runId, 'Claude', [
+      candidate({ url: 'https://example.com/only-priority', title: 'Agentic code review at scale' }),
+    ]);
+    await writeRunCandidates(
+      env.DB,
+      runId,
+      'arXiv cs.SE',
+      Array.from({ length: SHORTLIST_TOP_N }, (_, i) =>
+        candidate({ url: `https://example.com/paper-${i}`, title: `Agentic code review paper ${i}` }),
+      ),
+    );
+
+    const result = await shortlistCandidates(env, runId, t);
+
+    expect(result).toHaveLength(SHORTLIST_TOP_N);
+    expect(result[0]?.url).toBe('https://example.com/only-priority');
+    expect(result.slice(1).every((c) => c.sourceName === 'arXiv cs.SE')).toBe(true);
+  });
+
+  it('scores a candidate from a source no longer in the allowlist at the default tier', async () => {
+    const t = topic({ title: 'agentic code review', angle: null });
+    const runId = 'run-shortlist-tier-unknown';
+    // `run_candidates` rows outlive an edit to config/feeds.json, so the
+    // name join has to miss without sinking the row below the deferred feeds.
+    await writeRunCandidates(env.DB, runId, 'Delisted Blog', [
+      candidate({ url: 'https://example.com/delisted', title: 'Agentic code review in practice' }),
+    ]);
+    await writeRunCandidates(env.DB, runId, 'arXiv cs.AI', [
+      candidate({ url: 'https://example.com/paper', title: 'Agentic code review in practice' }),
+    ]);
+
+    const result = await shortlistCandidates(env, runId, t);
+
+    expect(result.map((c) => c.url)).toEqual(['https://example.com/delisted', 'https://example.com/paper']);
+  });
+
   // ---------------------------------------------------------------------
   // Acceptance criterion 7: "The shortlist produced from `run_candidates`
   // is identical to the shortlist the in-memory array produces for the
@@ -1214,6 +1348,11 @@ describe('shortlistCandidates()', () => {
     const REF_PRACTICE_SIGNAL_RE =
       /\b(paper|study|studies|research|benchmark|arxiv|survey|dataset|evaluation|evaluat\w*|results?|findings?|we (built|found|measured|shipped)|case study)\b/i;
     const REF_COMMENTARY_SIGNAL_RE = /\b(opinion|thoughts on|roundup|newsletter|weekly|digest|why i think|announcing)\b/i;
+    const REF_TIER_SCORE_WEIGHT = 3;
+    /** Mirrors `sourceTiers()` by reading the allowlist, not by restating it - a tier edit in config/feeds.json must not silently make the two sides agree. */
+    function refTierOf(sourceName: string): number {
+      return loadFeeds().find((s) => s.name === sourceName)?.tier ?? 1;
+    }
     function refRelevanceScore(c: Candidate, t: Topic): number {
       const topicWords = new Set([...refTokenize(t.title), ...refTokenize(t.angle ?? '')]);
       const candidateWords = refTokenize(c.title);
@@ -1222,6 +1361,9 @@ describe('shortlistCandidates()', () => {
       let score = overlap;
       if (REF_PRACTICE_SIGNAL_RE.test(c.title)) score += 2;
       if (REF_COMMENTARY_SIGNAL_RE.test(c.title)) score -= 1;
+      const tier = refTierOf(c.sourceName);
+      if (tier === 0) score += REF_TIER_SCORE_WEIGHT;
+      if (tier === 2) score -= REF_TIER_SCORE_WEIGHT;
       return score;
     }
     /** Undated items sort last - the same rule readRunCandidates's `ORDER BY published_ms IS NULL, published_ms DESC` now applies in SQL. */
@@ -1293,14 +1435,40 @@ describe('shortlistCandidates()', () => {
         }),
       ];
 
+      // Three tiers in the fixture, or the parity claim would only hold over
+      // tier-invariant input - and the tier term would be untested here while
+      // looking covered. The deferred item deliberately scores highest on the
+      // heuristic before its tier is applied.
+      const tiered: Candidate[] = [
+        candidate({
+          url: 'https://example.com/priority',
+          title: 'Notes from our own rollout',
+          publishedAt: minutesAgo(6),
+          publishedMs: now - 6 * 60_000,
+          sourceName: 'Anthropic Engineering',
+        }),
+        candidate({
+          url: 'https://example.com/deferred',
+          title: 'Agentic code review for catching bugs: a benchmark study',
+          publishedAt: minutesAgo(7),
+          publishedMs: now - 7 * 60_000,
+          sourceName: 'arXiv cs.AI',
+        }),
+      ];
+
       const runId = 'run-shortlist-parity';
       await writeRunCandidates(env.DB, runId, 'Source', fixture);
+      for (const c of tiered) await writeRunCandidates(env.DB, runId, c.sourceName, [c]);
       await env.DB.prepare(`INSERT INTO seen_urls (url, source) VALUES (?, 'test')`).bind('https://example.com/seen-item').run();
 
       const t = topic({ title: 'agentic code review', angle: 'catching bugs' });
 
+      // `writeRunCandidates` stamps the source name on the row, so the
+      // in-memory side has to carry the same one the D1 side will read back.
+      const inMemory = [...fixture.map((c) => ({ ...c, sourceName: 'Source' })), ...tiered];
+
       const actual = await shortlistCandidates(env, runId, t);
-      const expected = referenceShortlist(fixture, new Set(['https://example.com/seen-item']), t);
+      const expected = referenceShortlist(inMemory, new Set(['https://example.com/seen-item']), t);
 
       expect(actual.map((c) => c.url)).toEqual(expected.map((c) => c.url));
     });
