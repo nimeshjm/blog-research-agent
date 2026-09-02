@@ -164,6 +164,21 @@ export interface GatherParams {
 export interface ChildPollState<TOutput> {
   pending: string[];
   outputs: Record<string, TOutput>;
+  /**
+   * Original child id -> the id of the replacement created for it, when a
+   * child errored with a recognised transient platform class (spec.md
+   * requirement 4's narrowing, 2026-09-01 (#92)). It travels here for the
+   * same reason `outputs` does, and it is the reason the narrowing is
+   * expressible at all: `run()` re-executes from the top on every replay, so
+   * "this child has already been replaced" cannot live in a closure.
+   *
+   * Absent rather than empty until a replacement happens, so the two poll
+   * loops that supply no replacement capability (`ChildReplacement`,
+   * src/lib/workflow-children.ts) carry no trace of the mechanism in their
+   * step output at all. Bounded by the subrequest allowance, which at
+   * today's ledger permits exactly one entry per run.
+   */
+  replacements?: Record<string, string>;
 }
 
 /** A gather child returns its candidate count, so that is what is carried. */

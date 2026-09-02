@@ -150,13 +150,13 @@ touch the same regex and each needs its own mutation row.
 
 ## Files
 
-### PR 1 — `75-plan-md` (Part 1 of 11)
+### PR 1 — `75-plan-md` (Part 1 of 12)
 
 | file | change |
 |---|---|
 | `features/003-run-to-completion/plan.md` | this file; replaces the unfilled template |
 
-### PR 2 — `75-no-retries` (Part 2 of 11)
+### PR 2 — `75-no-retries` (Part 2 of 12)
 
 | file | change |
 |---|---|
@@ -172,7 +172,7 @@ touch the same regex and each needs its own mutation row.
 | `test/trace.test.ts` | the policy is passed, with the exact shape |
 | `REVIEW.md` | pass 1 and pass 3 markers naming the new check ids |
 
-### PR 3 — `75-verify-no-retries` (Part 3 of 11)
+### PR 3 — `75-verify-no-retries` (Part 3 of 12)
 
 Not in the original table. Work order step 2 gates PR 3 on verifying the retry policy on
 a deployed Worker, and that verification produced both a record and a finding large
@@ -187,7 +187,7 @@ enough to be reviewable on its own.
 | `features/003-run-to-completion/spec.md` | the measured reading, and the CPU finding as a stop in the risk table |
 | `features/003-run-to-completion/plan.md` | this entry, and `M` 4 → 5; then, in the same PR and once the rest of the work order had actually run, 5 → 8 |
 
-### PR 4 — `75-parse-failure-modes` (Part 4 of 11)
+### PR 4 — `75-parse-failure-modes` (Part 4 of 12)
 
 Not in the original table, and not a deferred piece of one either. A deployed run
 (`972cea0c`) died on `synthesize-draft` with "model response was not valid JSON in the
@@ -206,7 +206,7 @@ a step that never reaches `open-pull-request`.
 | `test/prompts.test.ts` | every failure mode, and the one deliberate narrowing: JSON wrapped in prose used to parse by accident and now does not |
 | `test/workflow.test.ts` | the diagnosis survives into the error message |
 
-### PR 5 — `75-summarize-skip-reasons` (Part 5 of 11)
+### PR 5 — `75-summarize-skip-reasons` (Part 5 of 12)
 
 Not in the original table, and the reason the two PRs after it are shaped the way they
 are. A 46-feed run (`525a5386`) completed all 46 gather steps with no `1102` and then
@@ -227,7 +227,7 @@ rests on that fact and was planned against a different one.
 | `features/003-run-to-completion/spec.md` | the amendment: the design survives, on a different resource than the one it was argued from |
 | `test/workflow.test.ts` | each of the five skip paths is distinguishable |
 
-### PR 6 — `75-gather-children` (Part 6 of 11)
+### PR 6 — `75-gather-children` (Part 6 of 12)
 
 The rationale changed under this entry; the substance did not. Children were proposed to
 buy a fresh CPU budget, and run `0199648c`'s 46 clean gather steps killed that premise
@@ -247,7 +247,7 @@ the arithmetic in work order step 6.
 | `test/workflow.test.ts` | parent creates the right children, sums counts, fails on a failed child |
 | `test/gather-workflow.test.ts` | new: the child's own behaviour |
 
-### PR 7 — `75-summarize-children` (Part 7 of 11)
+### PR 7 — `75-summarize-children` (Part 7 of 12)
 
 Not in the original table, because the original table assumed moving gather out was
 enough. Run `6f75e460` settled both halves of that in one sitting. Gather in children
@@ -273,7 +273,7 @@ monomorphic, which is worth more than the file it costs.
 | `test/summarize-workflow.test.ts` | new: the child's own behaviour, including its slice of the neuron budget |
 | `test/workflow.test.ts` | the parent's second create-and-poll pair, and the bound on what it returns |
 
-### PR 8 — `75-volume-chunking` (Part 8 of 11)
+### PR 8 — `75-volume-chunking` (Part 8 of 12)
 
 Not in the original table. Run `bd33248b` killed gather child `g0` with `Worker exceeded
 CPU time limit.` while its four siblings completed: `GATHER_FEEDS_PER_CHILD` chunks by
@@ -293,7 +293,7 @@ allowlist's 1,117 items. Step 8 of the work order below is what this PR is.
 | `.claude/skills/cf-free-tier/SKILL.md` | the same correction, as PRs 2 and 5 both did |
 | `test/workflow.test.ts`, `test/d1.test.ts` | the chunker's cases, and the weight query's |
 
-### PR 9 — `75-cheaper-polling` (Part 9 of 11)
+### PR 9 — `75-cheaper-polling` (Part 9 of 12)
 
 Not in the original table, and found the same way the last four were: by deploying. Run
 `0357f119` reached `synthesize`, produced a real draft, and then failed
@@ -317,7 +317,7 @@ that turned into a PR of its own has.
 | `probe/captures/` | run `0357f119`'s parent, verbatim |
 | `test/workflow.test.ts` | the wait-then-poll ordering, driven through `run()` itself; a completed child not re-polled; outputs surviving across rounds; a replayed middle round; the round backstop at its new cap |
 
-### PR 10 — `75-publish-child` (Part 10 of 11)
+### PR 10 — `75-publish-child` (Part 10 of 12)
 
 The half of run `0357f119`'s bill PR 9 deliberately left, and which PR 9's own entry said
 would arrive as its own PR: `open-pull-request`'s seven GitHub calls move out of the
@@ -345,7 +345,25 @@ See the work-order step for what was and was not already handled.
 | `test/publish-workflow.test.ts` | new: `openPullRequest`'s tests moved here, plus `runPublish` and the branch-already-exists paths |
 | `test/workflow.test.ts`, `test/github.test.ts` | the parent's create/poll/validate cases and the run-level ordering; `refExists` and the narrowed 422 |
 
-### PR 11 — `75-five-runs` (Part 11 of 11, closes the tracking issue)
+### PR 11 — `92-child-replacement` (Part 11 of 12)
+
+[#92](https://github.com/nimeshjm/blog-research-agent/issues/92)'s implementation half.
+Its spec half shipped on its own as the amendment that narrowed requirement 4, without a
+plan entry; this is the entry for both. Found the same way the last five were: by
+deploying. Run `54ce776b` died on a transient `WorkflowInternalError` in one summarize
+child with every other child complete and the parent at ~30 of 50 subrequests.
+
+| file | change |
+|---|---|
+| `src/lib/workflow-children.ts` | `isTransientChildFailure` (the one-token allowlist, and the one inferred field read), `ChildReplacement`, `isReplaceable`; `pollChildBatch` collects completions before it acts on a failure, replaces a recognised transient once, and its round cap is corrected to count the poll it throws in |
+| `src/lib/types.ts` | `ChildPollState.replacements`, absent rather than empty |
+| `src/workflow.ts` | `summarizeChildOptions` / `summarizeReplacement`, the allowance and the round grant, `SUMMARIZE_POLL_INTERVAL` 90 s → 180 s, the replacement count on the poll span, and the ledger recount the corrected cap forces |
+| `src/lib/trace.ts` | `ATTR_SUMMARIZE_REPLACEMENTS`, allowlisted - a count, never the recognised error string |
+| `features/003-run-to-completion/spec.md` | requirement 4's fifth clause, the mechanism decided, the corrected cap and the ~311 s timeline that makes the interval load-bearing |
+| `features/003-run-to-completion/plan.md` | this entry, `M` 11 → 12, the work-order step, and the five-runs PR renumbered 11 → 12 behind this one - the runs cannot grade a fix they precede |
+| `test/workflow.test.ts` | the recognition table; the replacement path, its determinism on replay, its granted rounds and its one-subrequest-per-round cost; every fail-closed case; the three existing cap tests moved by one round |
+
+### PR 12 — `75-five-runs` (Part 12 of 12, closes the tracking issue)
 
 | file | change |
 |---|---|
@@ -356,7 +374,7 @@ See the work-order step for what was and was not already handled.
 The PR exists whatever the runs show, so its own existence never depends on the result —
 the same device feature 002 used for its PR 6.
 
-**`M` was revised anyway, 4 → 5 → 8 → 9 → 10 → 11, and every time by the case the device does not
+**`M` was revised anyway, 4 → 5 → 8 → 9 → 10 → 11 → 12, and every time by the case the device does not
 cover.** It protects against a PR whose *result* is unknown; it does not protect against a
 step of the work order turning out to need a PR of its own. Work order step 2's platform
 verification did, so it is PR 3 and the two implementation PRs shifted down. Then it
@@ -553,7 +571,8 @@ status reads per round while more feeds ride on each round.
 `GATHER_POLL_SUBREQUEST_BUDGET` fixes the parent's share at 10, which at 5 children is 2
 rounds; past its cap the poll step throws, rather than letting the platform's own opaque
 subrequest error be the first sign anything is stuck. Step budget for the parent: 1 create
-plus roughly 2 poll rounds for gather, 1 create plus roughly 5 for summarize, on top of the
+plus roughly 2 poll rounds for gather, 1 create plus roughly 3 for summarize (5 when it
+was written, before steps 9 and 11 spent the poll budget down), on top of the
 residue — far inside 1,024. Concurrency: 5 gather children and 3 summarize children, 8 of
 100.
 
@@ -608,9 +627,11 @@ per-child feed-count cap (the child's own 50 subrequests) and the child-count di
 never a CPU knob.
 
 **What does not change, deliberately.** The child count. `pollChildBatch` derives
-`max(1, floor(GATHER_POLL_SUBREQUEST_BUDGET / childCount))` rounds, so six children leave
-the parent one poll round and no retry — raising the count to spread volume would trade a
-child-side failure for a parent-side one. And there is **no per-child item cap**: that
+`max(2, floor(GATHER_POLL_SUBREQUEST_BUDGET / childCount))` polls, so six children drop the
+parent to that floor and buy no margin for the child just added — raising the count to
+spread volume would trade a child-side failure for a parent-side one. (The formula read
+`max(1, …)` when this step was written; step 11 corrected the cap to count the poll it
+throws in, which weakens this argument without changing its conclusion.) And there is **no per-child item cap**: that
 would assert N items fit and N+1 do not, which requirement 6 forbids. See `spec.md`'s
 amendment for why balancing across a fixed count asserts no boundary at all.
 
@@ -658,8 +679,9 @@ carried outputs are the same per-child results the terminal round always contain
 **The round cap keeps dividing by the total child count.** A round now costs
 `pending.length`, so the typical cost fell — but the round the backstop exists for is the
 one where nothing completed, and that one still costs one subrequest per child. So
-`max(1, floor(budget / childCount))` is unchanged, and with it step 8's argument for
-holding the gather child count at five.
+the divisor is unchanged, and with it step 8's argument for holding the gather child count
+at five. (The `max(1, …)` around it became `max(2, …)` in step 11, for a different reason —
+the cap was counting one poll fewer than it charged for.)
 
 **What the budgets become.** The fixed cost is recounted from `0357f119` rather than
 estimated: 20 measured before the poll loops (`shortlist` alone 13 of them, at
@@ -710,7 +732,7 @@ what the child returns.
 
 **Cost.** The parent's fixed bill goes ~29 → **23** (the 7 out, `create-publish-children`'s
 1 in), `PUBLISH_POLL_SUBREQUEST_BUDGET` is 4 — which at one child *is* the round count,
-since `max(1, floor(budget / childCount))` divides by one — and `PUBLISH_POLL_INTERVAL` is
+since `max(2, floor(budget / childCount))` divides by one — and `PUBLISH_POLL_INTERVAL` is
 15 s, gather's order of magnitude rather than summarize's, because seven sequential REST
 calls converge in seconds. Expected total ~35 of 50 on run `0357f119`'s shape; 46 if all
 three backstops are exhausted. `spec.md`'s "What run `0357f119` settled" carries the table.
@@ -740,7 +762,57 @@ receives the `research/*` head. `base-branch-not-a-write-target` was confirmed t
 fire by two mutations of the new file — passing `env.BLOG_BASE_BRANCH` to `createBranch`,
 and as `putFile`'s `branch:` — each of which turns the check red.
 
-### 11. Five runs, and the record — PR 11
+### 11. Replacing a transient child — PR 11
+
+Requirement 4's narrowing, at the parent/child seam, because that is the only place the
+error is inspectable before anything is decided (requirement 1 is unchanged and `spec.md`
+says why). **Recreate, not `restart()`** — decided on measurement, `probe/FINDINGS.md` §8.4: on a
+deployed Free-plan instance `restart()` is accepted on an `errored` child (the one fact
+that favoured B), and it then clears the `status.error` requirement 4 reports from and
+leaves the instance `queued` through ten minutes of binding polls. Two more facts were not
+worth measuring because each already sank B on its own: `restart({ from })` needs the
+failing step's name and `InstanceStatus` carries none, and whether the cached
+`summarize:<url>` results survive is unanswerable through any channel a parent has.
+
+**The allowance, and why it is stated in subrequests.** `SUMMARIZE_REPLACEMENT_SUBREQUEST_ALLOWANCE`
+is 3 — one `createBatch` plus `SUMMARIZE_REPLACEMENT_POLL_ROUNDS` = 2 polls of the
+replacement — and `floor(3 / (1 + 2))` is what makes it exactly one replacement per run.
+"Once per child" bounds nothing useful, because three children could each be replaced
+once. The capability is a value the summarize call site passes and the other two loops do
+not, so gather and publish are structurally outside it rather than excluded by a comment.
+
+**Step 9's arithmetic was wrong by one poll, and this step is where it is corrected.**
+`pollChildBatch`'s cap threw at `round >= maxRounds` *after* fetching every pending
+child's status, so `floor(9 / 3) = 3` bought four polls costing 12, not three costing 9 —
+and `createPublishChildren`'s ledger, `GATHER_POLL_SUBREQUEST_BUDGET`'s comment and the
+backstop's own error message all described the three-poll behaviour. At 10 + 9 + 4 the
+parent's real pessimal poll bill was 15 + 12 + 5, i.e. **55 of 50**, so no backstop could
+fire before the platform's own subrequest error. The cap now counts polls including the
+one it throws in; the three budgets keep their values and finally mean them, and the
+pessimal total is 46 — 49 with the allowance, one spare.
+
+**So step 9's `SUMMARIZE_POLL_INTERVAL` is superseded**, 90 s → 180 s, and that is what
+makes this mechanism live code rather than dead code. Three polls at 90 s span 270 s; run
+`54ce776b`'s children were created at ~18:33:23 and the transient surfaced at 18:38:34,
+**~311 s** in, so the loop would have died on its cap without ever seeing the error it
+exists to recognise. At 180 s the polls land at 180/360/540 s: round 0 catches the measured
+62-122 s convergence outright, round 1 sees a ~311 s failure, and rounds 2-4 are what the
+replacement converges in. The interval is still the free lever and the round count still
+the dear one, which is the whole trade.
+
+**Which field carries the class is measured, not inferred** — `probe/FINDINGS.md` §8.1/8.3,
+read the same day: `status.error.name` is the literal `'Error'` for every class in the
+capture corpus and the thrown name is folded into the front of `message`, so
+`isTransientChildFailure` reads `message` and splits on the renderer's own `': '`. The
+subrequest and CPU messages contain no `': '` at all, which is why the split stays closed
+on them rather than merely being expected to.
+
+**What stays open.** Whether `WorkflowInternalError` is the only class worth recognising —
+#92's third question, untouched by the probe, and fail-closed means an empty answer is a
+valid one. And the transient's **rate**: one occurrence is not a rate, and criterion 2's
+five consecutive runs now carry two unquantified failure terms rather than one.
+
+### 12. Five runs, and the record — PR 12
 
 Deploy, then trigger five runs **consecutively**, each to a terminal state, capturing
 `wrangler workflows instances describe` for the parent and at least one child of each.
@@ -787,8 +859,15 @@ allowlist, and there is nothing left to move out ahead of it.
 - `probe/captures/` is the evidence pattern: commit the verbatim `describe` output at the
   moment it is taken, because feed volumes are perishable and dashboard traces expire in
   3 days (#22).
-- The `Part N of M of #75` marker on PRs 1–10, `Closes` on PR 11 only. Never
+- The `Part N of M of #75` marker on PRs 1–10, `Closes` on PR 12 only. Never
   `--body-file -` (`CLAUDE.md`, "Repeated mistakes").
+- **PR 11 is the exception, because its branch carries a different issue.**
+  `pr-body-not-empty` resolves the marker against the *branch's* issue number
+  (`scripts/review-checks.mjs`), and PR 11's branch is `92-child-replacement`, so a
+  `Part 11 of 12 of #75` marker names an issue the branch does not carry and fails the
+  check. PR 11 therefore carries `Closes #92` — which is also true, #92 being a bug this
+  PR resolves outright rather than a stage of #75 — and refers to #75 in prose with no
+  closing keyword anywhere near it.
 
 ## Verification
 
@@ -825,7 +904,7 @@ staleness has had to be fixed by hand — the row's own comment now says so twic
 | # | how |
 |---|---|
 | 1 | the command block above |
-| 2 | five consecutive deployed runs, captures committed (work order 11) |
+| 2 | five consecutive deployed runs, captures committed (work order 12) |
 | 3 | `grep -rn 'step\.do(' src/` returns only `src/lib/trace.ts`; a bare call inserted into `src/workflow.ts` fails `lint:ast` |
 | 4 | one attempt row in `describe` for a deliberately failing step (work order 3). Measured on the probe, not on `research-workflow`, so this criterion stays open for PR 11 |
 | 5 | terminate a child mid-run; parent errors, `runs` row status is not a success |

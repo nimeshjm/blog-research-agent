@@ -19,6 +19,7 @@ import { createLlm, neuronsFor } from './lib/llm';
 import { buildReduceMessages, normaliseCitations, parseReduceResponse } from './lib/prompts';
 import type { ReduceParseFailure } from './lib/prompts';
 import { createChildBatch, initialChildPollState, pollChildBatch } from './lib/workflow-children';
+import type { ChildReplacement } from './lib/workflow-children';
 import type {
   ArticleSummary,
   Candidate,
@@ -49,6 +50,7 @@ import {
   ATTR_SOURCES_SHORTLISTED,
   ATTR_SOURCES_USED,
   ATTR_SUMMARIZE_CHILDREN,
+  ATTR_SUMMARIZE_REPLACEMENTS,
   ATTR_TOPIC_ID,
   tracerFor,
 } from './lib/trace';
@@ -247,11 +249,19 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
     //    SYNTHESIS_NEURON_RESERVE` is what used to gate the parent's own
     //    per-article loop and is now split across children instead (see
     //    createSummarizeChildren's comment).
+    //
+    //    The available budget is one expression, read by the create step and
+    //    by the replacement capability below, so a replacement provably
+    //    recreates a child with the params the original was created with
+    //    (spec.md requirement 4's narrowing - the ids are replay keys and the
+    //    params behind them must not drift).
+    const summarizeBudget = budget - neuronsSpent - SYNTHESIS_NEURON_RESERVE;
     const summarizeChildIds = await traceStep('create-summarize-children', {}, async (span) => {
-      const ids = await createSummarizeChildren(this.env, event.instanceId, shortlist, topic, budget - neuronsSpent - SYNTHESIS_NEURON_RESERVE);
+      const ids = await createSummarizeChildren(this.env, event.instanceId, shortlist, topic, summarizeBudget);
       span.setAttribute(ATTR_SUMMARIZE_CHILDREN, ids.length);
       return ids;
     });
+    const replaceSummarizeChild = summarizeReplacement(this.env, event.instanceId, shortlist, topic, summarizeBudget);
 
     // Per-round step names, same reason as `await-gather-children` above.
     // Same threading as the gather loop above, and the same reason.
@@ -267,8 +277,14 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
       await step.sleep(`await-summarize-children-wait:${round}`, SUMMARIZE_POLL_INTERVAL);
       const state = summarizeState;
       const outcome: SummarizePollResult = await traceStep(`await-summarize-children:${round}`, {}, async (span) => {
-        const result = await pollSummarizeChildren(this.env, summarizeChildIds, state, round);
+        const result = await pollSummarizeChildren(this.env, summarizeChildIds, state, round, replaceSummarizeChild);
         span.setAttribute(ATTR_SUMMARIZE_CHILDREN, summarizeChildIds.length);
+        // A round that finished cannot have created a replacement - a fresh
+        // replacement is pending by construction - so on that round the count
+        // in force is the one this round started from. The replacement's *id*
+        // is in the step output; only the count reaches the span.
+        const replacements = result.done ? state.replacements : result.state.replacements;
+        span.setAttribute(ATTR_SUMMARIZE_REPLACEMENTS, Object.keys(replacements ?? {}).length);
         return result;
       });
       if (outcome.done) {
@@ -592,11 +608,15 @@ export const DEFAULT_SOURCE_WEIGHT = 25;
  *
  * **Why the bin count is unchanged.** `ceil(sources.length / feedsPerChild)`
  * is still what derives it, and it must stay at or below 5: `pollChildBatch`
- * (src/lib/workflow-children.ts) computes `max(1, floor(
- * GATHER_POLL_SUBREQUEST_BUDGET / childCount))` rounds, so at 6 children the
- * parent gets a single poll round and no retry after its first sleep. That
- * is why volume is fixed by *rebalancing* a fixed number of children rather
- * than by adding children.
+ * (src/lib/workflow-children.ts) computes `max(2, floor(
+ * GATHER_POLL_SUBREQUEST_BUDGET / childCount))` polls, so at 6 children the
+ * parent falls to that floor of two - `floor(10 / 6)` is 1 - and buys no
+ * margin at all for the extra child it just added. That is why volume is fixed
+ * by *rebalancing* a fixed number of children rather than by adding children.
+ * The argument is weaker than it was before the cap was corrected on
+ * 2026-09-02 (#92), where the sixth child cost the parent its only retry
+ * rather than only its margin; it is not broken, because adding children still
+ * trades a child-side failure for a parent-side one.
  *
  * **`feedsPerChild` keeps its name and changes its job.** It is no longer a
  * CPU knob - it never was one, which is the bug - but the per-child
@@ -929,12 +949,29 @@ export async function createSummarizeChildren(
   topic: Topic,
   availableBudget: number,
 ): Promise<string[]> {
+  return createChildBatch(env.SUMMARIZE_WORKFLOW, summarizeChildOptions(env, parentInstanceId, shortlist, topic, availableBudget));
+}
+
+/**
+ * The id-and-params derivation `createSummarizeChildren` creates from, split
+ * out so `summarizeReplacement` below can recreate one child with the params
+ * it was created with rather than with a recomputed near-miss. Pure and
+ * deterministic in its inputs, which is what makes the two agree: the same
+ * `availableBudget` reaches both from one expression in `run()`.
+ */
+function summarizeChildOptions(
+  env: Env,
+  parentInstanceId: string,
+  shortlist: Candidate[],
+  topic: Topic,
+  availableBudget: number,
+): { id: string; params: SummarizeParams }[] {
   const chunkSize = Number(env.SUMMARIZE_ARTICLES_PER_CHILD);
   const chunks: Candidate[][] = [];
   for (let i = 0; i < shortlist.length; i += chunkSize) chunks.push(shortlist.slice(i, i + chunkSize));
 
   const totalCandidates = shortlist.length;
-  const options = chunks.map((chunk, index) => ({
+  return chunks.map((chunk, index) => ({
     id: `${parentInstanceId}-s${index}`,
     params: {
       candidates: chunk,
@@ -943,8 +980,87 @@ export async function createSummarizeChildren(
       index,
     } satisfies SummarizeParams,
   }));
+}
 
-  return createChildBatch(env.SUMMARIZE_WORKFLOW, options);
+/**
+ * Subrequests the replacement mechanism may spend in the summarize poll loop
+ * (spec.md requirement 4's narrowing, 2026-09-01 (#92)): one `createBatch`
+ * for the replacement plus `SUMMARIZE_REPLACEMENT_POLL_ROUNDS` polls of it.
+ * `floor(3 / (1 + 2))` is what makes it **one replacement per run** -
+ * "once per child" bounds nothing useful, because three children could each
+ * be replaced once.
+ *
+ * 3 is what the parent's ledger has: 46 of 50 pessimal
+ * (`createPublishChildren`'s recount), four spare, and this takes it to 49.
+ * And 3 is reachable rather than nominal: the round that *creates* the
+ * replacement can itself still cost `childIds.length`, because its siblings
+ * may be the ones that completed in that very round - only the rounds *after*
+ * it are guaranteed to poll a single child.
+ *
+ * If the parent's fixed cost grows, this is the first thing that stops
+ * fitting, and the honest answer then is that the allowance goes rather than
+ * that the arithmetic is restated. `shortlist` is the term that grows.
+ */
+const SUMMARIZE_REPLACEMENT_SUBREQUEST_ALLOWANCE = 3;
+/**
+ * Extra poll rounds a replacement grants, on top of the cap
+ * `SUMMARIZE_POLL_SUBREQUEST_BUDGET` derives. They have to be an explicit
+ * grant rather than reclaimed slack, because there is no slack: a child has to
+ * hang before it errors, so by the time the parent can see the error most of
+ * the cap is spent. Run `54ce776b`'s child errored ~311 s in, which at 180 s
+ * is round 1 of the three the cap allows - one round left, and zero if it
+ * hangs any longer. A replacement swapped into `pending` with the cap
+ * untouched gets whatever happens to remain, which is what makes the
+ * mechanism dead code on the very run that motivated it.
+ *
+ * 2, because a from-scratch summarize child needs a full child duration -
+ * 62-122 s measured on run `0357f119` - and at `SUMMARIZE_POLL_INTERVAL`'s
+ * 180 s one round already covers that with margin. The second is the margin,
+ * and it is affordable at one subrequest per round: 360 s against a measured
+ * 122 s worst case.
+ */
+const SUMMARIZE_REPLACEMENT_POLL_ROUNDS = 2;
+
+/**
+ * The capability to replace a transiently-failed summarize child, handed to
+ * `pollSummarizeChildren` and to no other poll loop (spec.md requirement 4's
+ * narrowing; see `ChildReplacement`, src/lib/workflow-children.ts, for why the
+ * asymmetry is structural rather than a comment - a summarize child writes
+ * nothing outside its return value, and publish carries GitHub's 422).
+ *
+ * `${childId}r1` keeps the replacement's id deterministic, derived from the
+ * `${parentInstanceId}-s${index}` scheme it replaces, so a replay of `run()`
+ * recreates the *same* replacement rather than a fresh one per replay -
+ * `createChildBatch`'s verified-against-reality already-exists tolerance is
+ * what makes that idempotent. It is also why "never twice for the same child"
+ * needs no extra guard against a replacement of a replacement: `-s0r1` is not
+ * one of the ids `summarizeChildOptions` derives.
+ *
+ * **It re-spends what the dead child had already produced**, and that is a
+ * priced cost rather than an overlooked one. The replacement receives the same
+ * `neuronBudget` slice the original did, so a run with one replacement can
+ * spend `availableBudget` plus one slice - ~1,833 of `NEURON_BUDGET_PER_RUN`'s
+ * 6,000 at today's config, on a run that costs ~4,300. Run `54ce776b` threw
+ * away three summaries' worth for nothing, which is the comparison.
+ */
+export function summarizeReplacement(
+  env: Env,
+  parentInstanceId: string,
+  shortlist: Candidate[],
+  topic: Topic,
+  availableBudget: number,
+): ChildReplacement {
+  return {
+    allowance: SUMMARIZE_REPLACEMENT_SUBREQUEST_ALLOWANCE,
+    extraRounds: SUMMARIZE_REPLACEMENT_POLL_ROUNDS,
+    create: async (childId) => {
+      const original = summarizeChildOptions(env, parentInstanceId, shortlist, topic, availableBudget).find((o) => o.id === childId);
+      if (original === undefined) throw new Error(`summarize child ${childId} has no create-time params to replace it with`);
+      const [replacementId] = await createChildBatch(env.SUMMARIZE_WORKFLOW, [{ id: `${childId}r1`, params: original.params }]);
+      if (replacementId === undefined) throw new Error(`summarize child ${childId} replacement was not created`);
+      return replacementId;
+    },
+  };
 }
 
 /**
@@ -978,8 +1094,23 @@ export async function createSummarizeChildren(
  * three subrequests per round, and round 0 at 90 s can now catch the measured
  * convergence outright where 60 s never could. The interval is the free
  * lever and the round count is the dear one, so spend the free one.
+ *
+ * **90 s -> 180 s on 2026-09-02 (#92), spending the free lever again.** The
+ * round cap was corrected to count the poll it throws in (`pollChildBatch`,
+ * src/lib/workflow-children.ts), which takes this loop from four polls to
+ * three and its pessimal bill from 12 subrequests to the 9 the ledger always
+ * claimed. 180 s buys the dropped round's wall-clock back and more: the loop
+ * now reaches 540 s where four rounds at 90 s reached 360 s. That matters for
+ * requirement 4's narrowing specifically, and it is what makes it live code
+ * rather than dead code. On run `54ce776b`'s own timeline the summarize
+ * children were created at ~18:33:23 and the transient surfaced at 18:38:34,
+ * i.e. **~311 s** in: three polls at 90/180/270 s never see it and the run
+ * dies on the cap instead, where 180/360/540 s see it at round 1 and leave
+ * rounds 2-4 for the replacement. Round 0 at 180 s also now catches the
+ * measured 62-122 s convergence outright, which is why the typical bill falls
+ * to 3 as well.
  */
-const SUMMARIZE_POLL_INTERVAL = '90 seconds';
+const SUMMARIZE_POLL_INTERVAL = '180 seconds';
 /**
  * The poll backstop is a subrequest budget, not a round count
  * (`pollChildBatch`'s own comment) - see `createSummarizeChildren`'s
@@ -1004,6 +1135,16 @@ const SUMMARIZE_POLL_INTERVAL = '90 seconds';
  * the fixed cost to 23 (`createPublishChildren`'s recount) and so gave the
  * 15 back on paper - it is not taken back, because the reason this is 9 is the
  * measured 62-122 s convergence above, not the room there happens to be.
+ *
+ * **Held at 9 on 2026-09-02 (#92), and re-costed rather than re-tuned.** The
+ * cap derivation was corrected to count the poll it throws in, so 9 now buys
+ * `max(2, floor(9 / 3)) = 3` polls costing exactly 9 where it used to buy
+ * four costing 12. That correction is what pays for requirement 4's
+ * narrowing: it returns the 3 subrequests
+ * `SUMMARIZE_REPLACEMENT_SUBREQUEST_ALLOWANCE` spends, so the parent's
+ * pessimal total goes 46 -> 49 rather than 55 -> 58. The dropped round's
+ * wall-clock is bought back by `SUMMARIZE_POLL_INTERVAL` instead, which costs
+ * nothing.
  */
 const SUMMARIZE_POLL_SUBREQUEST_BUDGET = 9;
 
@@ -1016,12 +1157,21 @@ const SUMMARIZE_POLL_SUBREQUEST_BUDGET = 9;
  * `terminated` fails this step immediately (spec.md requirement 4). While any
  * child is still incomplete, this returns the state the next round resumes
  * from, which carries the summaries the finished children already returned.
+ *
+ * **The one loop that carries a `ChildReplacement`** (spec.md requirement 4's
+ * narrowing, 2026-09-01 (#92)): a child that errored with a recognised
+ * transient platform class is replaced once instead of failing the run.
+ * `replace` is a required parameter rather than an optional one so a caller
+ * cannot silently drop the capability - `pollGatherChildren` and
+ * `pollPublishChildren` pass none, which is what keeps the mechanism absent
+ * from those loops rather than merely unused.
  */
 export async function pollSummarizeChildren(
   env: Env,
   childIds: string[],
   state: SummarizePollState,
   round: number,
+  replace: ChildReplacement,
 ): Promise<SummarizePollResult> {
   const outcome = await pollChildBatch(
     env.SUMMARIZE_WORKFLOW,
@@ -1035,6 +1185,7 @@ export async function pollSummarizeChildren(
       summaries: children.flatMap((child) => child.summaries),
       neuronsSpent: children.reduce((total, child) => total + child.neuronsSpent, 0),
     }),
+    replace,
   );
   return outcome.done ? { done: true, ...outcome.result } : outcome;
 }
@@ -1098,11 +1249,14 @@ function validateSummarizeOutput(output: unknown, childId: string): SummarizeChi
  * that run's 1,118 candidates: one `readRunCandidates` plus `ceil(1118 / 100) =
  * 12` `findSeenUrls` chunks) + `create-summarize-children` (1) + `synthesize`
  * (1 AI call) + `create-publish-children` (1) + `record-success` (2) = **23
- * fixed**, where it was ~29 with `open-pull-request`'s 7 in it. On that run's
- * own poll shape - roughly 11 subrequests across the two existing loops after
- * PR #89's wait-then-poll and skip-the-finished changes, plus 1 for a publish
- * round that lands past a child measured in seconds - the parent spends about
- * **35 of 50**, against the ~48 that killed `0357f119`.
+ * fixed**, where it was ~29 with `open-pull-request`'s 7 in it. On the typical
+ * poll shape - 5 for a gather round that finds all five children complete
+ * (measured 5-8 s against a 30 s wait), 3 for a summarize round that finds all
+ * three complete (measured 62-122 s against `SUMMARIZE_POLL_INTERVAL`'s 180 s)
+ * and 1 for a publish round that lands past a child measured in seconds - the
+ * parent spends about **32 of 50**, against the ~48 that killed `0357f119`.
+ * It was ~35 before the poll cap was corrected below and the summarize
+ * interval lengthened to catch that convergence in round 0.
  *
  * The pessimal figure is worth stating too, because it is what the backstops
  * actually permit: 23 fixed plus every poll budget exhausted
@@ -1111,6 +1265,23 @@ function validateSummarizeOutput(output: unknown, childId: string): SummarizeChi
  * 10 + 9 would not have. Four spare is not margin, and that is deliberate: the
  * backstops are there to fail loudly before the platform does, and a run
  * reaching all three of them has a worse problem than four subrequests.
+ *
+ * **Those three budgets only became the parent's real bill on 2026-09-02
+ * (#92).** `pollChildBatch`'s cap counted rounds *before* the one it throws
+ * in, which polls once more than the budget pays for: 10 + 9 + 4 was really
+ * 15 + 12 + 5, so this paragraph's 46 was **55 of 50** and the backstops
+ * could not fire before the platform's own subrequest error did. The
+ * derivation was corrected there rather than the numbers restated here - see
+ * that function's comment for the arithmetic and for what each loop's poll
+ * count becomes.
+ *
+ * **Requirement 4's narrowing spends three of the four spare**, and that is
+ * the whole of what it costs the parent:
+ * `SUMMARIZE_REPLACEMENT_SUBREQUEST_ALLOWANCE` is 1 create plus 2 polls of the
+ * replacement, taking the pessimal total to **49 of 50, one spare**. The
+ * replacement's polls cost one subrequest each rather than three because a
+ * replacement is only ever created when the failed child is the last one not
+ * complete (`isReplaceable`, src/lib/workflow-children.ts).
  *
  * **`shortlist` is still the term that grows and still is not mitigated.** It
  * was 4 at run `6f75e460`'s 264 candidates and 13 at `0357f119`'s 1,118 five
@@ -1145,10 +1316,11 @@ const PUBLISH_POLL_INTERVAL = '15 seconds';
 /**
  * The poll backstop is a subrequest budget, not a round count
  * (`pollChildBatch`'s own comment) - but at **one** child the two coincide:
- * `max(1, floor(budget / childCount))` divides by 1, so this number *is* the
- * round count. That makes it the cheapest of the three backstops per round of
- * tolerance bought, which is why 4 rounds costs 4 subrequests here where
- * summarize's 3 rounds cost 9.
+ * `max(2, floor(budget / childCount))` divides by 1, so this number *is* the
+ * poll count, and since the corrected cap counts the poll it throws in, it is
+ * also literally this loop's subrequest bill. That makes it the cheapest of
+ * the three backstops per round of tolerance bought, which is why 4 polls cost
+ * 4 subrequests here where summarize's 3 cost 9.
  *
  * 4 rather than more: 23 fixed subrequests (`createPublishChildren`'s recount)
  * plus gather's 10 and summarize's 9 leaves 8, and taking half of it keeps a

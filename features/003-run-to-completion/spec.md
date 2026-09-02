@@ -209,9 +209,17 @@ platform error a third time. That nothing this Worker throws is underneath it is
 `wrangler describe`'s *rendering*, not off `InstanceStatus.error`, which nothing here has
 printed: the same command renders the parent's own `new Error('summarize child … errored')`
 as `Error: summarize child … errored`, so the class most likely sits in `message` with
-`name: 'Error'`. That is an inference from the rendering and is recorded as one — which
-field carries the class is the measurement requirement 4's narrowing needs and does not
-have. `pollChildBatch` saw `errored` at
+`name: 'Error'`. That was an inference from the rendering when this paragraph was written,
+and it is **now measured** (`probe/FINDINGS.md` §8, 2026-09-02): `status.error.name` is
+the literal `'Error'` for every failure class in the capture corpus — a CPU kill,
+subrequest exhaustion, and a deliberate throw whose own `name` was set to something else —
+and `status.error.message` is `` `${thrown.name}: ${thrown.message}` ``. So the class token
+leads `message` and `name` carries none, the guess was right, and
+`isTransientChildFailure` (`src/lib/workflow-children.ts`) reads `message` on the strength
+of a measurement rather than of a rendering. The `{name, message}` pair *for this run*
+stays inferred — nothing printed that object at the time and the instance cannot be made
+to fail that way again; what is measured is the renderer's formula, on a controlled error,
+in the same channel. `pollChildBatch` saw `errored` at
 round 3 and failed the run, exactly as requirement 4 says it must, discarding the gather,
 the shortlist, two complete children and three summaries' worth of neurons. The neurons
 are unrecorded, which is [#91](https://github.com/nimeshjm/blog-research-agent/issues/91)
@@ -231,12 +239,20 @@ the first round**. The extra rounds are the hung child, not the cadence. Recorde
 the next reader of this run's seven-minute wall clock does not retune a number that
 measured correctly.
 
-**Where the round cap sat.** `pollChildBatch` derives `maxRounds = max(1,
+**Where the round cap sat.** `pollChildBatch` derived `maxRounds = max(1,
 floor(SUMMARIZE_POLL_SUBREQUEST_BUDGET / childIds.length))` — 3, at a budget of 9 and
-three children — so round 3 is the round that throws. This run threw on the errored child
+three children — so round 3 was the round that throws. This run threw on the errored child
 at round 3 and would have thrown on the cap at round 4. That is not a coincidence worth
 admiring; it is why requirement 4's narrowing has to buy extra rounds rather than reuse
 spare ones.
+
+**And the cap was costing a poll more than it charged for**, which the design section
+below records as the correction that pays for the narrowing: the throwing round fetches
+every pending child's status *before* it throws, so `maxRounds = 3` meant four polls and
+12 subrequests, not three and 9. Reading this run's rounds 0–3 back against the ledger is
+what surfaced it. Corrected 2026-09-02 to count polls including the one it throws in, with
+`SUMMARIZE_POLL_INTERVAL` raised 90 s → 180 s so three polls span further than four used
+to — which is also what keeps the narrowing live on this very run's timeline.
 
 ## Requirements
 
@@ -317,10 +333,14 @@ spare ones.
    written down here, which the section above shows would rot within a week.
 
    **The number of children stays at five, and not only by arithmetic.**
-   `pollChildBatch` derives `max(1, floor(GATHER_POLL_SUBREQUEST_BUDGET / childCount))`
-   poll rounds from the parent's subrequest share, so a sixth child would leave the
-   parent a single round with no retry after its first sleep. Volume is therefore fixed
-   by rebalancing a fixed number of children rather than by adding children.
+   `pollChildBatch` derives `max(2, floor(GATHER_POLL_SUBREQUEST_BUDGET / childCount))`
+   polls from the parent's subrequest share, so a sixth child would drop the parent to
+   that floor — `floor(10 / 6)` is 1 — and buy no margin for the child it just added.
+   Volume is therefore fixed by rebalancing a fixed number of children rather than by
+   adding children. The `max(1, …)` this clause was written against became `max(2, …)`
+   on 2026-09-02 (#92) when the cap was corrected to count the poll it throws in, which
+   weakens the arithmetic here (the sixth child costs margin, not the only retry) without
+   changing the conclusion.
 
    **This does not weaken requirement 6, and the distinction is the whole argument.** The
    obvious alternative — cap a child at N items — asserts exactly what requirement 6
@@ -364,17 +384,36 @@ spare ones.
      record of what has already been replaced travels in the poll step's **own output**,
      never a closure, because `run()` re-executes on replay (fact 2) — the same argument
      criterion 8's second extension already makes for the carried per-child outputs.
-   - **Deterministic on replay.** A replacement that is *created* rather than restarted
-     takes its own deterministic id, derived from the existing
+   - **Deterministic on replay.** The replacement takes its own deterministic id,
+     `${parentInstanceId}-s${index}r1`, derived from the existing
      `${parentInstanceId}-s${index}` scheme, so a replay recreates the same replacement
-     instead of a fresh one per replay. A replacement that is *restarted* keeps the
-     original id and needs no scheme — see the design section for which is which and for
-     why this spec does not choose between them.
+     instead of a fresh one per replay; `createChildBatch`'s existing
+     verified-against-reality tolerance of an already-existing id is what makes that
+     idempotent. **Decided 2026-09-02: the mechanism is recreate, not `restart()`** — see
+     the design section for the fact that decided it.
+   - **Only while the failed child is the last one not complete.** A fifth clause, and
+     it is the allowance clause's arithmetic rather than tidiness. An extra poll round
+     costs one subrequest only while the replacement is the only child left to poll; with
+     a sibling still running each granted round costs one subrequest *per child*, which
+     needs an allowance of 7 rather than 3 and puts the parent at 53 of 50. So a child
+     that errors while a sibling is still working fails the run, exactly as it did before
+     this narrowing. This turns the design section's costing *assumption* — "only the
+     replacement is pending" — into a precondition, and it would have held on run
+     `54ce776b`, whose poll rounds 1, 2 and 3 each carried the single-element pending list
+     `["…-s0"]`. A sibling that completes in the very round the other child errors does
+     **not** block a replacement: completions are collected before any failure is acted
+     on, so that sibling's output is carried rather than discarded.
    - **Recorded.** The replacement's id reaches the poll step's output and a count reaches
      the poll span, so a replaced child is visible in `wrangler workflows instances
      describe` and in the trace rather than inferable only from a wall clock. The
      recognised error string itself must **not** reach a span attribute — `error.type`
      only, per `CLAUDE.md`'s attribute rule.
+
+     **Read it back with `describe` or the binding, not with `wrangler workflows instances
+     list`.** Measured 2026-09-02 (`probe/FINDINGS.md` §8.4): `list` showed `Errored` for
+     children the other two channels reported as `queued`, with a `Modified` timestamp
+     nine minutes stale. The mechanism itself only ever reads the binding, which is the
+     channel `src/` has always read; this is for whoever verifies a replacement by hand.
 
    **This does narrow requirement 4, the tension is real, and it is argued here rather
    than asserted away.** The requirement exists so a failure is never quietly degraded
@@ -553,11 +592,45 @@ it.
 
 ### Replacing a transient child, at the seam where the error is inspectable
 
-Requirement 4's narrowing needs one mechanism and there are two candidates. **Which one is
-not decided here**, for the same reason `GATHER_FEEDS_PER_CHILD`'s value is not: the fact
-that decides it has not been measured.
+Requirement 4's narrowing needs one mechanism and there were two candidates.
+**Decided 2026-09-02 (#92): recreate**, and decided on measurement rather than on the
+one-subrequest margin the costing table below turns on. `probe/FINDINGS.md` §8.4 resolved
+restart's three unread facts against the deployed Free-plan platform, one yes and two no:
 
-**Recreate.** A second instance under a deterministic id derived from the first, created
+- `restart()` **is** present at runtime and **is** accepted on an instance already in
+  `errored` — `outcome: resolved, thrown: null`, in three runs, with and without `from`.
+  That was the single fact #92 said would decide A vs B, and it is not enough.
+- **It clears `status.error`**, to `null`, the instant it resolves. That object is the
+  evidence requirement 4 reports a failure *from*; a restart destroys it.
+- **The restarted instance never came back.** Polled through the binding for 20 rounds at
+  30 s — ten minutes — it read `queued` every round, with an empty step list in
+  `describe`. `pollChildBatch` treats anything non-terminal as pending, so a restarted
+  child would burn poll rounds and then trip the cap. B's costing at "one extra poll
+  round" has no support.
+
+Register, so the next reader does not have to reconstruct it: all three of those are
+**measured** (`probe/FINDINGS.md` §8.4, captures committed). Two further facts stay
+**unmeasured** and did not need to be measured, because each was already sufficient on its
+own to sink B: whether `restart({ from })` preserves the cached `summarize:<url>` results
+is **unanswerable through any channel a parent has** — they are not in `InstanceStatus`,
+and `describe` reads back `Queued` with an **empty** `Steps:` list after a restart, which
+is the channel going dark rather than evidence of erasure — and the failing step's *name*,
+which `from` requires, is not carried by `InstanceStatus` at all. That last one is now
+measured too rather than read off the type: `Object.keys(status)` is
+`["status","error","output","rollback"]`, the whole object, and no per-step name is among
+them (`rollback` is not even in the declaration, so the runtime object is *wider* than its
+type and still has no step name). `WorkflowInstanceRestartOptions.from` wants
+`{ name: string; count?: number; type?: "do" | "sleep" | "waitForEvent" }`
+(`@cloudflare/workers-types/index.d.ts:17193`), so `name` could only come from a
+parent-side convention — and the only restart the parent can issue without one is
+from-the-beginning, which surrenders the whole saving anyway. The transient's
+**rate** is unmeasured and stays that way. B's headline advantage — not re-paying for the
+summaries the dead child produced — rested entirely on the one thing no channel can see.
+
+The rest of this section is retained because both costings are still what the ledger
+arithmetic rests on.
+
+**Recreate (adopted).** A second instance under a deterministic id derived from the first, created
 through `createChildBatch` and polled through `pollChildBatch` exactly as the original
 was. It uses nothing this repo has not already measured, and `createChildBatch`'s
 existing verified-against-reality tolerance of an already-existing id is what makes it
@@ -566,41 +639,60 @@ idempotent on replay. It re-spends whatever the dead child had already produced 
 run that costs ~4,300 — and it needs a full child duration to converge, 62–122 s measured,
 so roughly two extra poll rounds at `SUMMARIZE_POLL_INTERVAL`'s 90 s.
 
-**Restart.** `WorkflowInstance.restart(options?)` is declared in the *non-experimental*
+**Restart (not adopted).** `WorkflowInstance.restart(options?)` is declared in the *non-experimental*
 `@cloudflare/workers-types`, and with `from` the [Workers
 API](https://developers.cloudflare.com/workflows/build/workers-api/) documents that "the
 cached results of every earlier step are reused, while the target step and any steps that
 follow it run again". If that holds for an instance already in `errored`, the child
 resumes at **one** article rather than five — 11–24 s on this run's own completed steps —
 so one extra poll round suffices, the three summaries are not paid for twice, and the
-deterministic-id question disappears because the id never changes. Three facts behind it
-are unread, and each is disqualifying on its own:
+deterministic-id question disappears because the id never changes. Three facts behind it were unread, and each was
+disqualifying on its own. **All three were then read** (`probe/FINDINGS.md` §8.4,
+2026-09-02) and the paragraph above carries the verdict; they are kept here as written,
+with what the measurement said:
 
 - whether `restart()` is valid on an instance already in `errored`. `terminate()`'s
   declaration says explicitly that it throws on an errored, terminated or complete
-  instance and `restart()`'s says nothing, which is suggestive and is not proof;
+  instance and `restart()`'s says nothing, which is suggestive and is not proof.
+  **Measured: it resolves.** The one fact that favoured B;
 - whether the parent can name the failing step at all. `restart({ from })` needs a step
   name, `InstanceStatus` does not carry one, and the parent knows the URLs it handed the
   child but not which of them died. Without it, the only restart available is
-  from-the-beginning, which gives up the entire saving;
+  from-the-beginning, which gives up the entire saving. **Unchanged, and it did not need
+  measuring**;
 - whether any of it holds on a deployed Free-plan instance. The changelog records
   `restart()` reaching *local development* (2026-03-23) and `wrangler --local`
   (2026-04-01), and nothing read here speaks to the deployed case. Types are not the
-  runtime.
+  runtime. **Measured: the call resolves and the instance then sits in `queued` for ten
+  minutes of polls with its `error` cleared.** Types were not the runtime.
 
 **The costing, against the parent's own ledger** — 23 fixed and 46 pessimal
-(`createPublishChildren`'s comment, `src/workflow.ts`), four spare:
+(`createPublishChildren`'s comment, `src/workflow.ts`), four spare. **The 46 only became
+true on 2026-09-02**: `pollChildBatch`'s round cap counted the rounds *before* the one it
+throws in, and the throwing round has already spent one subrequest per pending child on
+the statuses it throws about — so the three poll budgets (10 + 9 + 4) were really costing
+15 + 12 + 5, i.e. **55 of 50**, and the backstops could not fire before the platform's own
+subrequest error. The derivation was corrected rather than the numbers restated, which is
+also what pays for this narrowing: the summarize loop goes from four polls costing 12 to
+three costing the 9 it was always charged, and `SUMMARIZE_POLL_INTERVAL` goes 90 s → 180 s
+to buy the dropped round's wall-clock back for nothing. That interval is load-bearing for
+requirement 4 and not cosmetic: on run `54ce776b`'s own timeline the summarize children
+were created at ~18:33:23 and the transient surfaced at 18:38:34, **~311 s** in, so polls
+at 90/180/270 s never see it and the mechanism would be dead code, where 180/360/540 s see
+it at round 1 and leave rounds 2–4 for the replacement.
 
 | mechanism | create or restart | extra poll rounds | pessimal total |
 |---|---|---|---|
-| recreate | 1 | 2, at 1 subrequest each — only the replacement is pending | **49 of 50** |
-| restart | 1 | 1 | **48 of 50** |
+| recreate (adopted) | 1 | 2, at 1 subrequest each — only the replacement is pending, which requirement 4's fifth clause makes a precondition rather than a hope | **49 of 50** |
+| restart (not adopted) | 1 | 1 | **48 of 50** |
 
 Both fit, and neither leaves room for a second replacement — which is why the bound in
 requirement 4 is stated in subrequests rather than as "once per child": at 46 pessimal the
 allowance buys one replacement per run. The extra rounds are genuinely extra rather than
-slack being reclaimed: this run hit `pollChildBatch`'s round cap of `max(1, floor(9 / 3))`
-in the same round the child errored, so there were no spare rounds to reuse. If the
+slack being reclaimed, because a child has to hang before it errors and by then the cap is
+mostly spent: this run hit `pollChildBatch`'s cap in the same round its child errored under
+the four-poll behaviour, and under the corrected three-poll cap at 180 s the ~311 s failure
+is seen at round 1 with one round left. Whatever is left over is not two. If the
 parent's fixed cost grows — `shortlist` is the term that follows the allowlist, and it
 quadrupled in five days — this is the first thing that stops fitting, and the honest
 answer then is that the allowance goes rather than that the arithmetic is restated.
@@ -612,9 +704,21 @@ effects at all; a gather child's writes are idempotent under `run_candidates`'
 and the commit are idempotent by requirement 7's blog-repo extension, but
 `openPullRequest` throws on any non-ok response and GitHub answers 422 to *A pull request
 already exists*, so a publish child that errored *after* opening the pull request would
-hand its replacement a guaranteed failure. Whether the allowance is spendable by all three
-poll loops or by summarize alone is left to the implementation, with that asymmetry as the
-input rather than as a discovery.
+hand its replacement a guaranteed failure.
+
+**Settled 2026-09-02: the allowance is spendable by summarize alone**, and structurally —
+the capability to replace is a value the summarize call site passes (`ChildReplacement`,
+`src/lib/workflow-children.ts`) and the other two loops pass nothing, so the mechanism is
+absent from them rather than disabled by a comment on a shared path. Gather is idempotent
+but not free, and publish carries the 422.
+
+**What a recreate re-spends is priced, not overlooked.** The replacement receives the same
+`neuronBudget` slice the original did, so a run with one replacement can spend
+`availableBudget` plus one slice — ~1,833 of `NEURON_BUDGET_PER_RUN`'s 6,000 at today's
+config, on a run that costs ~4,300. `createSummarizeChildren`'s comment already concedes
+that the proportional split bounds slices rather than spend; this is one more way the same
+bound is loose, and the comparison is run `54ce776b`, which threw three summaries' worth
+away for nothing.
 
 ### What is deliberately not decided here
 
@@ -733,8 +837,8 @@ margin rather than fitted to two data points.
 | ~~**A child instance is not a fresh subrequest budget either.**~~ **Closed 2026-08-31 by run `6f75e460`:** five gather children completed in 5-8 seconds and the parent, relieved of 46 feed fetches, summarised 14 articles where the previous run summarised 0. A child is a fresh budget. What remains open is narrower — whether the parent's residue (`shortlist`, `synthesize` and its poll loops) stays inside 50 now that gather, the articles *and* the pull request have all left it. That is arithmetic rather than inference: those are bounded and do not grow with the allowlist — but the resource in question changed on 2026-08-31. CPU is no longer what bites (`FINDINGS.md` §7.1, and run `0199648c` completed all 46 gathers with no `1102`); the 50-subrequest-per-invocation ceiling is. | Nothing measured it. It is adopted because it is the only remaining candidate with a mechanism story, and because `step.sleep` and retry are both measured *not* to be one. Criterion 2 is a repeated real run precisely because it is what decides — the same shape feature 002 used, and the same reason. If children do not help, the spec is wrong and the finding is worth as much as the fix would have been. |
 | **Free-tier limits on concurrent or daily Workflow instances are not recorded anywhere in this repo.** A design that creates ten instances per run may hit a ceiling nobody has cited. | `plan.md` must find and cite the number before choosing `GATHER_FEEDS_PER_CHILD`, and the design tolerates sequential children if concurrency is capped — children are independent, so running them one at a time costs wall-clock and nothing else. |
 | **Turning retries off removes a real recovery path** on the D1 and GitHub steps. | Accepted, and stated in the design section rather than buried. `fetchFeedItems` already insulates the gather path. Re-examine if a run fails on a step that would have recovered. |
-| **Polling children costs subrequests and parent CPU**, and there are now three loops paying it. **Fired 2026-09-01 on run `0357f119`: 19 of the parent's 50 subrequests, 10 of them on rounds that could not have found anything.** | One subrequest per *pending* child per poll, in a parent step that parses nothing. Two things changed on 2026-09-01 (#75), and neither is a tuning of the cadence: each loop now waits before its first poll, so round 0 lands past the point children are measured to converge rather than a second after `createBatch`; and a child that has already completed is not polled again, its validated output being carried in the poll step's own output instead (`pollChildBatch`, `src/lib/workflow-children.ts`). Together those take the two loops from 19 subrequests to about 11 on the same run's shape. `SUMMARIZE_POLL_INTERVAL` then goes 60 s → 90 s as a consequence rather than a lever: a smaller round cap shortens the slowest child the loop tolerates, and a longer wait gives that back at no subrequest cost. A third loop then joined them the same day, for publication - at one child it costs one subrequest per round, and `PUBLISH_POLL_SUBREQUEST_BUDGET` is the cheapest of the three backstops per round of tolerance bought, because `max(1, floor(budget / childCount))` divides by one. The parent's cost is still counts, status reads and one bounded URL; requirement 5 is what keeps it that way, and the carried outputs are held to it explicitly. |
-| **A transient platform error in one child discards the whole run, and nothing here measures how often.** **Fired 2026-09-01 on run `54ce776b`:** summarize child `s0` returned three good summaries, hung four minutes on its fourth article and errored with `WorkflowInternalError: Attempt failed due to internal workflows error` — the platform's own surface as `wrangler describe` renders it, one attempt row. Every other child was complete and the parent was at ~30 of 50 subrequests, so this is not a resource this design can spend less of. | **Partly mitigated by requirement 4's narrowing, and the residue is stated rather than closed.** A recognised transient class buys one bounded, recorded replacement; every other failure still fails the run immediately, and the fail-closed clause is what keeps a resource exhaustion from being retried into the same wall. Three things stay open. The **rate** is unmeasured, so criterion 2's 0.6⁵ arithmetic now carries a second unquantified term. A **second** occurrence inside one run still ends it, by design. And the neurons the dead child spent stay unrecorded, which is [#91](https://github.com/nimeshjm/blog-research-agent/issues/91) rather than this row. The mechanism — recreate or `restart()` — is deliberately undecided on the three unread facts named in the design section, and the choice is worth one subrequest of tolerance and roughly three model calls, not a redesign. |
+| **Polling children costs subrequests and parent CPU**, and there are now three loops paying it. **Fired 2026-09-01 on run `0357f119`: 19 of the parent's 50 subrequests, 10 of them on rounds that could not have found anything.** | One subrequest per *pending* child per poll, in a parent step that parses nothing. Two things changed on 2026-09-01 (#75), and neither is a tuning of the cadence: each loop now waits before its first poll, so round 0 lands past the point children are measured to converge rather than a second after `createBatch`; and a child that has already completed is not polled again, its validated output being carried in the poll step's own output instead (`pollChildBatch`, `src/lib/workflow-children.ts`). Together those take the two loops from 19 subrequests to about 11 on the same run's shape. `SUMMARIZE_POLL_INTERVAL` then goes 60 s → 90 s as a consequence rather than a lever: a smaller round cap shortens the slowest child the loop tolerates, and a longer wait gives that back at no subrequest cost. A third loop then joined them the same day, for publication - at one child it costs one subrequest per round, and `PUBLISH_POLL_SUBREQUEST_BUDGET` is the cheapest of the three backstops per round of tolerance bought, because `max(2, floor(budget / childCount))` divides by one. The parent's cost is still counts, status reads and one bounded URL; requirement 5 is what keeps it that way, and the carried outputs are held to it explicitly. |
+| **A transient platform error in one child discards the whole run, and nothing here measures how often.** **Fired 2026-09-01 on run `54ce776b`:** summarize child `s0` returned three good summaries, hung four minutes on its fourth article and errored with `WorkflowInternalError: Attempt failed due to internal workflows error` — the platform's own surface as `wrangler describe` renders it, one attempt row. Every other child was complete and the parent was at ~30 of 50 subrequests, so this is not a resource this design can spend less of. | **Partly mitigated by requirement 4's narrowing, and the residue is stated rather than closed.** A recognised transient class buys one bounded, recorded replacement; every other failure still fails the run immediately, and the fail-closed clause is what keeps a resource exhaustion from being retried into the same wall. Three things stay open. The **rate** is unmeasured, so criterion 2's 0.6⁵ arithmetic now carries a second unquantified term. A **second** occurrence inside one run still ends it, by design. And the neurons the dead child spent stay unrecorded, which is [#91](https://github.com/nimeshjm/blog-research-agent/issues/91) rather than this row. The mechanism is **recreate**, decided 2026-09-02 on measurement (`probe/FINDINGS.md` §8.4): `restart()` is accepted on an `errored` instance, and it then clears the `status.error` this requirement reports from and leaves the instance `queued` through ten minutes of binding polls. Which field carries the class is measured too (§8.1/8.3) — `name` is the constant `'Error'`, the class leads `message`. |
 | **The failure is non-deterministic, so a green run proves less than it looks.** | Criterion 2 requires five consecutive, with the arithmetic stated. This risk is the reason that criterion is not "a run completes". |
 | **Per-feed subrequest cost, not CPU, is what sizes `GATHER_FEEDS_PER_CHILD`** — corrected 2026-08-31 (#75); CPU is no longer the binding resource. | Requirement 6 keeps the design independent of the number. Unlike CPU, this one *is* measurable ahead of a run: a feed costs one fetch plus its D1 write. Criterion 2 still validates the choice. |
 

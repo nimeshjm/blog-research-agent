@@ -89,6 +89,21 @@ export const ATTR_SUMMARIZE_CHILD_INDEX = 'agent.summarize.child_index';
  * distinction).
  */
 export const ATTR_PUBLISH_CHILDREN = 'agent.publish.children';
+/**
+ * How many SummarizeWorkflow children this run has replaced after a
+ * recognised transient platform failure, on the parent's
+ * `await-summarize-children` spans (spec.md requirement 4's narrowing,
+ * 2026-09-01 (#92)). 0 on almost every run, and carried so a replaced child
+ * is reported rather than silently absorbed into a longer wall clock.
+ *
+ * A **count**, deliberately. The replacement's id travels in the poll step's
+ * own output, and the recognised error string reaches no attribute at all -
+ * `error.type`'s constructor name is the only error channel a span has
+ * (CLAUDE.md's attribute rule; the same distinction
+ * `ATTR_SUMMARIZE_SKIP_REASON` above draws). It takes the poll span to six
+ * attributes, inside the roughly-eight ceiling.
+ */
+export const ATTR_SUMMARIZE_REPLACEMENTS = 'agent.summarize.replacements';
 
 // --- gen_ai.* ---------------------------------------------------------------
 // Matches AI Gateway's own exporter conventions, so the two line up if that
