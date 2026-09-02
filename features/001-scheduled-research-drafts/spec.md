@@ -7,7 +7,7 @@
 
 ## Summary
 
-A Cloudflare cron trigger fires every two days and starts a Workflow that selects a topic, reads a curated
+A Cloudflare cron trigger fires daily and starts a Workflow that selects a topic, reads a curated
 allowlist of RSS/Atom feeds, summarizes the most relevant articles one at a time,
 synthesizes a research brief and a draft post, and opens a pull request against the blog
 repo. All inference runs on the Workers AI free allocation. The agent writes to a branch
@@ -15,8 +15,12 @@ and stops; a human merges.
 
 ## Requirements
 
-1. The pipeline runs on a schedule without human involvement, every two days
-   (`0 6 */2 * *`).
+1. The pipeline runs on a schedule without human involvement, daily
+   (`0 6 * * *`). Amended 2026-09-02 (#64) from every two days (`0 6 */2 * *`),
+   which is what this ran at before the cron was paused: one run per daily
+   neuron allowance is the binding constraint, and every gap being exactly 24 h
+   removes the day-of-month arithmetic requirement 8 used to have to argue
+   around.
 2. When the topic queue has a `queued` row, the run uses the oldest one. Only when the
    queue is empty does the agent propose its own topic.
 3. A proposed topic must not duplicate anything already **published or drafted**. The
@@ -28,7 +32,7 @@ and stops; a human merges.
    source carrying an **attributable R&D practice or research finding** (a paper, a
    published practice, survey data, a vendor engineering writeup), corroborated by at
    least one further independent source. Otherwise it records why and opens nothing.
-   A raw article count is the wrong shape: at a two-day cadence the good case is one
+   A raw article count is the wrong shape: at a daily cadence the good case is one
    solid sourced practice, not three pieces of commentary.
 6. Inference spend is accumulated across steps and checked **between** calls, against
    `NEURON_BUDGET_PER_RUN` (6,000 of the 10,000 daily neurons). Cost is only known once
@@ -76,7 +80,7 @@ parseable date are kept, newest-first, up to **20 per feed**. Both rules are app
 the gather step, per feed, never in `shortlist`.
 
 **The window is the point of the pipeline, not a workaround.** This agent reports on what
-is happening now, at a two-day cadence; an article from 2019 is not news and the archive
+is happening now, at a daily cadence; an article from 2019 is not news and the archive
 it sits in has been indexed by everything else on the internet for years. Discovery is
 scoped to recent publication because that is what the blog is for. The platform arithmetic
 below is a second, independent reason to want the same rule.
@@ -512,9 +516,11 @@ research brief; the committed file is the draft.
    several articles were summarized.
 7. `runs.neurons_spent` is populated for every run, is checked between steps, and
    exceeds `NEURON_BUDGET_PER_RUN` by no more than the cost of a single article call.
-8. Each run stays inside a single day's free allocation. `*/2` is day-of-month, so the
-   31st and the 1st are consecutive; both must still succeed, which they do because the
-   allowance resets daily and one run costs ~3,567 of 10,000 (measured, #18 and step 5).
+8. Each run stays inside a single day's free allocation. At the daily cadence (#64)
+   this holds by construction rather than by arithmetic: exactly one scheduled run per
+   allowance, and one run costs ~3,567 of 10,000 (measured, #18 and step 5). What the
+   two-day cadence had and this does not is slack for a second run in the same day - a
+   hand-triggered recovery run shares the scheduled run's allowance.
 9. Every feed in the allowlist returns 200 and parses. `gather` emits no *dated* item
    published more than 30 days ago, and no more than 20 *undated* items from any one
    feed; it does not truncate a feed's dated items, so a full arXiv day survives intact.
@@ -531,8 +537,8 @@ research brief; the committed file is the draft.
 | The upstream feed repo disappears or rewrites paths | 34 feeds resolve through one `raw.githubusercontent.com` path. Losing it fails 34 gather steps, not the run: the first-party 12 still gather, and the grounding gate decides whether what is left is worth a draft. |
 | Neuron budget overshoot | The gate is between calls and reserves synthesis headroom, so overshoot is bounded at one article call. A hard mid-call cap is not possible: cost is only known on return. |
 | HTML extraction blows the 10 ms CPU budget on a large article | Use `HTMLRewriter` (streaming) rather than regex over the body; cap extracted length before it reaches the model. |
-| A two-day cadence produces filler | Requirement 5 is the load-bearing guard and matters more at this cadence than at a weekly one. It gates on *grounding quality* rather than article count, so a cycle full of commentary produces nothing. Most cycles should produce nothing. |
-| 15 runs/month rather than 4 | Each run is bounded by `NEURON_BUDGET_PER_RUN` and the allowance is per-day, so cadence does not change per-run cost. Watch `runs.neurons_spent` for drift. |
+| A daily cadence produces filler | Requirement 5 is the load-bearing guard and matters more at this cadence than at a two-day or weekly one. It gates on *grounding quality* rather than article count, so a cycle full of commentary produces nothing. Most cycles should produce nothing. |
+| ~30 runs/month rather than 4 | Each run is bounded by `NEURON_BUDGET_PER_RUN` and the allowance is per-day, so cadence does not change per-run cost. Watch `runs.neurons_spent` for drift. |
 | Workflows is in open beta | Local and remote behaviour can differ; verify with `wrangler dev --remote` before trusting a local result. |
 | Token leak via logs | `REVIEW.md` pass 2. |
 | A generated post breaks the blog build | `image` omitted (the `image()` helper requires a real file) and frontmatter validated against `src/content.config.ts` before the PR is opened. |
@@ -550,7 +556,7 @@ research brief; the committed file is the draft.
   to band.
 - **Auto-closing a topic row on merge** — open question in `intent.md`; needs a webhook
   or a second scheduled check.
-- **An exact 48-hour cadence.** `0 6 */2 * *` fires on odd days, giving 179 two-day gaps
-  and 7 one-day gaps a year (after each 31-day month). If a stable 48-hour rhythm is ever
-  wanted, fire daily and no-op in the first step when `runs.started_at` is under ~40
-  hours old — one extra D1 read on skipped days. Not worth the step today.
+- ~~**An exact 48-hour cadence.**~~ Resolved 2026-09-02 (#64) by removing the problem
+  rather than solving it: requirement 1 is now `0 6 * * *`, so every gap is exactly 24
+  hours and the uneven-gap arithmetic this entry existed to work around is gone. The
+  no-op-on-recent-`started_at` step it proposed is not needed and was never built.
