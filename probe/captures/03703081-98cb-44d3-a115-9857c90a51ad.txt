@@ -1,0 +1,74 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.128.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         probe-workflow
+Instance Id:           03703081-98cb-44d3-a115-9857c90a51ad
+Version Id:            fa422965-6aaf-4a6e-9d1e-e1f8a527c202
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                02/09/2026, 09:19:37
+Success:               ✅ Yes
+Start:                 02/09/2026, 09:19:40
+End:                   02/09/2026, 09:19:50
+Duration:              9 seconds
+Last Successful Step:  ce:answer-1
+Steps:
+
+  Name:      ce:create-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:19:40
+  End:       02/09/2026, 09:19:41
+  Duration:  1 second
+  Success:   ✅ Yes
+  Output:    "{\"r\":\"17eb75b6\",\"iso\":\"ca6b5dda\",\"seq\":0,\"ms\":1033,\"childId\":\"03703081-98cb-44d3-a115-9857c90a51ad-ce\",\"created\":true,\"thrown\":null}"
+┌──────────────────────┬──────────────────────┬──────────┬────────────┐
+│ Start                │ End                  │ Duration │ State      │
+├──────────────────────┼──────────────────────┼──────────┼────────────┤
+│ 02/09/2026, 09:19:40 │ 02/09/2026, 09:19:41 │ 1 second │ ✅ Success │
+└──────────────────────┴──────────────────────┴──────────┴────────────┘
+
+  Name:      ce:pre-poll-0-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:19:42
+  End:       02/09/2026, 09:19:45
+  Duration:  3 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:19:42 │ 02/09/2026, 09:19:45 │ 3 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      ce:pre-wait-0-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:19:45
+  End:       02/09/2026, 09:19:50
+  Duration:  5 seconds
+
+  Name:      ce:pre-poll-1-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:19:50
+  End:       02/09/2026, 09:19:50
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"errored\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"errored\\\",\\\"error\\\":{\\\"message\\\":\\\"ProbeName-ZZZ: ProbeMessage-QQQ\\\",\\\"name\\\":\\\"Error\\\"},\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[\"message\",\"name\"],\"errorName\":\"Error\",\"errorMessage\":\"ProbeName-ZZZ: ProbeMessage-QQQ\"}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:19:50 │ 02/09/2026, 09:19:50 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      ce:answer-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:19:50
+  End:       02/09/2026, 09:19:50
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"r\":\"17eb75b6\",\"iso\":\"ca6b5dda\",\"seq\":1,\"ms\":9261,\"status\":\"errored\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"errored\\\",\\\"error\\\":{\\\"message\\\":\\\"ProbeName-ZZZ: ProbeMessage-QQQ\\\",\\\"name\\\":\\\"Error\\\"},\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[\"message\",\"name\"],\"errorName\":\"Error\",\"errorMessage\":\"ProbeName-ZZZ: ProbeMessage-QQQ\"}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:19:50 │ 02/09/2026, 09:19:50 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘

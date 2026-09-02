@@ -1,8 +1,9 @@
-# Probe results, 2026-08-28 and 2026-08-31
+# Probe results, 2026-08-28, 2026-08-31 and 2026-09-02
 
 Runs of `probe/` against the deployed `research-probe` Worker. Every number below is a
-step output read back with `wrangler workflows instances describe probe-workflow <id>`,
-not a bench and not a document.
+step output read back with `wrangler workflows instances describe probe-workflow <id>` —
+or, from section 8 on, `describe probe-child-workflow <id>` — not a bench and not a
+document.
 
 Sections 1–3 are the first three runs, 2026-08-28 morning. Sections 4–6 are a second
 sitting the same day that answered feature 002's deferred question — does `step.sleep`
@@ -13,6 +14,12 @@ they are now known to be wrong; the corrections are the record, not the embarras
 Section 7 is a third sitting, **2026-08-31**, after PR #82 turned step retries off. It
 closes `plan.md`'s question 2 — and, unplanned, puts the CPU premise all six earlier
 sections were written against in question.
+
+Section 8 is a fourth sitting, **2026-09-02**, and answers to
+[#92](https://github.com/nimeshjm/blog-research-agent/issues/92) rather than to
+`plan.md`: which field of `InstanceStatus.error` a transient-failure rule may read, and
+whether `restart()` is usable on a child that has already errored. It is the first
+sitting to use a **second** Workflow, `probe-child-workflow`.
 
 ## 1. A step boundary buys nothing. There are no invocation boundaries at all
 
@@ -438,6 +445,313 @@ available on the CPU side.
 
 Times in this section are as `wrangler` prints them, which is local (UTC+1), not UTC.
 
+## 8. `InstanceStatus.error.name` is always the literal `'Error'`. The class token is in `message` — and `restart()` is accepted on an `errored` instance but the instance never comes back
+
+> Fourth sitting, **2026-09-02**, against `research-probe` redeployed three times as
+> modes were added in response to what the previous run showed:
+> `37093564-f895-4c6a-8ad3-1173974d8dc3` (`childerr`, `childrestart`,
+> `childrestartfrom`), `f3458669-e087-4890-9bc9-bdab6027e081` (`childrestartof`) and
+> `6f5972a9-84c2-45f2-91ca-6ac6039f1951` (`childcpu`). Sections 1-7 are untouched.
+
+The gate in front of [#92](https://github.com/nimeshjm/blog-research-agent/issues/92),
+whose "Open questions to settle before implementing" names two facts a recognition rule
+cannot be written without. Both are now read off the deployed Free-plan platform.
+
+The instrument is a second Workflow, `probe-child-workflow`, whose body is two `mark()`
+steps and then a step that throws — production's shape, where summarize child `s0`
+completed three real `summarize:<url>` steps before the fourth died. What it throws is
+the measurement:
+
+```ts
+class ProbeCtorWWW extends Error { override name = 'ProbeName-ZZZ'; }
+throw new ProbeCtorWWW('ProbeMessage-QQQ');
+```
+
+A fourth mode, `childcpu`, swaps that throw for §7.2's arithmetic burn so the child dies
+on a real `1102` instead — because the rule this sitting licenses has to *exclude* a CPU
+kill, and an exclusion inferred from a rendering is exactly the weakness being fixed here
+for `WorkflowInternalError`.
+
+Three mutually distinguishable tokens — `name`, `message`, `constructor.name` — because
+`54ce776b-…-s0` gives only a *rendering* (`Error: WorkflowInternalError: Attempt failed
+due to internal workflows error`) and there is no way to make the platform emit a real
+`WorkflowInternalError`. So the formula is fixed against an error whose fields are known,
+and then inverted on that capture.
+
+### 8.1 What the object actually contains — measured
+
+`03703081`'s `ce:pre-poll-1` and `ce:answer` steps, verbatim:
+
+```json
+{"status":"errored","error":{"message":"ProbeName-ZZZ: ProbeMessage-QQQ","name":"Error"},"output":null,"rollback":null}
+```
+
+- **`status.error.name` is the literal `'Error'`.** The thrown error's own `name` is not
+  in it. This is the fact the whole issue turns on, and #92's own guess — "That pattern
+  *implies* `name: 'Error'` with the class inside `message`" — is confirmed.
+- **A thrown `name` that is not the default lands in `message`**, at the front, ahead of
+  the thrown `message`. Stated no more precisely than that on purpose: §7's `3f5770ac`
+  threw a *default-named* `new Error('probe: deliberate failure, retries off')` and
+  rendered as a single `Error: ` prefix, so "`message` is `String(thrown)`" is not the
+  rule, and this sitting has one observation of each case rather than enough to name the
+  function.
+- **`constructor.name` appears nowhere.** `ProbeCtorWWW` is in no field and in no
+  rendering. Nor is this a `.stack` read: a class field initialiser runs *after*
+  `super()`, so `ProbeCtorWWW`'s stack header is `Error: ProbeMessage-QQQ`, and the
+  observed `message` is `ProbeName-ZZZ: ProbeMessage-QQQ` — the platform read `.name` and
+  `.message` at serialisation time. Anything reading a class off this object is reading
+  `message`.
+- **`Object.keys(status)` is `["status","error","output","rollback"]`.** `rollback` is
+  **not** in the `InstanceStatus` declaration #92 quotes
+  (`@cloudflare/workers-types/index.d.ts:17165`, which lists `status`, `error`, `output`
+  only). The runtime object is wider than its type. `Object.keys(status.error)` is
+  `["message","name"]` — that half matches.
+- **No step name is reachable from `InstanceStatus` at all.** Those four keys are the
+  whole object and `error` carries only `name` and `message`, so a parent cannot learn
+  *which* step of a child failed. This is the direct answer to the second half of #92's
+  open question (ii): `restart({ from })`'s `from.name` can only come from a parent-side
+  naming convention, never from the status the parent already reads.
+
+**And the same object for a platform-originated failure** — `childcpu`, which swaps the
+throw for §7.2's 5x10^9-iteration burn so the child dies on a real `1102`. `c02f557b`'s
+`cc:pre-poll-2`:
+
+```json
+{"status":"errored","error":{"message":"Worker exceeded CPU time limit.","name":"Error"},"output":null,"rollback":null}
+```
+
+`name` is the literal `'Error'` here too, and this one never passed through a user
+`throw`. That is the important half: it is measured, on the exclusion 8.3 most needs to
+hold, rather than inverted from a rendering.
+
+### 8.2 The renderer's formula — measured, and the half that is inverted
+
+Same instance, `03703081-…-ce`, `wrangler workflows instances describe
+probe-child-workflow`:
+
+```
+Error:                 Error: ProbeName-ZZZ: ProbeMessage-QQQ
+```
+
+Put beside the object above, that is `` `${error.name}: ${error.message}` ``, and
+**measured**. One ambiguity is worth naming rather than hiding: because the measured
+`name` *is* `'Error'`, this rendering cannot separate
+
+1. `` `${name}: ${message}` `` with `name === 'Error'`, from
+2. a literal `Error: ` prefix in front of `message` alone.
+
+**Both invert identically**, which is why the ambiguity is immaterial. Under either,
+`54ce776b-…-s0`'s
+
+```
+Error:                 Error: WorkflowInternalError: Attempt failed due to internal workflows error
+```
+
+**inverts to**
+
+```json
+{"name":"Error","message":"WorkflowInternalError: Attempt failed due to internal workflows error"}
+```
+
+The `{name, message}` pair for that run is therefore **inferred, not measured** — nothing
+printed that object at the time and the instance cannot be made to fail that way again.
+What is measured is the formula, on a controlled error, in the same channel, plus one
+corroboration across the whole capture corpus: **every instance-level rendering in
+`probe/captures/` begins `Error: `**, including the platform-originated ones that never
+passed through a user `throw` —
+
+| capture | instance-level rendering |
+|---|---|
+| `3b78558c`, `e381a65f`, `da873328`, `b292794e`, `a32b6d53`, `0c23546e`, `bd33248b-g0` | `Error: Worker exceeded CPU time limit.` |
+| `0357f119` | `Error: Too many subrequests by single Worker invocation. To configure this limit, refer to https://…` |
+| `3f5770ac` | `Error: probe: deliberate failure, retries off` |
+| `bd33248b` | `Error: gather child bd33248b-…-g0 errored` |
+| `03703081-…-ce` (this sitting) | `Error: ProbeName-ZZZ: ProbeMessage-QQQ` |
+
+So `name` never carries a class token for any failure class measured here. Two of those
+rows have the object behind them and not just the rendering — the controlled throw, and
+`c02f557b`'s CPU kill in 8.1 — and both read `'Error'`. For the rest, `name` is
+**unobserved** rather than measured: under reading (2) it is not rendered at all, so those
+renderings constrain `message` and say nothing about `name`. Which is the point. A rule
+must not depend on a field that has never been observed for the case it is recognising.
+
+**The one row where the two renderings differ is the corroboration, not an exception.**
+`54ce776b-…-s0`'s per-attempt `Error` column reads `WorkflowInternalError: Attempt failed
+due to internal workflows error` with **no** `Error: ` prefix, and it is the only row in
+the corpus where the attempt row and the instance line differ at all. One model fits every
+row: both renderings are `` `${name}: ${message}` ``; the *attempt*-level record keeps the
+platform's own `name`; and on promotion to *instance* level `name` is normalised to
+`'Error'` with a non-`'Error'` attempt name folded into the front of `message` — which is
+precisely the fold measured on `ce` in 8.1.
+
+| case | attempt row | instance line | instance object |
+|---|---|---|---|
+| `ce`, thrown with `name` set | `Error: ProbeName-ZZZ: ProbeMessage-QQQ` | identical | `{"name":"Error","message":"ProbeName-ZZZ: ProbeMessage-QQQ"}`, **measured** |
+| `cc`, a real `1102` | `Error: Worker exceeded CPU time limit.` | identical | `{"name":"Error","message":"Worker exceeded CPU time limit."}`, **measured** |
+| `3f5770ac`, default-named throw | `Error: probe: deliberate failure, retries off` | identical | the fold is a no-op; the name is already `Error` |
+| `54ce776b-…-s0` | `WorkflowInternalError: Attempt failed …` | `Error: WorkflowInternalError: Attempt failed …` | the attempt name folds in |
+
+So the inversion is reached twice by independent routes and lands on the same `message`.
+Route two rests on reading the attempt row as `` `${name}: ${message}` `` too, which is an
+inference rather than a measurement — it is corroboration, not proof. Either way, the
+attempt-level record is not reachable from `InstanceStatus`, so it can never be what a
+rule reads.
+
+### 8.3 The recognition rule this licenses
+
+`pollChildBatch` (`src/lib/workflow-children.ts`) must read **`status.error?.message`**,
+never `status.error?.name`. Fail-closed, and not a substring test:
+
+- gate on `s.status === 'errored'`;
+- take the token **before the first `': '`** in `s.error?.message ?? ''`;
+- compare with `===` against an allowlist whose only member is the string
+  `'WorkflowInternalError'`.
+
+An allowlist of exactly one, and it stays closed on the two classes requirement 1 exists
+to stop retrying. The CPU kill is **measured** through the binding, in 8.1:
+`message` is `'Worker exceeded CPU time limit.'`, which contains no `': '`, so the token
+split yields the whole string and misses the allowlist. The subrequest case is still
+inverted from `0357f119`'s rendering rather than measured, and lands the same way:
+`'Worker exceeded CPU time limit.'` and
+`'Too many subrequests by single Worker invocation. To configure this limit, refer to
+https://developers.cloudflare.com/…'` contain **no `': '` at all** — `https:` is a colon
+followed by `/`, not a space — so the split yields the whole string and misses the
+allowlist. Nothing wildcards.
+
+The residual surface is that a child's *own* thrown error could impersonate the class by
+being named `WorkflowInternalError`. Nothing in `src/` throws such a name, and the fold
+measured in 8.1 is what makes the impersonation possible at all; it is named here so a
+later reader does not have to rediscover it.
+
+### 8.4 `restart()` exists, is accepted on an `errored` instance, and does not bring it back
+
+`restart` is **present at runtime** on a deployed Free-plan `WorkflowInstance` — the
+changelog only ever recorded it reaching local development, so this needed checking
+before anything else. Recorded before the call, from `cr:restart` / `crf:restart` /
+`cro:restart`:
+
+```json
+"kind":"function",
+"proto":["constructor","pause","resume","terminate","restart","delete","status","sendEvent"]
+```
+
+And on an instance already in `errored`, in all three runs and with and without `from`:
+
+```json
+"outcome":"resolved","thrown":null
+```
+
+So **#92 open question (i) is yes**: `restart()` does not throw on an `errored` instance,
+unlike `terminate()`, whose doc comment says it will. That was the fact #92 said would
+decide A vs B. It is not enough, because of what happens next.
+
+The option shape is worth quoting, because it is not what it is easy to assume — the step
+`type` is `'do'`, not `'step'` (`@cloudflare/workers-types/index.d.ts:17193`):
+
+```ts
+interface WorkflowInstanceRestartOptions {
+  /**
+   * Restart from a specific step. If omitted, the instance restarts from the beginning.
+   * The step must exist in the instance's execution history.
+   */
+  from?: {
+    /** The step name as defined in your workflow code. */
+    name: string;
+    /**
+     * 1-indexed occurrence of this step name. Use when the same step name appears
+     * multiple times (e.g. in a loop).
+     * @default 1
+     */
+    count?: number;
+    /** Step type filter. Use when different step types share the same name. */
+    type?: "do" | "sleep" | "waitForEvent";
+  };
+}
+```
+
+| observed, immediately after `restart()` resolved | `cr` (no `from`) | `crf` (`{ from }`) | `cro` (`{ from }`, 10 min of polling) |
+|---|---|---|---|
+| `status` from the binding | `queued` | `queued` | `queued` |
+| `status.error` | `null` | `null` | `null` |
+| step rows in `describe` | **0** | **0** | **0** |
+| still `queued` after | 8 rounds x 5 s | 8 rounds x 5 s | **20 rounds x 30 s** |
+
+Three things, each of which is on its own decisive for #92's mechanism B:
+
+1. **The error is cleared.** `status.error` goes from the object in 8.1 to `null` the
+   instant the restart resolves. That is the evidence requirement 4 needs in order to
+   "fail the run, visibly", and a restart destroys it.
+2. **The step history stops being readable.** This is measured against a baseline rather
+   than guessed: `03703081-…-ce` was captured *before* it was restarted, showing
+   `child:marker-1` and `child:marker-2` Success with `r` `c4282160` and one attempt row
+   each, and `child:throws` Error. After `restart({ from: { name: 'child:throws', count:
+   1, type: 'do' } })` the same `describe` returns `Status: ⌛ Queued` and **`Steps:`
+   empty**, with the original `Queued: 09:19:42` timestamp intact. So #92 open question
+   (ii) — "does `restart({ from })` really preserve completed `summarize:<url>` step
+   results" — is **not answerable through any channel available to a parent**: the cached
+   results are not visible in `describe` and were never visible in `InstanceStatus`. Do
+   not read the empty step list as proof of erasure; read it as the channel going dark.
+3. **It did not come back inside any budget a parent has.** `cro` polled the restarted
+   child through the binding for **20 rounds at 30 s — 10 minutes** — and all 20 read
+   `queued`; `cr` and `crf` were the same over 8 rounds of 5 s each. That is three
+   independent restarts and none resumed. It is *not* measured that they never would:
+   the declaration's own comment for `queued` is "waiting to be started (see concurrency
+   limits)", a mechanism nothing here rules out. The bounded claim is enough.
+   `pollChildBatch` treats anything non-terminal as still pending, so a restarted child
+   burns poll rounds and then trips the round cap whatever the reason it is waiting.
+   #92's costing for B ("one extra poll round is enough") has no support.
+
+**The two readback channels disagree, and one of them is stale.** `wrangler workflows
+instances list probe-child-workflow` reported all three children `Errored` while
+`describe` and the binding reported `queued`. `-ce` settles which: its `list` row reads
+`Modified 02/09/2026, 09:19:48` — the original error, **nine minutes before** the restart
+`f04af383` issued at 09:28:44 — so `list` is showing a pre-restart value and was not
+updated by the restart at all. The `-cr` and `-crf` rows are the same shape: `Modified` 09:22:02 and
+09:22:17, each about a second after that child was *created*, and both before their
+parents got as far as restarting them. There is no second error after the restart; there
+is a `list` view that a restart does not touch. Read the binding, which is what `src/`
+reads anyway. Both channels are committed:
+`captures/03703081-…-ce-after-restart.txt` and
+`captures/probe-child-workflow-instances-list.txt`, read seconds apart.
+
+### 8.5 Verdict on #92's A vs B
+
+**A (recreate under `${parent}-s${i}r1`) beats B (`restart()`)**, and not on the
+one-subrequest margin the costing table turns on. B's three unverified premises resolve
+one yes and two no: the call is accepted on an `errored` instance, but it clears the
+`status.error` requirement 4 reports from, and the restarted instance sat in `queued` for
+ten minutes of binding polls instead of the "one extra round" B was costed at. B's
+headline saving — not re-paying for the summaries the dead child already produced — rests
+on cached step results that no channel available to a parent can see. A recreate spends
+neurons again; a restart spends the run.
+
+*(#92's third open question — whether `WorkflowInternalError` is the only class worth
+recognising — is untouched by this sitting and stays open. Nothing here produced
+`instance.not_found` or an `unknown` status, and fail-closed means each addition has to be
+argued in on its own evidence.)*
+
+### 8.6 Commands
+
+```bash
+npx wrangler deploy -c probe/wrangler.toml
+curl -sX POST https://research-probe.nimeshjm.workers.dev -H 'content-type: application/json' \
+  -d '{"mode":"childerr"}'
+curl -sX POST https://research-probe.nimeshjm.workers.dev -H 'content-type: application/json' \
+  -d '{"mode":"childrestart"}'
+curl -sX POST https://research-probe.nimeshjm.workers.dev -H 'content-type: application/json' \
+  -d '{"mode":"childrestartfrom"}'
+# after capturing 03703081-…-ce's pre-restart describe, restart that same child:
+curl -sX POST https://research-probe.nimeshjm.workers.dev -H 'content-type: application/json' \
+  -d '{"mode":"childrestartof","childId":"03703081-98cb-44d3-a115-9857c90a51ad-ce","rounds":20,"interval":"30 seconds","from":true}'
+
+curl -sX POST https://research-probe.nimeshjm.workers.dev -H 'content-type: application/json' \
+  -d '{"mode":"childcpu","iters":5000000000}'
+
+npx wrangler workflows instances describe probe-workflow <parent-id>
+npx wrangler workflows instances describe probe-child-workflow <parent-id>-ce
+npx wrangler workflows instances list probe-child-workflow    # the channel that disagrees
+```
+
 ## What this settles, and what it overturns
 
 The three sub-hypotheses for the deterministic retries all resolve:
@@ -513,6 +827,16 @@ teardown below it is the only one.
 | `db004cbd-b456-445e-a769-969d67c3a30f` | 7.1 | `noretry-cpu`, 5x10^8, payload build | ✅ closes the build confound |
 | `904a7f11-a06d-433e-bd63-cbecb6c052c2` | 7.1 | `noretry-cpu`, 2x10^8 | ✅ 41 ms |
 | `671c04db-3a60-4900-a5dd-ef8bb7bf0c67` | 7.1 | `noretry-cpu`, 1x10^8 | ✅ 24 ms |
+| `03703081-98cb-44d3-a115-9857c90a51ad` | 8 | `childerr` | ✅ printed the `status` object |
+| `03703081-98cb-44d3-a115-9857c90a51ad-ce` | 8 | the child of it | ❌ 1 attempt, **captured twice**: before the restart and after |
+| `96f639b8-9517-4d70-be6f-7ee24abf2a58` | 8.4 | `childrestart` | ✅ `restart()` resolved, child then `queued` |
+| `96f639b8-9517-4d70-be6f-7ee24abf2a58-cr` | 8.4 | the child of it | ❌ then `queued`, 0 steps |
+| `8157d5d5-9963-4d0c-8b47-6bfbd896aee1` | 8.4 | `childrestartfrom` | ✅ `restart({ from })` resolved, child then `queued` |
+| `8157d5d5-9963-4d0c-8b47-6bfbd896aee1-crf` | 8.4 | the child of it | ❌ then `queued`, 0 steps |
+| `f04af383-6610-4d77-8000-f93b40d724fb` | 8.4 | `childrestartof`, 20 rounds x 30 s | ✅ 10 min of polls, all `queued` |
+| `c02f557b-e77a-4aeb-9e2b-1dd9f92bf855` | 8.1 | `childcpu`, 5x10^9 | ✅ printed a `1102`'s own `status.error` |
+| `c02f557b-e77a-4aeb-9e2b-1dd9f92bf855-cc` | 8.1 | the child of it | ❌ `1102`, 1 attempt |
+| `probe-child-workflow-instances-list.txt` | 8.4 | `instances list`, not a `describe` | the channel that disagrees, kept verbatim |
 
 Live readback works only while the probe Worker and its workflow exist:
 
@@ -520,8 +844,14 @@ Live readback works only while the probe Worker and its workflow exist:
 npx wrangler workflows instances describe probe-workflow <instance-id>
 ```
 
+The `-ce`, `-cr` and `-crf` ids are instances of **`probe-child-workflow`**, so their
+readback command names that workflow, not `probe-workflow`. `03703081-…-ce` is committed
+twice — `…-ce.txt` is the pre-restart capture, `…-ce-after-restart.txt` the same command
+run again after `f04af383` restarted it — because that pair *is* the measurement in 8.4.
+
 Instance state outlives the 3-day dashboard trace retention. It does not outlive
-`wrangler workflows delete probe-workflow`, which takes the instances with it. (Deleting
+`wrangler workflows delete probe-workflow` **or `… delete probe-child-workflow`**, each of
+which takes its own instances with it. (Deleting
 the *Worker* alone does not — measured 2026-08-28: the URL 404s while the workflow and
 its instances remain.) Either way the captures are committed rather than the ids alone.
 

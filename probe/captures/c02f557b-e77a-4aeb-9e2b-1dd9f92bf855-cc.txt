@@ -1,0 +1,56 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.128.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         probe-child-workflow
+Instance Id:           c02f557b-e77a-4aeb-9e2b-1dd9f92bf855-cc
+Version Id:            725ada94-853c-4be1-8f5e-a34a858eb81d
+Status:                ❌ Errored
+Trigger:               🔗 Binding
+Queued:                02/09/2026, 09:40:18
+Success:               ❌ No
+Start:                 02/09/2026, 09:40:20
+End:                   02/09/2026, 09:40:25
+Duration:              5 seconds
+Last Successful Step:  child:marker-2-1
+Error:                 Error: Worker exceeded CPU time limit.
+Steps:
+
+  Name:      child:marker-1-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:40:20
+  End:       02/09/2026, 09:40:20
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"r\":\"600067a4\",\"iso\":\"77f6eea0\",\"seq\":0,\"ms\":9}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:40:20 │ 02/09/2026, 09:40:20 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      child:marker-2-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:40:20
+  End:       02/09/2026, 09:40:20
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"r\":\"600067a4\",\"iso\":\"77f6eea0\",\"seq\":1,\"ms\":28}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:40:20 │ 02/09/2026, 09:40:20 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      child:burns-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:40:20
+  End:       02/09/2026, 09:40:20
+  Duration:  0 seconds
+  Success:   ❌ No
+  Output:    null
+┌──────────────────────┬──────────────────────┬───────────┬──────────┬────────────────────────────────────────┐
+│ Start                │ End                  │ Duration  │ State    │ Error                                  │
+├──────────────────────┼──────────────────────┼───────────┼──────────┼────────────────────────────────────────┤
+│ 02/09/2026, 09:40:20 │ 02/09/2026, 09:40:20 │ 0 seconds │ ❌ Error │ Error: Worker exceeded CPU time limit. │
+└──────────────────────┴──────────────────────┴───────────┴──────────┴────────────────────────────────────────┘

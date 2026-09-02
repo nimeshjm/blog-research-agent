@@ -1,0 +1,467 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.128.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         probe-workflow
+Instance Id:           f04af383-6610-4d77-8000-f93b40d724fb
+Version Id:            2c6a9dcb-69f6-4fb5-871f-aa57dbc3792f
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                02/09/2026, 09:28:43
+Success:               ✅ Yes
+Start:                 02/09/2026, 09:28:43
+End:                   02/09/2026, 09:39:02
+Duration:              10 minutes
+Last Successful Step:  cro:answer-post-1
+Steps:
+
+  Name:      cro:pre-poll-0-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:28:43
+  End:       02/09/2026, 09:28:44
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"errored\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"errored\\\",\\\"error\\\":{\\\"message\\\":\\\"ProbeName-ZZZ: ProbeMessage-QQQ\\\",\\\"name\\\":\\\"Error\\\"},\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[\"message\",\"name\"],\"errorName\":\"Error\",\"errorMessage\":\"ProbeName-ZZZ: ProbeMessage-QQQ\"}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:28:43 │ 02/09/2026, 09:28:44 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:answer-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:28:44
+  End:       02/09/2026, 09:28:44
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"r\":\"62abeb87\",\"iso\":\"657b3173\",\"seq\":0,\"ms\":568,\"status\":\"errored\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"errored\\\",\\\"error\\\":{\\\"message\\\":\\\"ProbeName-ZZZ: ProbeMessage-QQQ\\\",\\\"name\\\":\\\"Error\\\"},\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[\"message\",\"name\"],\"errorName\":\"Error\",\"errorMessage\":\"ProbeName-ZZZ: ProbeMessage-QQQ\"}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:28:44 │ 02/09/2026, 09:28:44 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:restart-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:28:44
+  End:       02/09/2026, 09:28:44
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"r\":\"62abeb87\",\"iso\":\"657b3173\",\"seq\":1,\"ms\":985,\"kind\":\"function\",\"proto\":[\"constructor\",\"pause\",\"resume\",\"terminate\",\"restart\",\"delete\",\"status\",\"sendEvent\"],\"options\":{\"from\":{\"name\":\"child:throws\",\"count\":1,\"type\":\"do\"}},\"outcome\":\"resolved\",\"thrown\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:28:44 │ 02/09/2026, 09:28:44 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:status-immediate-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:28:44
+  End:       02/09/2026, 09:28:45
+  Duration:  1 second
+  Success:   ✅ Yes
+  Output:    "{\"r\":\"62abeb87\",\"iso\":\"657b3173\",\"seq\":2,\"ms\":1639,\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬──────────┬────────────┐
+│ Start                │ End                  │ Duration │ State      │
+├──────────────────────┼──────────────────────┼──────────┼────────────┤
+│ 02/09/2026, 09:28:44 │ 02/09/2026, 09:28:45 │ 1 second │ ✅ Success │
+└──────────────────────┴──────────────────────┴──────────┴────────────┘
+
+  Name:      cro:settle-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:28:45
+  End:       02/09/2026, 09:29:00
+  Duration:  15 seconds
+
+  Name:      cro:post-poll-0-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:29:00
+  End:       02/09/2026, 09:29:00
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:29:00 │ 02/09/2026, 09:29:00 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-0-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:29:00
+  End:       02/09/2026, 09:29:30
+  Duration:  30 seconds
+
+  Name:      cro:post-poll-1-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:29:30
+  End:       02/09/2026, 09:29:30
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:29:30 │ 02/09/2026, 09:29:30 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-1-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:29:30
+  End:       02/09/2026, 09:30:00
+  Duration:  30 seconds
+
+  Name:      cro:post-poll-2-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:30:00
+  End:       02/09/2026, 09:30:00
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:30:00 │ 02/09/2026, 09:30:00 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-2-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:30:00
+  End:       02/09/2026, 09:30:30
+  Duration:  30 seconds
+
+  Name:      cro:post-poll-3-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:30:30
+  End:       02/09/2026, 09:30:30
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:30:30 │ 02/09/2026, 09:30:30 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-3-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:30:30
+  End:       02/09/2026, 09:31:00
+  Duration:  30 seconds
+
+  Name:      cro:post-poll-4-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:31:00
+  End:       02/09/2026, 09:31:00
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:31:00 │ 02/09/2026, 09:31:00 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-4-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:31:00
+  End:       02/09/2026, 09:31:30
+  Duration:  30 seconds
+
+  Name:      cro:post-poll-5-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:31:30
+  End:       02/09/2026, 09:31:30
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:31:30 │ 02/09/2026, 09:31:30 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-5-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:31:30
+  End:       02/09/2026, 09:32:00
+  Duration:  30 seconds
+
+  Name:      cro:post-poll-6-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:32:00
+  End:       02/09/2026, 09:32:00
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:32:00 │ 02/09/2026, 09:32:00 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-6-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:32:00
+  End:       02/09/2026, 09:32:30
+  Duration:  30 seconds
+
+  Name:      cro:post-poll-7-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:32:30
+  End:       02/09/2026, 09:32:30
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:32:30 │ 02/09/2026, 09:32:30 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-7-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:32:30
+  End:       02/09/2026, 09:33:00
+  Duration:  30 seconds
+
+  Name:      cro:post-poll-8-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:33:00
+  End:       02/09/2026, 09:33:01
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:33:00 │ 02/09/2026, 09:33:01 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-8-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:33:01
+  End:       02/09/2026, 09:33:31
+  Duration:  30 seconds
+
+  Name:      cro:post-poll-9-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:33:31
+  End:       02/09/2026, 09:33:31
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:33:31 │ 02/09/2026, 09:33:31 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-9-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:33:31
+  End:       02/09/2026, 09:34:01
+  Duration:  30 seconds
+
+  Name:      cro:post-poll-10-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:34:01
+  End:       02/09/2026, 09:34:01
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:34:01 │ 02/09/2026, 09:34:01 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-10-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:34:01
+  End:       02/09/2026, 09:34:31
+  Duration:  30 seconds
+
+  Name:      cro:post-poll-11-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:34:31
+  End:       02/09/2026, 09:34:31
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:34:31 │ 02/09/2026, 09:34:31 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-11-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:34:31
+  End:       02/09/2026, 09:35:01
+  Duration:  30 seconds
+
+  Name:      cro:post-poll-12-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:35:01
+  End:       02/09/2026, 09:35:01
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:35:01 │ 02/09/2026, 09:35:01 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-12-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:35:01
+  End:       02/09/2026, 09:35:31
+  Duration:  30 seconds
+
+  Name:      cro:post-poll-13-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:35:31
+  End:       02/09/2026, 09:35:31
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:35:31 │ 02/09/2026, 09:35:31 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-13-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:35:31
+  End:       02/09/2026, 09:36:01
+  Duration:  30 seconds
+
+  Name:      cro:post-poll-14-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:36:01
+  End:       02/09/2026, 09:36:01
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:36:01 │ 02/09/2026, 09:36:01 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-14-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:36:01
+  End:       02/09/2026, 09:36:31
+  Duration:  30 seconds
+
+  Name:      cro:post-poll-15-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:36:31
+  End:       02/09/2026, 09:36:31
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:36:31 │ 02/09/2026, 09:36:31 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-15-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:36:31
+  End:       02/09/2026, 09:37:01
+  Duration:  30 seconds
+
+  Name:      cro:post-poll-16-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:37:01
+  End:       02/09/2026, 09:37:01
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:37:01 │ 02/09/2026, 09:37:01 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-16-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:37:01
+  End:       02/09/2026, 09:37:31
+  Duration:  30 seconds
+
+  Name:      cro:post-poll-17-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:37:31
+  End:       02/09/2026, 09:37:32
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:37:31 │ 02/09/2026, 09:37:32 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-17-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:37:32
+  End:       02/09/2026, 09:38:02
+  Duration:  30 seconds
+
+  Name:      cro:post-poll-18-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:38:02
+  End:       02/09/2026, 09:38:02
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:38:02 │ 02/09/2026, 09:38:02 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-18-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:38:02
+  End:       02/09/2026, 09:38:32
+  Duration:  30 seconds
+
+  Name:      cro:post-poll-19-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:38:32
+  End:       02/09/2026, 09:38:32
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:38:32 │ 02/09/2026, 09:38:32 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cro:post-wait-19-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:38:32
+  End:       02/09/2026, 09:39:02
+  Duration:  30 seconds
+
+  Name:      cro:answer-post-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:39:02
+  End:       02/09/2026, 09:39:02
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"r\":\"62abeb87\",\"iso\":\"657b3173\",\"seq\":3,\"ms\":618780,\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null,\"wasErrorName\":\"Error\",\"wasErrorMessage\":\"ProbeName-ZZZ: ProbeMessage-QQQ\"}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:39:02 │ 02/09/2026, 09:39:02 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘

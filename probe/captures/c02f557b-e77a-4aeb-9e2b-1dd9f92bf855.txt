@@ -1,0 +1,93 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.128.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         probe-workflow
+Instance Id:           c02f557b-e77a-4aeb-9e2b-1dd9f92bf855
+Version Id:            281e6a40-5f04-4e2f-aca8-3299a8e43c9e
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                02/09/2026, 09:40:16
+Success:               ✅ Yes
+Start:                 02/09/2026, 09:40:17
+End:                   02/09/2026, 09:40:29
+Duration:              12 seconds
+Last Successful Step:  cc:answer-1
+Steps:
+
+  Name:      cc:create-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:40:17
+  End:       02/09/2026, 09:40:18
+  Duration:  1 second
+  Success:   ✅ Yes
+  Output:    "{\"r\":\"8ccfccba\",\"iso\":\"e8900364\",\"seq\":0,\"ms\":1215,\"childId\":\"c02f557b-e77a-4aeb-9e2b-1dd9f92bf855-cc\",\"created\":true,\"thrown\":null}"
+┌──────────────────────┬──────────────────────┬──────────┬────────────┐
+│ Start                │ End                  │ Duration │ State      │
+├──────────────────────┼──────────────────────┼──────────┼────────────┤
+│ 02/09/2026, 09:40:17 │ 02/09/2026, 09:40:18 │ 1 second │ ✅ Success │
+└──────────────────────┴──────────────────────┴──────────┴────────────┘
+
+  Name:      cc:pre-poll-0-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:40:18
+  End:       02/09/2026, 09:40:19
+  Duration:  1 second
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬──────────┬────────────┐
+│ Start                │ End                  │ Duration │ State      │
+├──────────────────────┼──────────────────────┼──────────┼────────────┤
+│ 02/09/2026, 09:40:18 │ 02/09/2026, 09:40:19 │ 1 second │ ✅ Success │
+└──────────────────────┴──────────────────────┴──────────┴────────────┘
+
+  Name:      cc:pre-wait-0-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:40:19
+  End:       02/09/2026, 09:40:24
+  Duration:  5 seconds
+
+  Name:      cc:pre-poll-1-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:40:24
+  End:       02/09/2026, 09:40:24
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"running\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"running\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:40:24 │ 02/09/2026, 09:40:24 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cc:pre-wait-1-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:40:24
+  End:       02/09/2026, 09:40:29
+  Duration:  5 seconds
+
+  Name:      cc:pre-poll-2-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:40:29
+  End:       02/09/2026, 09:40:29
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"errored\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"errored\\\",\\\"error\\\":{\\\"message\\\":\\\"Worker exceeded CPU time limit.\\\",\\\"name\\\":\\\"Error\\\"},\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[\"message\",\"name\"],\"errorName\":\"Error\",\"errorMessage\":\"Worker exceeded CPU time limit.\"}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:40:29 │ 02/09/2026, 09:40:29 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      cc:answer-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:40:29
+  End:       02/09/2026, 09:40:29
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"r\":\"8ccfccba\",\"iso\":\"e8900364\",\"seq\":1,\"ms\":12374,\"status\":\"errored\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"errored\\\",\\\"error\\\":{\\\"message\\\":\\\"Worker exceeded CPU time limit.\\\",\\\"name\\\":\\\"Error\\\"},\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[\"message\",\"name\"],\"errorName\":\"Error\",\"errorMessage\":\"Worker exceeded CPU time limit.\"}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:40:29 │ 02/09/2026, 09:40:29 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
