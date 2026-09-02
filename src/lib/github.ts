@@ -224,15 +224,38 @@ export interface OpenPullRequestParams {
   base: string;
 }
 
+/**
+ * `head` is `owner:ref` - a **colon**. GitHub ignores a malformed value
+ * rather than rejecting it, so `owner/ref` returned every open PR in the
+ * repo and the caller below reused an unrelated one (#95: run `e0f3bd1c`
+ * recorded PR #1, whose head was a branch from two days earlier, as its
+ * own `pr_url` and still reported success). Measured 2026-09-02: the
+ * `%3A`/`%2F` that `encodeURIComponent` produces over the whole
+ * `owner:ref` filters correctly as a *query value* - unlike the path case
+ * `refExists` documents, where a `%2F`-encoded ref 404s.
+ *
+ * `head.ref` is then checked against what was asked for. It is already on
+ * the response being parsed, so it costs no extra subrequest, and it is
+ * what turns the next filter mistake into a failed run rather than a
+ * plausible wrong URL - nothing cross-checked the result, which is why the
+ * one above was silent.
+ */
 async function findOpenPullRequest(config: GithubConfig, head: string): Promise<string | null> {
   const owner = config.repo.split('/')[0];
   const res = await githubFetch(
     config,
-    `/repos/${config.repo}/pulls?state=open&head=${encodeURIComponent(`${owner}/${head}`)}`,
+    `/repos/${config.repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${head}`)}`,
   );
   if (!res.ok) throw new GithubError(res.status, 'findOpenPullRequest');
-  const list = (await res.json()) as Array<{ html_url: string }>;
-  return list[0]?.html_url ?? null;
+  const list = (await res.json()) as Array<{ html_url: string; head?: { ref?: string } }>;
+  const found = list[0];
+  if (found === undefined) return null;
+  if (found.head?.ref !== head) {
+    // No URL and no ref in the message: REVIEW.md pass 2, the same boundary
+    // GithubError keeps.
+    throw new Error('findOpenPullRequest: the open PR returned is not for the requested head');
+  }
+  return found.html_url;
 }
 
 /**

@@ -65,6 +65,7 @@ function fakeGithub(schemaSource: string, options: { branchPostStatus?: number }
   const branches = new Set<string>();
   const files = new Map<string, { content: string; sha: string }>();
   let openPrUrl: string | null = null;
+  let openPrHead: string | null = null;
   let prPostCount = 0;
   let branchPostCount = 0;
   let fileShaCounter = 0;
@@ -117,10 +118,19 @@ function fakeGithub(schemaSource: string, options: { branchPostStatus?: number }
       return jsonResponse(200, {});
     }
     if (path === `/repos/${repo}/pulls` && method === 'GET') {
-      return jsonResponse(200, openPrUrl === null ? [] : [{ html_url: openPrUrl }]);
+      // Filters the way the real endpoint does: `head` is `owner:ref`, and a
+      // value in any other shape is *ignored* rather than rejected, so the
+      // whole open list comes back (#95). `head.ref` is on the response
+      // because `findOpenPullRequest` cross-checks it.
+      const filter = url.searchParams.get('head');
+      const wanted = filter === null ? null : (/^[^:/]+:(.+)$/.exec(filter)?.[1] ?? null);
+      const open = openPrUrl === null || openPrHead === null ? [] : [{ html_url: openPrUrl, head: { ref: openPrHead } }];
+      if (wanted === null) return jsonResponse(200, open);
+      return jsonResponse(200, open.filter((pr) => pr.head.ref === wanted));
     }
     if (path === `/repos/${repo}/pulls` && method === 'POST') {
       prPostCount++;
+      openPrHead = (JSON.parse(String(init?.body)) as { head: string }).head;
       openPrUrl = `https://github.com/${repo}/pull/1`;
       return jsonResponse(201, { html_url: openPrUrl });
     }
