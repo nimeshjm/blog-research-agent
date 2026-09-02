@@ -168,8 +168,18 @@ describe('buildReduceMessages()', () => {
   it('instructs the model to mark the opening-incident slot instead of inventing one', () => {
     const messages = buildReduceMessages(topic(), [summary()]);
     const system = messages.find((m) => m.role === 'system');
-    expect(system?.content).toContain('<!-- OPENING INCIDENT: needs a real example -->');
+    expect(system?.content).toContain('{/* OPENING INCIDENT: needs a real example */}');
     expect(system?.content).toMatch(/never invent/i);
+  });
+
+  // #96: the marker was asked for as an HTML comment, which MDX v3 rejects -
+  // so every draft the pipeline produced failed the blog's build. The HTML
+  // form must not reappear here, not even as a negative example: this prompt
+  // is the only place the string was ever coming from.
+  it('asks for the marker in MDX comment syntax and never shows the HTML form', () => {
+    const messages = buildReduceMessages(topic(), [summary()]);
+    const system = messages.find((m) => m.role === 'system');
+    expect(system?.content).not.toContain('<!--');
   });
 
   it('asks for exactly title/description/tags/body - never slug, date, authors, or draft', () => {
@@ -206,6 +216,21 @@ describe('parseReduceResponse()', () => {
         body: '## A heading\n\nSome prose.',
       },
     });
+  });
+
+  // #96 made braces part of every body for the first time - the marker is now
+  // `{/* ... */}`. Nothing before this closed the loop from "the prompt asks
+  // for it" to "the body carries it", and a JSON extractor that sliced on
+  // braces rather than parsing would mis-slice a marker inside a string value.
+  // It does not (`tryParseJsonObject` is JSON.parse over candidates), and
+  // `normaliseCitations` only ever rewrites a `【 】` pair, so the marker rides
+  // through untouched. This is what would notice if either changed.
+  it('carries a body containing the MDX marker through the parse and citation pass intact', () => {
+    const body = '## A heading\n\n{/* OPENING INCIDENT: needs a real example */}\n\nProse.';
+    const text = JSON.stringify({ title: 't', description: 'd', tags: ['a'], body });
+    const result = parseReduceResponse(text);
+    expect(result.ok && result.value.body).toBe(body);
+    expect(normaliseCitations(body, [summary()])).toBe(body);
   });
 
   it('reports invalid-json for text that is not JSON at all', () => {

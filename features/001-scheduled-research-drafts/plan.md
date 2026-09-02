@@ -40,7 +40,7 @@ written.
 | `src/lib/extract.ts` | Article body → plain text over `HTMLRewriter`, truncated before it reaches a prompt. `REVIEW.md` pass 1 names regex-over-article-body as a reject. |
 | `src/lib/github.ts` | GitHub REST client: read the base ref, create `research/*`, PUT the file, open the PR. **Takes `baseBranch` as a plain string parameter and never names the identifier `BLOG_BASE_BRANCH`** — `base-branch-not-a-write-target` flags any `src/` file that mentions that identifier *and* contains `refs/heads` or PUTs to `/contents/`, which the branch-creation call unavoidably does. Splitting the file is what keeps the check honest instead of suppressed. |
 | `src/lib/mdx.ts` | Frontmatter emission and validation against the blog's `src/content.config.ts`. Never emits an `image` key; always `draft: true`; kebab-case slug with no space. |
-| `src/lib/prompts.ts` | The two prompt shapes — map (one article) and reduce (brief + draft) — with the `blog-voice` rules as prompt text and the `<!-- OPENING INCIDENT: needs a real example -->` marker instruction. |
+| `src/lib/prompts.ts` | The two prompt shapes — map (one article) and reduce (brief + draft) — with the `blog-voice` rules as prompt text and the `{/* OPENING INCIDENT: needs a real example */}` marker instruction. |
 | `vitest.config.ts` | `@cloudflare/vitest-pool-workers`, pointed at `wrangler.toml` so tests get real bindings. |
 | `test/*.test.ts` | Per-module suites; see Verification. |
 
