@@ -212,6 +212,27 @@ export interface SummarizeParams {
   neuronBudget: number;
   /** 0-based position among the parent's children. Carried only for the `agent.summarize.child_index` span attribute - never used to derive a step name (that stays the static `summarize:<url>` literal). */
   index: number;
+  /**
+   * The *parent* Workflow's own instance id - deliberately not this child's
+   * (`${parentInstanceId}-s${index}`), and not derived from it either (#91,
+   * slice 2). `summarizeArticle` passes this to `createLlm` as AI Gateway
+   * request metadata, so a child's own model calls join to the same `runs`
+   * row (`runs.instance_id`) the parent's own `synthesize` call does -
+   * recovering the ~3% of a run's spend (`synthesize`'s own neurons) that
+   * `recordRunSpend`'s summarize-join write can never see, for a run that
+   * dies after the join. Set once, in `summarizeChildOptions`
+   * (src/workflow.ts), from the same `parentInstanceId` every other field
+   * derived from these params already uses.
+   *
+   * Required, deliberately with no defensive fallback at the read site: a
+   * `SummarizeWorkflow` child created by a pre-#91 deploy and still in flight
+   * when this field's producer ships would carry params without it, handing
+   * `createLlm` an `undefined` `runInstanceId` and, through it, a
+   * `GatewayOptions.metadata` value outside its own declared type - accepted
+   * as a one-deploy, one-child-generation transient rather than defended
+   * against in code TypeScript would otherwise mark unreachable.
+   */
+  parentInstanceId: string;
 }
 
 /** What one `SummarizeWorkflow` child returns, validated - `synthesize` needs the summaries themselves, not a count (requirement 5's size reading). */

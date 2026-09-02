@@ -2,15 +2,16 @@ import { env as testEnv } from 'cloudflare:test';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   attachRunTopic,
-  claimOldestQueuedTopic,
+  claimRow,
   claimTopicById,
   findOrProposeTopic,
   findSeenUrls,
   pruneRunCandidates,
-  reclaimStaleTopics,
+  reclaimAndClaim,
   readRunCandidates,
   readSourceWeights,
   recordRunOutcome,
+  recordRunSpend,
   SEEN_URLS_CHUNK_SIZE,
   startRun,
   writeRunCandidates,
@@ -51,7 +52,17 @@ function candidate(overrides: Partial<Candidate> = {}): Candidate {
   };
 }
 
-describe('claimOldestQueuedTopic()', () => {
+/**
+ * `reclaimAndClaim` + `claimRow` is the pairing `selectTopic`'s
+ * queue-draining path now runs in production (#91): `reclaimAndClaim`'s own
+ * `SELECT` finds the oldest `queued` row, and `claimRow` - exported for
+ * exactly this - is the caller's next, separate call to actually claim it.
+ * This describe covers what `claimOldestQueuedTopic()`'s suite covered
+ * before that function was deleted as a dead export duplicating
+ * `reclaimAndClaim`'s SQL: the pairing's ordering, its idempotent-drain
+ * behaviour, and `claimRow`'s own `claimed_at` stamp.
+ */
+describe('reclaimAndClaim() + claimRow() (queue draining)', () => {
   it('claims the oldest queued row and transitions it to in_progress', async () => {
     await env.DB.prepare(
       `INSERT INTO topics (title, angle, status, origin, created_at) VALUES (?, ?, 'queued', 'human', ?)`,
@@ -64,19 +75,16 @@ describe('claimOldestQueuedTopic()', () => {
       .bind('newer', null, '2026-08-20T00:00:00Z')
       .run();
 
-    const claimed = await claimOldestQueuedTopic(env.DB);
+    const { row } = await reclaimAndClaim(env.DB, 6);
+    const claimed = row === null ? null : await claimRow(env.DB, row);
 
     expect(claimed?.title).toBe('older');
     expect(claimed?.status).toBe('in_progress');
 
-    const row = await env.DB.prepare('SELECT status FROM topics WHERE title = ?').bind('older').first<{
+    const persisted = await env.DB.prepare('SELECT status FROM topics WHERE title = ?').bind('older').first<{
       status: string;
     }>();
-    expect(row?.status).toBe('in_progress');
-  });
-
-  it('returns null when the queue is empty', async () => {
-    expect(await claimOldestQueuedTopic(env.DB)).toBeNull();
+    expect(persisted?.status).toBe('in_progress');
   });
 
   it('a second call finds nothing once the only queued row is claimed', async () => {
@@ -87,24 +95,26 @@ describe('claimOldestQueuedTopic()', () => {
       `INSERT INTO topics (title, angle, status, origin) VALUES ('only', NULL, 'queued', 'human')`,
     ).run();
 
-    const first = await claimOldestQueuedTopic(env.DB);
-    const second = await claimOldestQueuedTopic(env.DB);
+    const first = await reclaimAndClaim(env.DB, 6);
+    const firstClaimed = first.row === null ? null : await claimRow(env.DB, first.row);
+    const second = await reclaimAndClaim(env.DB, 6);
 
-    expect(first?.status).toBe('in_progress');
-    expect(second).toBeNull();
+    expect(firstClaimed?.status).toBe('in_progress');
+    expect(second.row).toBeNull();
   });
 
-  it('stamps claimed_at when claiming a queued row', async () => {
+  it("stamps claimRow's own claimed_at when claiming a queued row", async () => {
     await env.DB.prepare(
       `INSERT INTO topics (title, angle, status, origin) VALUES ('stampable', NULL, 'queued', 'human')`,
     ).run();
 
-    await claimOldestQueuedTopic(env.DB);
+    const { row } = await reclaimAndClaim(env.DB, 6);
+    if (row !== null) await claimRow(env.DB, row);
 
-    const row = await env.DB.prepare(`SELECT claimed_at FROM topics WHERE title = 'stampable'`).first<{
+    const persisted = await env.DB.prepare(`SELECT claimed_at FROM topics WHERE title = 'stampable'`).first<{
       claimed_at: string | null;
     }>();
-    expect(row?.claimed_at).not.toBeNull();
+    expect(persisted?.claimed_at).not.toBeNull();
   });
 });
 
@@ -570,24 +580,38 @@ describe('attachRunTopic()', () => {
   });
 });
 
-describe('reclaimStaleTopics()', () => {
-  it('returns a stale in_progress topic to queued, clears claimed_at, and counts it', async () => {
-    const insert = await env.DB
+describe('reclaimAndClaim()', () => {
+  it('reclaims a stale topic, clears its claimed_at, sweeps a stranded run, and returns the newly-queued row in one call (#91)', async () => {
+    const stale = await env.DB
       .prepare(
         `INSERT INTO topics (title, angle, status, origin, claimed_at)
          VALUES ('stale', NULL, 'in_progress', 'human', datetime('now', '-7 hours')) RETURNING id`,
       )
       .first<{ id: number }>();
+    await env.DB
+      .prepare(`INSERT INTO runs (instance_id, status, started_at) VALUES ('stranded-run', 'running', datetime('now', '-7 hours'))`)
+      .run();
 
-    const changed = await reclaimStaleTopics(env.DB, 6);
-    expect(changed).toBe(1);
+    const result = await reclaimAndClaim(env.DB, 6);
 
-    const row = await env.DB.prepare('SELECT status, claimed_at FROM topics WHERE id = ?').bind(insert?.id).first<{
-      status: string;
+    expect(result.reclaimedTopics).toBe(1);
+    expect(result.strandedRuns).toBe(1);
+    // The SELECT sees the reclaim's own write - same batch, same transaction,
+    // reclaim ordered first.
+    expect(result.row?.id).toBe(stale?.id);
+    expect(result.row?.status).toBe('queued');
+
+    const persistedTopic = await env.DB.prepare('SELECT claimed_at FROM topics WHERE id = ?').bind(stale?.id).first<{
       claimed_at: string | null;
     }>();
-    expect(row?.status).toBe('queued');
-    expect(row?.claimed_at).toBeNull();
+    expect(persistedTopic?.claimed_at).toBeNull();
+
+    const runRow = await env.DB.prepare('SELECT status, finished_at FROM runs WHERE instance_id = ?').bind('stranded-run').first<{
+      status: string;
+      finished_at: string | null;
+    }>();
+    expect(runRow?.status).toBe('failed');
+    expect(runRow?.finished_at).not.toBeNull();
   });
 
   it('leaves a topic claimed within the TTL untouched', async () => {
@@ -598,8 +622,9 @@ describe('reclaimStaleTopics()', () => {
       )
       .first<{ id: number }>();
 
-    const changed = await reclaimStaleTopics(env.DB, 6);
-    expect(changed).toBe(0);
+    const result = await reclaimAndClaim(env.DB, 6);
+    expect(result.reclaimedTopics).toBe(0);
+    expect(result.row).toBeNull(); // not returned to queued, so not selectable either
 
     const row = await env.DB.prepare('SELECT status FROM topics WHERE id = ?').bind(insert?.id).first<{
       status: string;
@@ -607,19 +632,109 @@ describe('reclaimStaleTopics()', () => {
     expect(row?.status).toBe('in_progress');
   });
 
-  it('leaves a row with claimed_at IS NULL alone (a pre-migration claim, not guessed at)', async () => {
+  it('leaves a topic with claimed_at IS NULL alone (a pre-migration claim, not guessed at)', async () => {
     const insert = await env.DB
       .prepare(
         `INSERT INTO topics (title, angle, status, origin) VALUES ('pre-migration', NULL, 'in_progress', 'human') RETURNING id`,
       )
       .first<{ id: number }>();
 
-    const changed = await reclaimStaleTopics(env.DB, 6);
-    expect(changed).toBe(0);
+    const result = await reclaimAndClaim(env.DB, 6);
+    expect(result.reclaimedTopics).toBe(0);
 
     const row = await env.DB.prepare('SELECT status FROM topics WHERE id = ?').bind(insert?.id).first<{
       status: string;
     }>();
     expect(row?.status).toBe('in_progress');
+  });
+
+  it('returns the oldest already-queued row when nothing needs reclaiming', async () => {
+    await env.DB.prepare(
+      `INSERT INTO topics (title, angle, status, origin, created_at) VALUES ('older', NULL, 'queued', 'human', '2026-08-01T00:00:00Z')`,
+    ).run();
+    await env.DB.prepare(
+      `INSERT INTO topics (title, angle, status, origin, created_at) VALUES ('newer', NULL, 'queued', 'human', '2026-08-20T00:00:00Z')`,
+    ).run();
+
+    const result = await reclaimAndClaim(env.DB, 6);
+
+    expect(result.reclaimedTopics).toBe(0);
+    expect(result.strandedRuns).toBe(0);
+    expect(result.row?.title).toBe('older');
+    // Not yet claimed - reclaimAndClaim only returns the row, per its own
+    // doc comment. claimRow (the caller's next, separate call) is what
+    // transitions it.
+    expect(result.row?.status).toBe('queued');
+  });
+
+  it('returns a null row when the queue is empty', async () => {
+    const result = await reclaimAndClaim(env.DB, 6);
+    expect(result.row).toBeNull();
+  });
+
+  it('never sweeps a runs row within the TTL (a live run is not marked failed)', async () => {
+    await env.DB.prepare(`INSERT INTO runs (instance_id, status, started_at) VALUES ('live-run', 'running', datetime('now'))`).run();
+
+    const result = await reclaimAndClaim(env.DB, 6);
+
+    expect(result.strandedRuns).toBe(0);
+    const row = await env.DB.prepare('SELECT status FROM runs WHERE instance_id = ?').bind('live-run').first<{
+      status: string;
+    }>();
+    expect(row?.status).toBe('running');
+  });
+
+  it('never sweeps a runs row that already finished, whatever its outcome', async () => {
+    // status = 'running' is the sweep's own guard - a stale write must never
+    // clobber a row a terminal record-* step already resolved.
+    await env.DB
+      .prepare(
+        `INSERT INTO runs (instance_id, status, started_at, finished_at)
+         VALUES ('done-run', 'succeeded', datetime('now', '-7 hours'), datetime('now', '-6 hours'))`,
+      )
+      .run();
+
+    await reclaimAndClaim(env.DB, 6);
+
+    const row = await env.DB.prepare('SELECT status FROM runs WHERE instance_id = ?').bind('done-run').first<{
+      status: string;
+    }>();
+    expect(row?.status).toBe('succeeded');
+  });
+});
+
+describe('recordRunSpend()', () => {
+  it('writes neurons_spent without touching status, finished_at, or pr_url', async () => {
+    await startRun(env.DB, 'run-1');
+    await env.DB.prepare(`UPDATE runs SET status = 'running' WHERE instance_id = 'run-1'`).run();
+
+    await recordRunSpend(env.DB, 'run-1', 4000);
+
+    const row = await env.DB.prepare('SELECT status, neurons_spent, finished_at, pr_url FROM runs WHERE instance_id = ?')
+      .bind('run-1')
+      .first<{ status: string; neurons_spent: number; finished_at: string | null; pr_url: string | null }>();
+    expect(row?.neurons_spent).toBe(4000);
+    expect(row?.status).toBe('running');
+    expect(row?.finished_at).toBeNull();
+    expect(row?.pr_url).toBeNull();
+  });
+
+  it('never resurrects a row that does not exist', async () => {
+    await recordRunSpend(env.DB, 'no-such-run', 100);
+
+    const row = await env.DB.prepare('SELECT * FROM runs WHERE instance_id = ?').bind('no-such-run').first();
+    expect(row).toBeNull();
+  });
+
+  it('a later call overwrites an earlier one with the new cumulative total', async () => {
+    await startRun(env.DB, 'run-2');
+
+    await recordRunSpend(env.DB, 'run-2', 1500);
+    await recordRunSpend(env.DB, 'run-2', 4200);
+
+    const row = await env.DB.prepare('SELECT neurons_spent FROM runs WHERE instance_id = ?').bind('run-2').first<{
+      neurons_spent: number;
+    }>();
+    expect(row?.neurons_spent).toBe(4200);
   });
 });

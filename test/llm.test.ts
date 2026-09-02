@@ -40,7 +40,7 @@ describe('createLlm().complete()', () => {
       ],
       usage: { prompt_tokens: 74, completion_tokens: 32, neurons: 4.54 },
     };
-    const llm = createLlm(stubEnv(fixture));
+    const llm = createLlm(stubEnv(fixture), 'run-test');
     const result = await llm.complete({ messages: [{ role: 'user', content: 'ping' }] });
 
     expect(result.text).toContain('pong');
@@ -53,7 +53,7 @@ describe('createLlm().complete()', () => {
       choices: [{ message: { content: 'pong', reasoning: 'thinking...' }, finish_reason: 'stop' }],
       usage: { prompt_tokens: 10, completion_tokens: 5 },
     };
-    const llm = createLlm(stubEnv(fixture));
+    const llm = createLlm(stubEnv(fixture), 'run-test');
     const result = await llm.complete({ messages: [{ role: 'user', content: 'ping' }] });
 
     expect(result.text).toBe('pong');
@@ -64,7 +64,7 @@ describe('createLlm().complete()', () => {
       choices: [{ message: { content: null, reasoning_content: 'legacy reasoning field' } }],
       usage: { prompt_tokens: 10, completion_tokens: 5 },
     };
-    const llm = createLlm(stubEnv(fixture));
+    const llm = createLlm(stubEnv(fixture), 'run-test');
     const result = await llm.complete({ messages: [{ role: 'user', content: 'ping' }] });
 
     expect(result.text).toBe('legacy reasoning field');
@@ -75,7 +75,7 @@ describe('createLlm().complete()', () => {
       choices: [{ message: { content: null }, finish_reason: 'length' }],
       usage: { prompt_tokens: 74, completion_tokens: 2048 },
     };
-    const llm = createLlm(stubEnv(fixture));
+    const llm = createLlm(stubEnv(fixture), 'run-test');
 
     await expect(
       llm.complete({ messages: [{ role: 'user', content: 'ping' }], maxTokens: 2048 }),
@@ -87,7 +87,7 @@ describe('createLlm().complete()', () => {
       choices: [{ message: { content: null }, finish_reason: 'content_filter' }],
       usage: { prompt_tokens: 10, completion_tokens: 0 },
     };
-    const llm = createLlm(stubEnv(fixture));
+    const llm = createLlm(stubEnv(fixture), 'run-test');
 
     let message = '';
     try {
@@ -105,7 +105,7 @@ describe('createLlm().complete()', () => {
       choices: [{ message: { content: 'pong' }, finish_reason: 'stop' }],
       usage: { prompt_tokens: 10, completion_tokens: 5 },
     };
-    const llm = createLlm(stubEnv(fixture, capture));
+    const llm = createLlm(stubEnv(fixture, capture), 'run-test');
 
     await llm.complete({ messages: [{ role: 'user', content: 'ping' }], maxTokens: 32 });
 

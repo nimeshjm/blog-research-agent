@@ -1,15 +1,16 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import {
   attachRunTopic,
-  claimOldestQueuedTopic,
+  claimRow,
   claimTopicById,
   findOrProposeTopic,
   findSeenUrls,
   pruneRunCandidates,
   readRunCandidates,
   readSourceWeights,
-  reclaimStaleTopics,
+  reclaimAndClaim,
   recordRunOutcome,
+  recordRunSpend,
   startRun,
 } from './lib/d1';
 import { fetchFeedItems } from './lib/feed-fetch';
@@ -46,6 +47,7 @@ import {
   ATTR_NEURONS_SPENT,
   ATTR_PUBLISH_CHILDREN,
   ATTR_RUN_STATUS,
+  ATTR_RUNS_STRANDED_CLOSED,
   ATTR_SOURCES_GATHERED,
   ATTR_SOURCES_SHORTLISTED,
   ATTR_SOURCES_USED,
@@ -119,11 +121,18 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
 
     // 1. Queue first; the agent proposes a topic only when the queue is empty.
     // `agent.topic.id` is only known once the call returns, so it is set on
-    // the span handed to the body rather than passed in as an attr.
+    // the span handed to the body rather than passed in as an attr. Same for
+    // `agent.runs.stranded_closed` (#91): `selectTopic`'s scheduled path
+    // sweeps `runs` rows left `running` past `TOPIC_CLAIM_TTL_HOURS` to
+    // `failed` in the same D1 call that reclaims stale topics - see
+    // `reclaimAndClaim` (src/lib/d1.ts) for why the two sweeps share one
+    // batch, and `TOPIC_CLAIM_TTL_HOURS`'s own comment for why the sweep is
+    // replay-safe here.
     const topic = await traceStep('select-topic', {}, async (span) => {
       const result = await selectTopic(this.env, event.instanceId, event.payload.topicId);
-      if (result !== null) span.setAttribute(ATTR_TOPIC_ID, result.id);
-      return result;
+      if (result.topic !== null) span.setAttribute(ATTR_TOPIC_ID, result.topic.id);
+      span.setAttribute(ATTR_RUNS_STRANDED_CLOSED, result.strandedRuns);
+      return result.topic;
     });
 
     if (topic === null) {
@@ -285,6 +294,56 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
         // is in the step output; only the count reaches the span.
         const replacements = result.done ? state.replacements : result.state.replacements;
         span.setAttribute(ATTR_SUMMARIZE_REPLACEMENTS, Object.keys(replacements ?? {}).length);
+
+        // Writes the run's cumulative spend here, on the `done` round only
+        // (#91) - not at `synthesize`, and not one round earlier. `neuronsSpent`
+        // (the outer closure's running total, gather and synthesis contribute
+        // nothing to it yet at this point) is read, never mutated, inside this
+        // step body - reading it is safe under replay, and mutating it here
+        // would violate the "total survives replay only because it is rebuilt
+        // from step results" rule the closure's own declaration carries.
+        //
+        // This is free on the pessimal path: the loop only reaches `round >=
+        // maxPolls - 1` without `result.done` when it is about to throw
+        // (`pollChildBatch`'s own comment), so the write below never runs on
+        // that path and the parent's pessimal ledger stays at 49 of 50 -
+        // `select-topic`'s own change above (`reclaimAndClaim`) is what freed
+        // the subrequest this spends on the typical path. See
+        // `createPublishChildren`'s comment for the recounted arithmetic.
+        //
+        // The join, not `synthesize`, is what makes this worth doing:
+        // identical cost, strictly better coverage. ~4,000 of a typical
+        // ~4,300-neuron run is known here, so a run that dies *inside*
+        // `synthesize` still gets a real number - writing at `synthesize`
+        // instead would record 0 for that run. The accepted residue is
+        // `synthesize`'s own ~130 neurons (~3%), absent from the row for a run
+        // that dies after it; slice 2 (AI Gateway request metadata, `llm.ts`)
+        // is what makes that residue recoverable from gateway logs instead.
+        if (result.done) {
+          const total = neuronsSpent + result.neuronsSpent;
+          span.setAttribute(ATTR_NEURONS_SPENT, total);
+          // Best-effort, deliberately not awaited-and-let-throw: this write's
+          // whole purpose is to survive a failure elsewhere, so it must not be
+          // able to manufacture one. Steps are not retried (`tracedStep`'s
+          // zero-retry policy), so an unguarded throw here would fail this
+          // step outright - killing the run at the join with ~4,000 neurons
+          // already spent, discarding the summaries this same round just
+          // gathered, and leaving the row exactly `running`/`0` - #91's bug,
+          // now caused by #91's own fix. Swallowing is strictly better: on
+          // failure the row is no worse off than before this feature existed,
+          // where throwing costs the whole run on top. Same reasoning as
+          // `recordOutcome`'s prune-after-outcome ordering below - a
+          // secondary write must not be allowed to fail the primary one -
+          // applied here as a catch, because there is no "after" to reorder
+          // into. `error.type` is the constructor name only, per CLAUDE.md's
+          // observability rule, so a persistent D1 problem is visible on the
+          // span rather than silently absorbed forever.
+          try {
+            await recordRunSpend(this.env.DB, event.instanceId, total);
+          } catch (err) {
+            span.setAttribute('error.type', (err as Error)?.constructor?.name ?? 'Error');
+          }
+        }
         return result;
       });
       if (outcome.done) {
@@ -316,7 +375,7 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
 
     // 4. Reduce: one synthesis call producing the brief and the draft.
     const synthesis = await traceStep('synthesize', {}, async () => {
-      return synthesizeDraft(this.env, topic, summaries);
+      return synthesizeDraft(this.env, event.instanceId, topic, summaries);
     });
     neuronsSpent += synthesis.neurons;
 
@@ -340,7 +399,14 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
     // loops above give. `record-success` deliberately comes *after* this
     // loop: the `runs` row's `pr_url` is what the child returns, so the
     // parent still owns the bookkeeping and still writes it last (spec.md
-    // requirement 8).
+    // requirement 2, not requirement 8 - corrected #91; requirement 2's own
+    // text is "`record-success` in particular stays here **and stays
+    // last**"). That reasoning is `pr_url`-only now: `neurons_spent` is no
+    // longer waiting on this loop at all, having been written earlier, at the
+    // summarize join (#91, `recordRunSpend` above) - `record-success` still
+    // writes it too, because `recordRunOutcome`'s `INSERT ... ON CONFLICT DO
+    // UPDATE` always writes every column, but by the time it runs here the
+    // value is usually already on the row.
     let prUrl = '';
     let publishState: PublishPollState = initialChildPollState(publishChildIds);
     for (let round = 0; ; round++) {
@@ -431,10 +497,29 @@ const SYNTHESIS_MAX_TOKENS = 8192;
 export const RUN_CANDIDATE_RETENTION_DAYS = 7;
 /**
  * How long a claim survives its claimant (spec.md req. 9, which asks for the
- * margin to be stated rather than implied). Six hours against a run bounded
- * by 46 gather steps plus 15 article steps plus inference - minutes, not
- * hours - and a 48-hour cron gap: too long to race a live run, too short to
- * strand a topic across a cycle.
+ * margin to be stated rather than implied). **Now governs two `WHERE`
+ * clauses, not one** (#91): `reclaimAndClaim` (src/lib/d1.ts) uses this same
+ * value both for the `topics` reclaim it always did and for the `runs`
+ * sweep - "this run is unattended by definition" past `ttlHours` is the same
+ * argument for a stranded topic and a stranded run, so it is the same
+ * constant rather than a second one.
+ *
+ * **Margin, recomputed against the current child-Workflow shape rather than
+ * the pre-#75 "46 gather steps plus 15 article steps" this comment used to
+ * cite** (stale even before #91 - there is no per-feed or per-article step on
+ * the parent any more). The parent's longest legitimate wall clock is now
+ * bounded by the three poll loops' own backstops, worst case, back to back:
+ * gather at most `GATHER_POLL_SUBREQUEST_BUDGET` (10) rounds of
+ * `GATHER_POLL_INTERVAL` (30 s) = 300 s; summarize at most
+ * `SUMMARIZE_POLL_SUBREQUEST_BUDGET` (9) rounds of `SUMMARIZE_POLL_INTERVAL`
+ * (180 s) = 1,620 s, plus the one-replacement grant
+ * (`SUMMARIZE_REPLACEMENT_POLL_ROUNDS`, 2 rounds at the same 180 s) = 360 s;
+ * publish at most `PUBLISH_POLL_SUBREQUEST_BUDGET` (4) rounds of
+ * `PUBLISH_POLL_INTERVAL` (15 s) = 60 s. 300 + 1,620 + 360 + 60 = 2,340 s,
+ * roughly 40 minutes. Six hours is roughly 9x that - too long to race a live
+ * run, too short to strand a topic (or a run) across the 48-hour cron gap.
+ * If 6 h were too short for a run, it would already have been too short for
+ * that run's topic, which is the point: one constant, two rows.
  */
 export const TOPIC_CLAIM_TTL_HOURS = 6;
 /** Newest-first ceiling: 40 of D1's 50 queries, ten spare. */
@@ -464,29 +549,46 @@ export const DUPLICATE_TOKEN_THRESHOLD = 2;
 // the caller can enforce NEURON_BUDGET_PER_RUN between steps.
 // ---------------------------------------------------------------------------
 
-export async function selectTopic(env: Env, instanceId: string, topicId: number | undefined): Promise<Topic | null> {
+/** `selectTopic`'s result: the topic (or null, falling through to `record-no-topic`) plus how many `runs` rows the scheduled path's sweep closed - see `run()`'s `select-topic` step, which is the only reader of the second field. */
+export interface SelectTopicResult {
+  topic: Topic | null;
+  strandedRuns: number;
+}
+
+export async function selectTopic(env: Env, instanceId: string, topicId: number | undefined): Promise<SelectTopicResult> {
   // A manually-targeted run (event.payload.topicId set) claims that specific
   // row rather than draining the queue - see ResearchParams in lib/types.ts.
   // This is already the manual recovery spec.md req. 8 describes (claimRow
   // recovers an in_progress row for a run that names it), so it does not
   // also reclaim - a hand-triggered run reclaiming *other* runs' stranded
-  // topics would widen its blast radius for no gain.
+  // topics would widen its blast radius for no gain. It does not sweep
+  // stranded runs either, for the same reason (#91): a targeted run's blast
+  // radius stays scoped to the topic it was told to research.
   if (topicId !== undefined) {
     const named = await claimTopicById(env.DB, topicId);
     if (named !== null) await attachRunTopic(env.DB, instanceId, named.id);
-    return named;
+    return { topic: named, strandedRuns: 0 };
   }
 
   // Scheduled path only: a topic left in_progress past TOPIC_CLAIM_TTL_HOURS
   // is unattended by definition (spec.md req. 8), so reclaiming here, before
   // draining the queue, is what makes it selectable again without a human
-  // passing its id.
-  await reclaimStaleTopics(env.DB, TOPIC_CLAIM_TTL_HOURS);
-
-  const queued = await claimOldestQueuedTopic(env.DB);
-  if (queued !== null) {
-    await attachRunTopic(env.DB, instanceId, queued.id);
-    return queued;
+  // passing its id. `reclaimAndClaim` (#91, src/lib/d1.ts) folds a second,
+  // analogous sweep into the same D1 call: a `runs` row left `running` past
+  // the same TTL is unattended by the same argument, so it is closed to
+  // `failed` here too - see that function's comment for why one `db.batch()`
+  // carries both sweeps plus the queued-topic lookup at one subrequest, and
+  // `TOPIC_CLAIM_TTL_HOURS`'s own comment for the margin both sweeps share.
+  const { row, strandedRuns } = await reclaimAndClaim(env.DB, TOPIC_CLAIM_TTL_HOURS);
+  if (row !== null) {
+    // Not part of the batch above - it needs the id the batch's own SELECT
+    // just returned, and a db.batch() call's statements are all bound before
+    // any of them run. See reclaimAndClaim's comment.
+    const queued = await claimRow(env.DB, row);
+    if (queued !== null) {
+      await attachRunTopic(env.DB, instanceId, queued.id);
+      return { topic: queued, strandedRuns };
+    }
   }
 
   // Only reached when the queue is empty (spec.md req. 2). Proposing a topic
@@ -501,7 +603,7 @@ export async function selectTopic(env: Env, instanceId: string, topicId: number 
   // instead. See features/001-scheduled-research-drafts/plan.md, steps 3
   // and 4.
   const proposal = await proposeTopic(env);
-  if (proposal === null) return null;
+  if (proposal === null) return { topic: null, strandedRuns };
 
   // attachRunTopic runs on all three success paths, not only this one: a run
   // that dies later - in gather, not in select-topic - must still record
@@ -509,7 +611,7 @@ export async function selectTopic(env: Env, instanceId: string, topicId: number 
   // 10's runs row (the runs row says which topic, the TTL brings it back).
   const proposed = await findOrProposeTopic(env.DB, proposal);
   await attachRunTopic(env.DB, instanceId, proposed.id);
-  return proposed;
+  return { topic: proposed, strandedRuns };
 }
 
 async function loadSources(_env: Env): Promise<Source[]> {
@@ -987,6 +1089,10 @@ function summarizeChildOptions(
       topic,
       neuronBudget: totalCandidates === 0 ? 0 : (availableBudget * chunk.length) / totalCandidates,
       index,
+      // The parent's own instance id, not derived from the child id this
+      // function just built - see SummarizeParams.parentInstanceId's doc
+      // comment (#91, slice 2).
+      parentInstanceId,
     } satisfies SummarizeParams,
   }));
 }
@@ -1306,6 +1412,33 @@ function validateSummarizeOutput(output: unknown, childId: string): SummarizeChi
  * publication moved out, it is now the largest single term in the 23 and the
  * only one that follows the feed allowlist - spec.md's risk table records that
  * rather than tuning around it.
+ *
+ * **Recounted 2026-09-02 (#91), for the failed-run-spend fix, and the two
+ * changes net to zero.** `select-topic`'s own term on the queue-draining path
+ * was actually **4** separate D1 calls where this comment's arithmetic above
+ * used "~3": a topic-reclaim `UPDATE`, a `SELECT` for the oldest queued row, a
+ * `claimRow` `UPDATE` to claim it, and `attachRunTopic`. `reclaimAndClaim`
+ * (src/lib/d1.ts) folds the first two into one `db.batch()` call and adds a
+ * third statement - the new `runs` sweep this fix needs - for free inside it,
+ * taking the term to **3**: the batch call, `claimRow`'s own `UPDATE` (still
+ * a separate call - it needs the id the batch's `SELECT` returned, and a
+ * batch's statements are all bound before any of them run), and
+ * `attachRunTopic`. Net **-1** on that path - which happens to make the
+ * actual cost match what this comment always said, so the **23 fixed** and
+ * **49 of 50 pessimal** figures above stand as written, not because nothing
+ * changed but because a stale figure and a real saving landed on the same
+ * number.
+ *
+ * That -1 is what pays for the other half: the summarize join now costs one
+ * more subrequest, but only on the round that reaches `done` -
+ * `recordRunSpend` (src/lib/d1.ts) writes the run's cumulative spend there,
+ * inside `await-summarize-children:<round>`'s own step body. Free on the
+ * pessimal path by construction - a pessimal round is exactly one where the
+ * poll budget is exhausted *without* reaching `done` (`pollChildBatch`'s own
+ * comment), so the write never runs there and the pessimal 49-of-50 figure is
+ * unaffected either way. On the typical path it spends the subrequest
+ * `select-topic`'s change freed, taking the earlier ~32-of-50 typical figure
+ * to about **33 of 50**.
  */
 export async function createPublishChildren(env: Env, parentInstanceId: string, draft: Draft): Promise<string[]> {
   return createChildBatch(env.PUBLISH_WORKFLOW, [
@@ -1446,13 +1579,18 @@ function describeParseFailure(reason: ReduceParseFailure, textLength: number, ke
  * `openPullRequest`'s branch name deterministic across a retry (see its own
  * comment) - `date` is fixed once, at the point `synthesizeDraft`'s
  * `step.do` result is first cached, and never recomputed afterwards.
+ *
+ * `runInstanceId` (#91, slice 2) is `run()`'s own `event.instanceId`, passed
+ * through unchanged to `createLlm` as AI Gateway request metadata - see that
+ * function's doc comment (src/lib/llm.ts).
  */
 export async function synthesizeDraft(
   env: Env,
+  runInstanceId: string,
   topic: Topic,
   summaries: ArticleSummary[],
 ): Promise<{ draft: Draft; neurons: number }> {
-  const llm = createLlm(env);
+  const llm = createLlm(env, runInstanceId);
   const result = await llm.complete({
     messages: buildReduceMessages(topic, summaries),
     maxTokens: SYNTHESIS_MAX_TOKENS,

@@ -45,7 +45,7 @@ export async function runSummarize(
   event: WorkflowEvent<SummarizeParams>,
 ): Promise<SummarizeChildOutput> {
   const traceStep = tracerFor(step, event);
-  const { candidates, topic, neuronBudget } = event.payload;
+  const { candidates, topic, neuronBudget, parentInstanceId } = event.payload;
 
   const summaries: ArticleSummary[] = [];
   let neuronsSpent = 0;
@@ -70,7 +70,7 @@ export async function runSummarize(
       `summarize:${candidate.url}`,
       { [ATTR_SUMMARIZE_CHILD_INDEX]: event.payload.index },
       async (span) => {
-        const outcome = await summarizeArticle(env, candidate, topic);
+        const outcome = await summarizeArticle(env, candidate, topic, parentInstanceId);
         if (outcome.skipReason !== undefined) span.setAttribute(ATTR_SUMMARIZE_SKIP_REASON, outcome.skipReason);
         return outcome;
       },
@@ -144,8 +144,19 @@ function truncatedMessage(err: unknown): string {
  * (spec.md risk table). `neurons` is still reported on every path that
  * actually spent them, so the budget gate in `runSummarize` stays accurate
  * even when the article was a bust.
+ *
+ * `parentInstanceId` is threaded through to `createLlm` unchanged (#91, slice
+ * 2) - the *parent* `ResearchWorkflow`'s instance id, not this child's own,
+ * so the gateway metadata this call tags joins back to the same `runs` row
+ * every other call in the run does. See `SummarizeParams.parentInstanceId`'s
+ * doc comment (src/lib/types.ts).
  */
-export async function summarizeArticle(env: Env, candidate: Candidate, topic: Topic): Promise<SummarizeResult> {
+export async function summarizeArticle(
+  env: Env,
+  candidate: Candidate,
+  topic: Topic,
+  parentInstanceId: string,
+): Promise<SummarizeResult> {
   let response: Response;
   try {
     response = await fetch(candidate.url);
@@ -157,7 +168,7 @@ export async function summarizeArticle(env: Env, candidate: Candidate, topic: To
   const articleText = await extractArticleText(response);
   if (articleText === '') return { summary: null, neurons: 0, skipReason: 'empty-extract' };
 
-  const llm = createLlm(env);
+  const llm = createLlm(env, parentInstanceId);
   const result = await llm.complete({
     messages: buildMapMessages(topic, candidate, articleText),
     maxTokens: MAP_MAX_TOKENS,

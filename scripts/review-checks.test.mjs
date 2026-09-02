@@ -413,8 +413,8 @@ const rows = [
       mustReplace(
         dir,
         'src/workflow.ts',
-        '      if (result !== null) span.setAttribute(ATTR_TOPIC_ID, result.id);',
-        "      if (result !== null) span.setAttribute(ATTR_TOPIC_ID, result.id);\n      try { throw new Error('x'); } catch (err) { span.setAttribute(ATTR_TOPIC_ID, (err as Error).message); }",
+        '      if (result.topic !== null) span.setAttribute(ATTR_TOPIC_ID, result.topic.id);',
+        "      if (result.topic !== null) span.setAttribute(ATTR_TOPIC_ID, result.topic.id);\n      try { throw new Error('x'); } catch (err) { span.setAttribute(ATTR_TOPIC_ID, (err as Error).message); }",
       );
     },
   },

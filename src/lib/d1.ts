@@ -42,8 +42,13 @@ async function fetchTopicRow(db: D1Database, id: number): Promise<TopicRow | nul
  * committed before the step body threw for some other reason, a retry must
  * recover that same row rather than reaching for a different `queued` one
  * and orphaning the first.
+ *
+ * Exported (#91) so `selectTopic` (src/workflow.ts) can claim the row
+ * `reclaimAndClaim` below returns - that `SELECT` runs inside a `db.batch()`
+ * that cannot also carry this `UPDATE`, because a batch's statements are all
+ * bound before any of them run (`reclaimAndClaim`'s own comment).
  */
-async function claimRow(db: D1Database, row: TopicRow): Promise<Topic | null> {
+export async function claimRow(db: D1Database, row: TopicRow): Promise<Topic | null> {
   // Already claimed - retry recovery. Does not stamp claimed_at: a retry
   // recovering its own row must not extend the TTL of a claim it did not make.
   if (row.status === 'in_progress') return toTopic(row);
@@ -66,17 +71,6 @@ async function claimRow(db: D1Database, row: TopicRow): Promise<Topic | null> {
   // it was claimed or resolved by something else entirely and is not ours.
   const current = await fetchTopicRow(db, row.id);
   return current !== null && current.status === 'in_progress' ? toTopic(current) : null;
-}
-
-/** Drains the oldest `queued` row (spec.md req. 2: queue-first). */
-export async function claimOldestQueuedTopic(db: D1Database): Promise<Topic | null> {
-  const row = await db
-    .prepare(
-      `SELECT ${TOPIC_COLUMNS} FROM topics WHERE status = 'queued' ORDER BY created_at ASC, id ASC LIMIT 1`,
-    )
-    .first<TopicRow>();
-  if (row === null) return null;
-  return claimRow(db, row);
 }
 
 /**
@@ -102,8 +96,8 @@ export async function claimTopicById(db: D1Database, id: number): Promise<Topic 
  * within a step's retry window) that the same run's proposal is
  * deterministic. Inserted directly as `in_progress` rather than `queued`
  * then claimed - this run is about to use the row immediately, and nothing
- * else can have raced ahead of it, unlike the shared `queued` state that
- * `claimOldestQueuedTopic` drains.
+ * else can have raced ahead of it, unlike the shared `queued` state
+ * `reclaimAndClaim` drains.
  */
 export async function findOrProposeTopic(
   db: D1Database,
@@ -214,6 +208,29 @@ export async function recordRunOutcome(db: D1Database, outcome: RunOutcome): Pro
       outcome.prUrl,
     )
     .run();
+}
+
+/**
+ * Records a run's cumulative neuron spend as it becomes known, ahead of any
+ * terminal `record-*` step (#91) - called from the `await-summarize-children`
+ * join, on the round that reaches `done`, with the round's cumulative total.
+ * That is ~4,000 of a typical ~4,300-neuron run, known well before
+ * `synthesize` or `record-success` run, so a run that dies after the join
+ * (inside `synthesize`, inside publish, or on the platform's own subrequest
+ * ceiling) leaves a real number in `runs.neurons_spent` rather than the `0`
+ * `startRun` wrote.
+ *
+ * A plain `UPDATE`, deliberately, not `recordRunOutcome`'s `INSERT ... ON
+ * CONFLICT DO UPDATE`: this must never resurrect a row `startRun` did not
+ * create (there is no `instance_id` to insert if the row is somehow gone),
+ * and it must touch `neurons_spent` alone - never `status`, `finished_at` or
+ * `pr_url`, which stay whatever a terminal `record-*` step or the #91 sweep
+ * last wrote. Idempotent by construction: a replayed step body does not
+ * re-run (the platform caches a completed step's result), and even a genuine
+ * re-run would just write the same cumulative total again.
+ */
+export async function recordRunSpend(db: D1Database, instanceId: string, neuronsSpent: number): Promise<void> {
+  await db.prepare(`UPDATE runs SET neurons_spent = ? WHERE instance_id = ?`).bind(neuronsSpent, instanceId).run();
 }
 
 /**
@@ -392,28 +409,92 @@ export async function attachRunTopic(db: D1Database, instanceId: string, topicId
   await db.prepare(`UPDATE runs SET topic_id = ? WHERE instance_id = ?`).bind(topicId, instanceId).run();
 }
 
-/**
- * Returns a topic to `queued` once its claim has outlived `ttlHours` (spec.md
- * req. 8/9, "Reclaiming a stranded topic") - the unattended path `claimRow`'s
- * own retry recovery does not reach, since that only recovers a run's own
- * `in_progress` row when it names the topic via `ResearchParams.topicId`. A
- * row with `claimed_at IS NULL` predates this migration and is left alone
- * rather than guessed at - though `AND claimed_at IS NOT NULL` is not what
- * enforces that: SQL's three-valued logic already makes `claimed_at <
- * datetime(...)` evaluate to `NULL`, never true, when `claimed_at` is
- * `NULL`. The clause is kept as an explicit statement of that intent, not as
- * the mechanism. `ttlHours` is the caller's constant, not this file's.
- */
-export async function reclaimStaleTopics(db: D1Database, ttlHours: number): Promise<number> {
-  const update = await db
-    .prepare(
-      `UPDATE topics SET status = 'queued', claimed_at = NULL
-        WHERE status = 'in_progress'
-          AND claimed_at IS NOT NULL
-          AND claimed_at < datetime('now', '-' || ? || ' hours')`,
-    )
-    .bind(ttlHours)
-    .run();
+/** What `reclaimAndClaim` below hands back: the row `selectTopic` still has to `claimRow`, plus both sweeps' counts for observability. */
+export interface ReclaimAndClaimResult {
+  row: TopicRow | null;
+  /** `topics` rows this call returned to `queued` past `ttlHours` - see `reclaimAndClaim`'s own comment for the reclaim `UPDATE` this counts. */
+  reclaimedTopics: number;
+  /** `runs` rows this call swept from `running` to `failed` past the same TTL (#91) - see this function's own comment. */
+  strandedRuns: number;
+}
 
-  return update.meta?.changes ?? 0;
+/**
+ * Consolidates the scheduled path's reclaim sweep, the new stale-run sweep
+ * (#91), and the oldest-queued lookup into one `db.batch()` - one
+ * subrequest, three statements, run in order inside one transaction. This is
+ * the same trick `writeRunCandidates` above uses for its `DELETE`+`INSERT`
+ * pair: `db.batch()` is one subrequest whatever the statement count, so
+ * folding a third statement in is free where a fourth standalone call would
+ * not be.
+ *
+ * **Order is load-bearing.** The reclaim `UPDATE` has to run before the
+ * `SELECT`, in the same transaction, so the `SELECT` can see topics the
+ * reclaim just returned to `queued` - a topic reclaimed on this exact call
+ * must be immediately selectable, not deferred to the next run. The stale-run
+ * sweep sits between them because it does not touch `topics` at all and so
+ * has no ordering constraint against either - it is here for the free ride,
+ * not because its position matters.
+ *
+ * **The stale-run sweep is replay-safe by construction, on both directions
+ * feature 002 requirement 9 asks about.** `WHERE status = 'running' AND
+ * started_at < datetime('now', '-' || ? || ' hours')` can never touch the
+ * *current* run's own row - it started seconds ago, nowhere near `ttlHours`
+ * back - so a `run()` replay re-running `select-topic` can never mark a live
+ * run `failed`. The `status = 'running'` guard is what stops the other
+ * direction: a stale sweep can never clobber a row some other path already
+ * moved to `succeeded`/`no_topic`/`insufficient_sources`. The reverse *is*
+ * possible, and is correct: a run that legitimately outlives the TTL gets
+ * swept to `failed` here, and its own later `recordRunOutcome` (`INSERT ...
+ * ON CONFLICT DO UPDATE`) overwrites `failed` -> `succeeded` when it finally
+ * finishes - a late-arriving success wins over a presumed failure, never the
+ * other way round.
+ *
+ * **`claimRow` still runs as its own call afterwards, not folded into this
+ * batch.** It needs the id the `SELECT` just returned, and every statement in
+ * a `db.batch()` call is bound client-side before any of them run - there is
+ * no way to feed one statement's result into a later statement's parameters
+ * within the same batch. That is also why this function returns the raw row
+ * rather than an already-claimed `Topic`: claiming it is the caller's next,
+ * separate D1 call.
+ *
+ * **The reclaim `UPDATE`'s own predicate** (spec.md req. 8/9, "Reclaiming a
+ * stranded topic") - the unattended path `claimRow`'s own retry recovery does
+ * not reach, since that only recovers a run's own `in_progress` row when it
+ * names the topic via `ResearchParams.topicId`. A row with `claimed_at IS
+ * NULL` predates the claim-timestamp migration and is left alone rather than
+ * guessed at - though `AND claimed_at IS NOT NULL` is not what enforces that:
+ * SQL's three-valued logic already makes `claimed_at < datetime(...)`
+ * evaluate to `NULL`, never true, when `claimed_at` is `NULL`. The clause is
+ * kept as an explicit statement of that intent, not as the mechanism.
+ */
+export async function reclaimAndClaim(db: D1Database, ttlHours: number): Promise<ReclaimAndClaimResult> {
+  const results = await db.batch<TopicRow>([
+    db
+      .prepare(
+        `UPDATE topics SET status = 'queued', claimed_at = NULL
+          WHERE status = 'in_progress'
+            AND claimed_at IS NOT NULL
+            AND claimed_at < datetime('now', '-' || ? || ' hours')`,
+      )
+      .bind(ttlHours),
+    db
+      .prepare(
+        `UPDATE runs SET status = 'failed', finished_at = datetime('now')
+          WHERE status = 'running'
+            AND started_at < datetime('now', '-' || ? || ' hours')`,
+      )
+      .bind(ttlHours),
+    db.prepare(`SELECT ${TOPIC_COLUMNS} FROM topics WHERE status = 'queued' ORDER BY created_at ASC, id ASC LIMIT 1`),
+  ]);
+
+  // Indexed with `?.` rather than destructured-and-cast: `db.batch()`
+  // guarantees three results back in the order the three statements went in,
+  // but `noUncheckedIndexedAccess` cannot see that from the array's static
+  // type, and the `?? 0` / `?? null` fallbacks below are what this needs to
+  // be total anyway - no cast required to get there.
+  return {
+    row: results[2]?.results[0] ?? null,
+    reclaimedTopics: results[0]?.meta?.changes ?? 0,
+    strandedRuns: results[1]?.meta?.changes ?? 0,
+  };
 }

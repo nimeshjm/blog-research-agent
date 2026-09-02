@@ -119,7 +119,22 @@ function normalise(raw: unknown): CompleteResult {
   return { text, inputTokens, outputTokens, finishReason };
 }
 
-export function createLlm(env: Env): Llm {
+/**
+ * `runInstanceId` is always the *parent* `ResearchWorkflow`'s own instance
+ * id, tagged onto every gateway request as `metadata.run_instance_id` (#91,
+ * slice 2) - `GatewayOptions.metadata` (`@cloudflare/workers-types`) is
+ * logged by AI Gateway per request, so this is what makes a gateway log
+ * joinable back to `runs.instance_id` with zero extra subrequests. Required,
+ * not optional: both call sites (`synthesizeDraft` in src/workflow.ts,
+ * `summarizeArticle` in src/summarize-workflow.ts) already have it in hand,
+ * and an optional param a caller can forget would make the join silently
+ * incomplete rather than obviously broken.
+ *
+ * Nothing but the id goes in `metadata` - CLAUDE.md's span-attribute rule
+ * (no prompt, article, URL or error text) applies here too, even though a
+ * gateway log is a different channel than a trace span.
+ */
+export function createLlm(env: Env, runInstanceId: string): Llm {
   return {
     async complete(req: CompleteRequest): Promise<CompleteResult> {
       const maxTokens = Math.max(req.maxTokens ?? DEFAULT_MAX_TOKENS, MIN_MAX_TOKENS);
@@ -139,7 +154,7 @@ export function createLlm(env: Env): Llm {
               messages: req.messages,
               max_tokens: maxTokens,
             } as never,
-            { gateway: { id: env.AI_GATEWAY } },
+            { gateway: { id: env.AI_GATEWAY, metadata: { run_instance_id: runInstanceId } } },
           );
 
           const result = normalise(raw);
