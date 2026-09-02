@@ -168,8 +168,18 @@ describe('buildReduceMessages()', () => {
   it('instructs the model to mark the opening-incident slot instead of inventing one', () => {
     const messages = buildReduceMessages(topic(), [summary()]);
     const system = messages.find((m) => m.role === 'system');
-    expect(system?.content).toContain('<!-- OPENING INCIDENT: needs a real example -->');
+    expect(system?.content).toContain('{/* OPENING INCIDENT: needs a real example */}');
     expect(system?.content).toMatch(/never invent/i);
+  });
+
+  // #96: the marker was asked for as an HTML comment, which MDX v3 rejects -
+  // so every draft the pipeline produced failed the blog's build. The HTML
+  // form must not reappear here, not even as a negative example: this prompt
+  // is the only place the string was ever coming from.
+  it('asks for the marker in MDX comment syntax and never shows the HTML form', () => {
+    const messages = buildReduceMessages(topic(), [summary()]);
+    const system = messages.find((m) => m.role === 'system');
+    expect(system?.content).not.toContain('<!--');
   });
 
   it('asks for exactly title/description/tags/body - never slug, date, authors, or draft', () => {

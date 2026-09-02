@@ -5,7 +5,8 @@ import type { Draft } from './types';
  * in the blog repo. See `Draft` in `./types` and
  * `.claude/skills/blog-voice/SKILL.md`'s "Three hard rules for a generated
  * post": always `draft: true`, never an `image` key, kebab-case slug with no
- * spaces.
+ * spaces. `validateDraft` also carries one rule about the body rather than the
+ * frontmatter - no HTML comment, see `HTML_COMMENT_OPEN` below.
  *
  * `renderMdx` only emits the fields the blog's schema actually has
  * (`spec.md` -> "Target repo and post format"). The dynamic check against
@@ -17,6 +18,33 @@ import type { Draft } from './types';
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/**
+ * MDX v3 rejects an HTML comment outright - `<!--` fails the parse with
+ * "Unexpected character `!` (U+0021) before name", and Cloudflare Pages fails
+ * the blog's build with it. `REDUCE_SYSTEM_PROMPT` asked for the
+ * opening-incident marker in this form until #96, so every draft the pipeline
+ * had ever produced carried one; this is the backstop for a model that emits
+ * one anyway.
+ *
+ * **A bare `{` or `}` is deliberately not checked here.** MDX reads one in
+ * prose as a JSX expression, so it is the other realistic hazard - but unlike
+ * `<!--` it is also *legitimate* MDX. The marker above is now braces, the blog's
+ * bodies may import and use Astro components (`blog-voice` SKILL.md, "File
+ * conventions"), and component attributes carry `{...}`. Telling a hostile brace
+ * from a legal one means deciding whether it parses as a JSX expression, which
+ * is the MDX parser this guard is explicitly not. The asymmetry settles it:
+ * `validateDraft` runs at the top of `openPullRequest`, after a whole run's
+ * inference has been paid for and with no step retry behind it, so a false
+ * rejection burns the run to guard a hypothetical.
+ *
+ * The one accepted false positive on the check that *is* here: `<!--` inside a
+ * fenced code block is legal MDX. Stripping fences to allow it would be the same
+ * parser, and an engineering-leadership post quoting a literal HTML comment is
+ * not what this pipeline produces. A loud, recorded rejection is the trade
+ * against a silent build break on every draft.
+ */
+const HTML_COMMENT_OPEN = '<!--';
+
 export class InvalidDraftError extends Error {
   constructor(message: string) {
     super(message);
@@ -25,7 +53,9 @@ export class InvalidDraftError extends Error {
 }
 
 /**
- * Throws `InvalidDraftError` naming the failed rule. Called by `renderMdx`
+ * Throws `InvalidDraftError` naming the failed rule - the frontmatter rules,
+ * plus the one body rule that would break the blog's build the same way a bad
+ * frontmatter field would (`HTML_COMMENT_OPEN`). Called by `renderMdx`
  * so no frontmatter is ever emitted from a `Draft` that would fail it, but
  * exported separately so a caller can validate before doing anything else
  * (e.g. before spending a branch-creation call on a draft that will not
@@ -51,6 +81,12 @@ export function validateDraft(draft: Draft): void {
   }
   if ('image' in draft) {
     throw new InvalidDraftError('draft carries an image key - the Astro image() helper needs a real committed file');
+  }
+  const htmlComment = draft.body.indexOf(HTML_COMMENT_OPEN);
+  if (htmlComment !== -1) {
+    throw new InvalidDraftError(
+      `body has an HTML comment at offset ${htmlComment} - MDX rejects it, the marker form is {/* ... */}`,
+    );
   }
 }
 

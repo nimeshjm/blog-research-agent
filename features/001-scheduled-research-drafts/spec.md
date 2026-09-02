@@ -290,7 +290,7 @@ Two prompt shapes, both on `@cf/openai/gpt-oss-120b` via `src/lib/llm.ts`:
 - **reduce** — one call: topic plus all summaries in, brief and draft out. Applies the
   `blog-voice` skill. The agent grounds the draft in a **sourced R&D practice for the
   SDLC**, never in an invented incident: it emits an
-  `<!-- OPENING INCIDENT: needs a real example -->` marker where the author's own war
+  `{/* OPENING INCIDENT: needs a real example */}` marker where the author's own war
   story belongs. Ranking in `shortlist` should therefore favour material that carries an
   attributable practice or finding over commentary.
 

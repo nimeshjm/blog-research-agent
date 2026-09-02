@@ -1432,8 +1432,11 @@ function describeParseFailure(reason: ReduceParseFailure, textLength: number, ke
 /**
  * One `Llm` call producing the draft's model-authored fields (title,
  * description, tags, body), applying the `blog-voice` rules embedded in
- * `src/lib/prompts.ts` - including the `<!-- OPENING INCIDENT: needs a real
- * example -->` marker instruction. Never invents a war story: that
+ * `src/lib/prompts.ts` - including the `OPENING INCIDENT: needs a real
+ * example` marker instruction, asked for in MDX comment syntax rather than
+ * HTML because MDX v3 rejects the latter and the blog's build fails on it
+ * (#96; the literal delimiters are omitted here only because they would end
+ * this comment). Never invents a war story: that
  * instruction is the single most important rule in the skill, and nothing
  * here gives the model room to originate one - see prompts.ts's
  * REDUCE_SYSTEM_PROMPT.

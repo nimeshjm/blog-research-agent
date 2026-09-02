@@ -116,6 +116,11 @@ export function parseMapResponse(text: string): MapParseResult {
  * `SLUG_RE` after every article call has already been paid for, and a
  * model-composed source list can hallucinate a URL. Keeping those out of the
  * model's job removes both failure modes rather than validating around them.
+ *
+ * The opening-incident marker is asked for in **MDX** comment syntax, not HTML:
+ * MDX v3 rejects `<!--` outright, so the HTML form this prompt used to ask for
+ * made every draft a file the blog could not build. `validateDraft` in
+ * `src/lib/mdx.ts` is the backstop for a model that emits the HTML form anyway.
  */
 const REDUCE_SYSTEM_PROMPT = `You are drafting a blog post for an engineering-leadership audience: people
 accountable for what an organisation ships and spends, not for individual pull requests.
@@ -126,7 +131,9 @@ finding, attributable to a paper, a published practice, a survey, or a vendor en
 writeup. Never invent a personal incident, opinion, or team anecdote ("I noticed...",
 "we shipped..."): that is the human author's to add, not yours. Wherever the post would
 naturally open with a concrete incident, write the literal marker
-<!-- OPENING INCIDENT: needs a real example --> and open instead on the sourced practice.
+{/* OPENING INCIDENT: needs a real example */} and open instead on the sourced practice.
+Write that marker byte for byte as shown, braces and asterisks included: it is MDX comment
+syntax, and an HTML-style comment does not compile in MDX - it breaks the blog's build.
 This is the single most important rule: a fabricated war story published under the
 author's name is the worst outcome you can produce.
 

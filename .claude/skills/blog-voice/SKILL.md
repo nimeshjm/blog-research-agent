@@ -146,11 +146,14 @@ the feed will propose a topic that is already half-written.
 ## What a draft must not do
 
 - Claim an incident that did not happen. The concrete opening is the author's to supply;
-  a draft should mark that slot as `<!-- OPENING INCIDENT: needs a real example -->`
-  and ground itself in a sourced R&D practice instead. **This is the single most
-  important rule here** — a fabricated war story published under the author's name is
-  the worst outcome this pipeline can produce. Having the practice route available is
-  what makes the rule easy to follow: there is always a legitimate way to open.
+  a draft should mark that slot as `{/* OPENING INCIDENT: needs a real example */}`
+  and ground itself in a sourced R&D practice instead. That is MDX comment syntax and
+  the braces are load-bearing: MDX v3 rejects an HTML comment, so the HTML form of this
+  marker breaks the blog's build rather than surviving to a human reader.
+  **This is the single most important rule here** — a fabricated war story published
+  under the author's name is the worst outcome this pipeline can produce. Having the
+  practice route available is what makes the rule easy to follow: there is always a
+  legitimate way to open.
 - Present an R&D practice as more settled than it is. If it is one paper or one
   company's blog post, say so. "One team reports" is honest; "the industry has moved to"
   usually is not.
@@ -192,7 +195,7 @@ each bullet.
   lightly, if at all.**
 - **A generated draft has no standing to originate a first-person aside ("I think...",
   "we shipped...") any more than it does to invent the opening incident** — see "What a
-  draft must not do" above; the same `<!-- OPENING INCIDENT: needs a real example -->`
+  draft must not do" above; the same `{/* OPENING INCIDENT: needs a real example */}`
   marker covers both. The one safe residue: the post's first sentence is always concrete
   and specific, never scene-setting or a dictionary-style definition.
 - **No fixed word-count target.** The set runs from roughly 1,000 to 2,800 words; match

@@ -102,6 +102,25 @@ describe('validateDraft()', () => {
     expect(() => validateDraft(draft({ date: '08/27/2026' }))).toThrow(InvalidDraftError);
   });
 
+  // #96: REDUCE_SYSTEM_PROMPT asked for the opening-incident marker as an
+  // HTML comment, so every draft the pipeline produced failed the blog's MDX
+  // build at that line. The prompt is fixed; this is the backstop for a model
+  // that emits the HTML form anyway.
+  it('rejects a body carrying an HTML comment - MDX v3 does not compile one', () => {
+    const body = '\nSome prose.\n\n<!-- OPENING INCIDENT: needs a real example -->\n\nMore prose.\n';
+    expect(() => validateDraft(draft({ body }))).toThrow(InvalidDraftError);
+    expect(() => validateDraft(draft({ body }))).toThrow(/HTML comment/);
+  });
+
+  it('rejects an HTML comment anywhere in the body, not only at the marker', () => {
+    expect(() => validateDraft(draft({ body: '\nProse.\n\n<!-- TODO -->\n' }))).toThrow(InvalidDraftError);
+  });
+
+  it('accepts the MDX comment form the prompt now asks for', () => {
+    const body = '\nSome prose.\n\n{/* OPENING INCIDENT: needs a real example */}\n\nMore prose.\n';
+    expect(() => validateDraft(draft({ body }))).not.toThrow();
+  });
+
   it('accepts a well-formed draft', () => {
     expect(() => validateDraft(draft())).not.toThrow();
   });
