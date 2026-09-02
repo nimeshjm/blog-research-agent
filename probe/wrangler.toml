@@ -12,5 +12,13 @@ name = "probe-workflow"
 binding = "PROBE"
 class_name = "ProbeWorkflow"
 
+# Issue #92: the child modes need a second Workflow to deliberately fail, so
+# the parent can read an `InstanceStatus` for an instance in `errored` and try
+# `restart()` on it. Same Worker, same absence of DB/AI bindings.
+[[workflows]]
+name = "probe-child-workflow"
+binding = "PROBE_CHILD"
+class_name = "ProbeChildWorkflow"
+
 [observability]
 enabled = true

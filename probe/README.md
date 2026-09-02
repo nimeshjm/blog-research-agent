@@ -66,9 +66,14 @@ npx wrangler workflows instances describe probe-workflow <id>
 ```
 
 `mode` is `map` (one step per feed, in the order given), `sleep`, `retry`, `noretry`,
-`noretry-cpu` or `cpu`. **An unrecognised mode is rejected with 400** — it used to fall
+`noretry-cpu`, `cpu`, `childerr`, `childcpu`, `childrestart`, `childrestartfrom` or
+`childrestartof`.
+**An unrecognised mode is rejected with 400** — it used to fall
 through to the gather loop, where a run with no `feeds` reads back as "the thing under
-test did nothing", which is the exact false negative these runs exist to avoid.
+test did nothing", which is the exact false negative these runs exist to avoid. `feeds`
+became optional when the child modes arrived, so `map` and `sleep` without a non-empty
+`feeds` array are **also 400** — the same false negative from the other side — and
+`childrestartof` without a `childId` is 400 for the same reason.
 Reordering
 the `feeds` array is how the position of a feed is varied — putting The Pragmatic
 Engineer first is the experiment that separates "that feed is too expensive on its own"
@@ -141,6 +146,78 @@ Pass conditions differ per run and must not be swapped:
   here says nothing about `limit`: the markers may share the invocation the kill lands
   in.
 
+### The child modes
+
+Added 2026-09-02 for [#92](https://github.com/nimeshjm/blog-research-agent/issues/92),
+which cannot have a recognition rule written for it until two facts are read off the
+deployed platform. They ignore `feeds` and use a **second Workflow**,
+`probe-child-workflow` (binding `PROBE_CHILD`, class `ProbeChildWorkflow`), whose whole
+body is two `mark()` steps and then a step that throws — production's shape, where
+summarize child `s0` had completed three real `summarize:<url>` steps before the fourth
+died. All three steps pass `NO_RETRIES`, so the throw errors the child on its first
+attempt.
+
+The thrown error is the instrument. It carries **three mutually distinguishable tokens**:
+
+```ts
+class ProbeCtorWWW extends Error { override name = 'ProbeName-ZZZ'; }
+throw new ProbeCtorWWW('ProbeMessage-QQQ');
+```
+
+`name` is a class field rather than a post-construction assignment so it is in place
+before anything — including a `.stack` read, whose header the runtime formats from name
+and message — can observe the error. `childcpu` is the other half of the same question:
+the fail-closed allowlist has to *exclude* a CPU kill, so it swaps the throw for
+`burnCpu(iters)` and prints what the platform's own `1102` puts in that object rather than
+inferring it from a rendering. Pass `iters`; 5x10^9 is the lowest value section 7.2
+measured to kill reliably. Which of the three tokens turns up where in the
+child's `describe` output, and in the `status.error` object the parent captures, is what
+fixes the renderer's formula; inverting that formula on
+`captures/54ce776b-ad41-4562-bf34-1984b47464eb-s0.txt` is what says which field a
+`WorkflowInternalError` rule must read. See `FINDINGS.md` section 8.
+
+| mode | shape | reads |
+|---|---|---|
+| `childerr` | create a child, poll `status()` to `errored` | `Object.keys(status)`, `JSON.stringify(status)`, `status.error.name` / `.message` |
+| `childcpu` | as `childerr`, but the child burns `iters` instead of throwing | the same object for a **platform-originated** failure — a real `1102` |
+| `childrestart` | as `childerr`, then `restart()` | whether the method exists, and whether an `errored` instance accepts it |
+| `childrestartfrom` | as `childerr`, then `restart({ from })` | the same, for a restart from the failing step |
+| `childrestartof` | **no create** — restart the `childId` given, then poll | whether a restarted instance ever moves, and whether it kept its earlier steps |
+
+The child id is `<parent instance id>-ce` / `-cc` / `-cr` / `-crf`, derived from
+`event.instanceId` so a replay of `run()` recreates the same child rather than measuring
+a second one, and distinct per mode so no two collide. `childrestartof` is the exception:
+it is given an id and creates nothing.
+
+Every step that could be killed by the platform call it is testing **catches** instead:
+`restart()`'s outcome is recorded as `resolved` or `threw` with the caught error's `name`,
+`message`, `constructor.name` and `String(e)`, and `typeof instance.restart` plus
+`Object.getOwnPropertyNames(Object.getPrototypeOf(instance))` are recorded *before* the
+call. The point of these runs is the returned value, not the failure — a step that let
+the throw propagate would record nothing.
+
+`childrestartof` exists because the first two restart modes could not answer their own
+question. A restarted instance's `describe` comes back with **zero step rows**, so its own
+step rows cannot also be the baseline they would have to be compared against. So it takes
+`childId` and restarts a child *some earlier run created and captured*, with
+`rounds` and `interval` overridable because 8 rounds of 5 s was measured to be far too
+short to see a restarted instance move:
+
+```bash
+curl -sX POST https://research-probe.<subdomain>.workers.dev \
+  -H 'content-type: application/json' \
+  -d '{"mode":"childrestartof","childId":"<an errored child id>","rounds":20,"interval":"30 seconds","from":true}'
+npx wrangler workflows instances describe probe-child-workflow <that child id>
+```
+
+**Read both readback channels, because they disagree.** `wrangler workflows instances
+describe <id>` and the binding's own `status()` both reported a restarted child as
+`queued` with `error: null`; `wrangler workflows instances list` reported the same
+instance `Errored`. `list`'s `Modified` timestamp is what separates them — it predates the
+restart, so that row is a pre-restart value the restart never updated. Section 8 records
+both. A run that reads only one channel will state the wrong fact confidently, and the
+`list` reading is the wrong one.
+
 `cpu` mode is also the only thing here that reads the CPU ceiling directly. It is not a
 CPU *figure* — the burn either survives or does not — but "one `run()` execution absorbed
 5x10^8 iterations" is a lower bound where `FINDINGS.md` previously had nothing. See
@@ -172,7 +249,11 @@ the one that takes the instances with it:
 
 ```bash
 npx wrangler workflows delete probe-workflow
+npx wrangler workflows delete probe-child-workflow
 ```
+
+There are **two** workflows to delete since the child modes arrived, and the second one
+is easy to leave standing — it is not the one named in every other command here.
 
 Which is why `FINDINGS.md` cites the committed captures in `probe/captures/` rather than
 live readback: after that second command there is nothing left to read.

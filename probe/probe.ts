@@ -68,7 +68,11 @@ interface Marker {
 
 export interface ProbeParams {
   mode: (typeof MODES)[number];
-  feeds: Source[];
+  // `map` and `sleep` only, and the fetch handler rejects those two modes
+  // without it. Optional because every other mode ignores it, and a payload
+  // that had to carry a dummy array to run `childerr` would be one more thing
+  // to get wrong in a curl.
+  feeds?: Source[];
   // `sleep` only. `everyN` counts gather steps between sleeps; `sleepFor` is a
   // Workflows duration string ('1 second', '60 seconds') or a millisecond
   // number. Both are optional so a `map` body stays a valid payload, and
@@ -79,9 +83,42 @@ export interface ProbeParams {
   // `noretry-cpu` / `cpu` only: iterations of the burn loop. Ramped across runs
   // to find where the ceiling actually is, since 5e8 turned out to be under it.
   iters?: number;
+  // `childrestartof` only, and required by the fetch handler for it: the id of
+  // an existing errored child to restart. Naming an id whose pre-restart
+  // `describe` is already captured is the only way to read whether
+  // `restart({ from })` preserved the earlier steps - a restarted instance's
+  // own step rows are the thing in question, so they cannot also be the
+  // baseline.
+  childId?: string;
+  // The child modes' poll cadence. Defaults are fine for watching a child
+  // error; `childrestartof` overrides them upward, because 8 rounds of 5 s was
+  // measured to be far too short to see a restarted instance move.
+  rounds?: number;
+  interval?: WorkflowSleepDuration;
+  // Whether to pass `{ from }` to `restart()`. `childrestartof` only; the two
+  // fixed modes hard-code it either way.
+  from?: boolean;
 }
 
-export const MODES = ['map', 'retry', 'sleep', 'noretry', 'noretry-cpu', 'cpu'] as const;
+export const MODES = [
+  'map',
+  'retry',
+  'sleep',
+  'noretry',
+  'noretry-cpu',
+  'cpu',
+  'childerr',
+  'childrestart',
+  'childrestartfrom',
+  'childrestartof',
+  'childcpu',
+] as const;
+
+/** The modes that read `childId`, and cannot run without one. */
+const CHILD_ID_MODES: readonly string[] = ['childrestartof'];
+
+/** The modes that read `feeds`. Everything else ignores it. */
+const FEED_MODES: readonly string[] = ['map', 'sleep'];
 
 /**
  * The value `src/lib/trace.ts` passes at production's one `step.do` call site,
@@ -147,13 +184,174 @@ async function gatherCount(source: Source): Promise<number> {
   }).length;
 }
 
-export class ProbeWorkflow extends WorkflowEntrypoint<unknown, ProbeParams> {
+/**
+ * The child modes, added 2026-09-02 for issue #92. Two facts have to be read
+ * off the deployed platform before a transient-failure recognition rule can be
+ * written, and neither is readable from `wrangler describe` alone:
+ *
+ * 1. **Which field of `InstanceStatus.error` carries an error class.** The only
+ *    evidence in `probe/captures/` is a *rendering* — `Error:
+ *    WorkflowInternalError: Attempt failed due to internal workflows error` —
+ *    and a rule cannot be written against a rendering. The platform cannot be
+ *    made to emit a real `WorkflowInternalError`, so instead the child throws
+ *    an error whose `name`, `message` and constructor name are three mutually
+ *    distinguishable tokens. Reading all three off one capture fixes the
+ *    renderer's formula, and the formula inverted on the production capture
+ *    says which field a rule must read.
+ * 2. **Whether `restart()` is valid on an instance already in `errored`.** The
+ *    changelog records `restart()` only reaching local development; types are
+ *    not the runtime, so the method may not even be there.
+ *
+ * The tokens are deliberately noise: nothing else in this repo or on the
+ * platform can produce `ProbeName-ZZZ`, so grep on a capture is unambiguous.
+ */
+const CHILD_ERROR_NAME = 'ProbeName-ZZZ';
+const CHILD_ERROR_MESSAGE = 'ProbeMessage-QQQ';
+
+/**
+ * `name` is an own field set at construction rather than assigned after it, so
+ * it is in place before anything — including a `.stack` read, whose header the
+ * runtime formats from name and message — can observe the error. The class
+ * name is a third distinct token: if a rendering shows `ProbeCtorWWW` then the
+ * platform serialises `constructor.name`, not `.name`.
+ */
+class ProbeCtorWWW extends Error {
+  override name = CHILD_ERROR_NAME;
+}
+
+const CHILD_MARKER_1 = 'child:marker-1';
+const CHILD_MARKER_2 = 'child:marker-2';
+const CHILD_THROW_STEP = 'child:throws';
+const CHILD_BURN_STEP = 'child:burns';
+
+/**
+ * `iters` swaps the throw for a `1102`. 8.3's fail-closed allowlist has to
+ * exclude a CPU kill, and the exclusion was otherwise argued from a
+ * *rendering* of `Worker exceeded CPU time limit.` rather than from the object
+ * a parent actually reads - the same weakness the whole sitting exists to fix
+ * for `WorkflowInternalError`. A child killed by the platform prints the real
+ * thing.
+ */
+interface ProbeChildParams {
+  iters?: number;
+}
+
+/**
+ * The child. Two cheap markers, then a step that throws — the shape of the
+ * production failure this exists to explain, where child `s0` had completed
+ * three real `summarize:<url>` steps before the fourth died.
+ *
+ * The markers are the "cached results of every earlier step" the docs promise
+ * `restart({ from })` reuses, and were meant to be read by comparing their
+ * `r` and attempt-row count across a restart. Measured 2026-09-02: that
+ * comparison is not available — a restarted instance's `describe` returns an
+ * empty step list — so what they now serve is the *baseline* half of it, in a
+ * capture taken before the restart. See `FINDINGS.md` 8.4.
+ */
+export class ProbeChildWorkflow extends WorkflowEntrypoint<ProbeEnv, ProbeChildParams> {
+  async run(event: WorkflowEvent<ProbeChildParams>, step: WorkflowStep): Promise<void> {
+    const r = crypto.randomUUID().slice(0, 8);
+    const t0 = Date.now();
+    const mark = (): Marker => ({ r, iso: isoId(), seq: SEQ++, ms: Date.now() - t0 });
+
+    await step.do(CHILD_MARKER_1, NO_RETRIES, async () => mark());
+    await step.do(CHILD_MARKER_2, NO_RETRIES, async () => mark());
+    // NO_RETRIES on both, so the child errors on the first attempt - which is
+    // production's shape (feature 003 requirement 1) and keeps the attempt
+    // table readable.
+    const iters = event.payload.iters;
+    if (iters) {
+      await step.do(CHILD_BURN_STEP, NO_RETRIES, async () => ({
+        ...mark(),
+        iters,
+        sink: burnCpu(iters),
+      }));
+    } else {
+      await step.do(CHILD_THROW_STEP, NO_RETRIES, async () => {
+        throw new ProbeCtorWWW(CHILD_ERROR_MESSAGE);
+      });
+    }
+  }
+}
+
+type StatusOf = Awaited<ReturnType<WorkflowInstance['status']>>;
+
+/**
+ * `InstanceStatus` reduced to something a step output can carry. `keys` and
+ * `json` are the primary data for issue #92's third open question: the object
+ * itself, not `wrangler describe`'s rendering of it. `errorName` and
+ * `errorMessage` are pulled out separately so a capture can be read without
+ * un-escaping the JSON.
+ */
+interface StatusSnapshot {
+  status: string;
+  keys: string[];
+  json: string;
+  errorKeys: string[];
+  errorName: string | null;
+  errorMessage: string | null;
+}
+
+function snapshot(s: StatusOf): StatusSnapshot {
+  return {
+    status: s.status,
+    keys: Object.keys(s),
+    json: JSON.stringify(s),
+    errorKeys: s.error ? Object.keys(s.error) : [],
+    errorName: s.error?.name ?? null,
+    errorMessage: s.error?.message ?? null,
+  };
+}
+
+const TERMINAL: readonly string[] = ['errored', 'terminated', 'complete'];
+
+/** Everything recoverable about a caught throw, since the point of the steps
+ * below is the value they return rather than the failure they would otherwise
+ * propagate. `ctor` separates "the method is missing" (a `TypeError`) from
+ * "the method rejected the call". */
+interface Thrown {
+  name: string;
+  message: string;
+  ctor: string;
+  str: string;
+  keys: string[];
+}
+
+function thrownOf(e: unknown): Thrown {
+  const isObject = typeof e === 'object' && e !== null;
+  const err = e as Partial<Error> | null;
+  return {
+    name: err?.name ?? '(none)',
+    message: err?.message ?? '(none)',
+    ctor: isObject ? (e as object).constructor.name : typeof e,
+    str: String(e),
+    keys: isObject ? Object.keys(e as object) : [],
+  };
+}
+
+interface RestartRecord extends Marker {
+  // Recorded *before* the call: the changelog only puts `restart()` in local
+  // development, so "the method is not on the deployed object" is a live
+  // possibility and has to be distinguishable from "it threw".
+  kind: string;
+  proto: string[];
+  options: WorkflowInstanceRestartOptions | null;
+  outcome: 'resolved' | 'threw';
+  thrown: Thrown | null;
+}
+
+// The child errors within a second of starting, so this is generous. Rounds
+// are cheap here: the probe has no 50-subrequest ledger to protect.
+const CHILD_POLL_ROUNDS = 8;
+const CHILD_POLL_INTERVAL = '5 seconds';
+
+export class ProbeWorkflow extends WorkflowEntrypoint<ProbeEnv, ProbeParams> {
   async run(event: WorkflowEvent<ProbeParams>, step: WorkflowStep): Promise<void> {
     const r = crypto.randomUUID().slice(0, 8);
     const t0 = Date.now();
     const mark = (): Marker => ({ r, iso: isoId(), seq: SEQ++, ms: Date.now() - t0 });
 
-    const { mode, feeds, sleepFor = '1 second' } = event.payload;
+    const { mode, feeds = [], sleepFor = '1 second' } = event.payload;
     // A zero would make `(i + 1) % everyN` NaN, which is never 0, so `sleep`
     // mode would silently run as `map` and read back as "the sleep did
     // nothing" - the exact false negative this run is trying not to produce.
@@ -216,6 +414,118 @@ export class ProbeWorkflow extends WorkflowEntrypoint<unknown, ProbeParams> {
       return;
     }
 
+    if (
+      mode === 'childerr' ||
+      mode === 'childrestart' ||
+      mode === 'childrestartfrom' ||
+      mode === 'childrestartof' ||
+      mode === 'childcpu'
+    ) {
+      // A distinct suffix per mode, so a capture names which experiment it is
+      // without this file beside it, and so no two modes collide on an
+      // instance id.
+      const label =
+        mode === 'childerr'
+          ? 'ce'
+          : mode === 'childrestart'
+            ? 'cr'
+            : mode === 'childrestartfrom'
+              ? 'crf'
+              : mode === 'childcpu'
+                ? 'cc'
+                : 'cro';
+      // Every mode but `childrestartof` creates its own child, under an id
+      // derived from the parent's instance id: `run()` re-executes on replay,
+      // and a replay that created the child under a fresh id would measure a
+      // second child instead of the one already polled. `childrestartof`
+      // instead adopts a child an earlier run created, so that child's
+      // pre-restart step rows are already captured and can serve as the
+      // baseline a restarted instance can no longer supply.
+      const childId = event.payload.childId ?? `${event.instanceId}-${label}`;
+      const rounds = Math.max(1, Math.trunc(event.payload.rounds ?? CHILD_POLL_ROUNDS));
+      const interval = event.payload.interval ?? CHILD_POLL_INTERVAL;
+
+      // 5e9 is the lowest value section 7.2 measured to kill reliably; only
+      // `childcpu` passes one, and a child with no `iters` throws instead.
+      const childParams: ProbeChildParams =
+        mode === 'childcpu' ? { iters: event.payload.iters ?? 5_000_000_000 } : {};
+
+      if (mode !== 'childrestartof') {
+        await step.do(`${label}:create`, NO_RETRIES, async () => {
+          try {
+            const created = await this.env.PROBE_CHILD.create({ id: childId, params: childParams });
+            return { ...mark(), childId: created.id, created: true, thrown: null as Thrown | null };
+          } catch (e) {
+            // An already-exists rejection is the expected shape on replay, and
+            // it is not a failure of the experiment - the instance is there.
+            return { ...mark(), childId, created: false, thrown: thrownOf(e) };
+          }
+        });
+      }
+
+      const poll = async (phase: string): Promise<StatusSnapshot> => {
+        let last: StatusSnapshot | null = null;
+        for (let round = 0; round < rounds; round++) {
+          last = await step.do(`${label}:${phase}-poll-${round}`, NO_RETRIES, async () => {
+            const instance = await this.env.PROBE_CHILD.get(childId);
+            return snapshot(await instance.status());
+          });
+          if (TERMINAL.includes(last.status)) return last;
+          await step.sleep(`${label}:${phase}-wait-${round}`, interval);
+        }
+        if (!last) throw new Error('probe: rounds is zero');
+        return last;
+      };
+
+      const errored = await poll('pre');
+      // The answer step. The poll rounds already carry this, but which round
+      // was the last one varies per run, so one row named `:answer` is what a
+      // reader six months from now goes to.
+      await step.do(`${label}:answer`, NO_RETRIES, async () => ({ ...mark(), ...errored }));
+      if (mode === 'childerr' || mode === 'childcpu') return;
+
+      // `type` is `'do' | 'sleep' | 'waitForEvent'` in the declaration of
+      // `WorkflowInstanceRestartOptions` - not `'step'`. `count` is the
+      // 1-indexed occurrence of the name.
+      const withFrom =
+        mode === 'childrestartof' ? (event.payload.from ?? true) : mode === 'childrestartfrom';
+      const options: WorkflowInstanceRestartOptions | null = withFrom
+        ? { from: { name: CHILD_THROW_STEP, count: 1, type: 'do' } }
+        : null;
+
+      await step.do(`${label}:restart`, NO_RETRIES, async (): Promise<RestartRecord> => {
+        const instance = await this.env.PROBE_CHILD.get(childId);
+        const kind = typeof (instance as { restart?: unknown }).restart;
+        const proto = Object.getOwnPropertyNames(Object.getPrototypeOf(instance) as object);
+        try {
+          await (options ? instance.restart(options) : instance.restart());
+          return { ...mark(), kind, proto, options, outcome: 'resolved', thrown: null };
+        } catch (e) {
+          return { ...mark(), kind, proto, options, outcome: 'threw', thrown: thrownOf(e) };
+        }
+      });
+
+      // Immediately, before anything can settle: this is what separates
+      // "restart accepted, instance requeued" from "restart was a no-op and
+      // the instance is still sitting in `errored`".
+      await step.do(`${label}:status-immediate`, NO_RETRIES, async () => {
+        const instance = await this.env.PROBE_CHILD.get(childId);
+        return { ...mark(), ...snapshot(await instance.status()) };
+      });
+
+      await step.sleep(`${label}:settle`, '15 seconds');
+      const after = await poll('post');
+      await step.do(`${label}:answer-post`, NO_RETRIES, async () => ({
+        ...mark(),
+        ...after,
+        // Carried side by side so one row settles whether the restart changed
+        // anything at all.
+        wasErrorName: errored.errorName,
+        wasErrorMessage: errored.errorMessage,
+      }));
+      return;
+    }
+
     for (const [i, source] of feeds.entries()) {
       // Zero-padded so the step order is readable in the instance view, and
       // the index is in the name so a reordered allowlist is unambiguous.
@@ -236,6 +546,7 @@ export class ProbeWorkflow extends WorkflowEntrypoint<unknown, ProbeParams> {
 
 interface ProbeEnv {
   PROBE: Workflow;
+  PROBE_CHILD: Workflow;
 }
 
 export default {
@@ -251,6 +562,20 @@ export default {
     // had to warn about instead. Reject it here, where it is unambiguous.
     if (!(MODES as readonly string[]).includes(params.mode)) {
       return Response.json({ error: `mode must be one of: ${MODES.join(', ')}` }, { status: 400 });
+    }
+    // `feeds` became optional when the child modes arrived, which would have
+    // reopened the same false negative from the other side: a `map` payload
+    // with a misspelled `feeds` key would run zero gather steps and read back
+    // as "the thing under test did nothing". Reject it here instead.
+    if (FEED_MODES.includes(params.mode) && !params.feeds?.length) {
+      const error = `mode ${params.mode} needs a non-empty feeds array`;
+      return Response.json({ error }, { status: 400 });
+    }
+    // Without this, `childrestartof` would restart a child of its own parent's
+    // instance id - which does not exist, so the create-less path would poll a
+    // missing instance and the run would read as a fact about restart().
+    if (CHILD_ID_MODES.includes(params.mode) && !params.childId) {
+      return Response.json({ error: `mode ${params.mode} needs childId` }, { status: 400 });
     }
     const instance = await env.PROBE.create({ params });
     return Response.json({ id: instance.id });

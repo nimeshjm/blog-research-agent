@@ -1,0 +1,11 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.128.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:  probe-child-workflow
+Instance Id:    03703081-98cb-44d3-a115-9857c90a51ad-ce
+Version Id:     b3af36e5-b051-48bd-bfd6-9b6e0a4e768c
+Status:         ⌛ Queued
+Trigger:        🔗 Binding
+Queued:         02/09/2026, 09:19:42
+Steps:

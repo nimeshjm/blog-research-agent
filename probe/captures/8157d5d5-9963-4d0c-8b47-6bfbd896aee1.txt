@@ -1,0 +1,271 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.128.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         probe-workflow
+Instance Id:           8157d5d5-9963-4d0c-8b47-6bfbd896aee1
+Version Id:            fa422965-6aaf-4a6e-9d1e-e1f8a527c202
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                02/09/2026, 09:21:59
+Success:               ✅ Yes
+Start:                 02/09/2026, 09:22:06
+End:                   02/09/2026, 09:23:16
+Duration:              1 minute
+Last Successful Step:  crf:answer-post-1
+Steps:
+
+  Name:      crf:create-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:22:07
+  End:       02/09/2026, 09:22:07
+  Duration:  1 second
+  Success:   ✅ Yes
+  Output:    "{\"r\":\"36e48793\",\"iso\":\"d575aa85\",\"seq\":0,\"ms\":942,\"childId\":\"8157d5d5-9963-4d0c-8b47-6bfbd896aee1-crf\",\"created\":true,\"thrown\":null}"
+┌──────────────────────┬──────────────────────┬──────────┬────────────┐
+│ Start                │ End                  │ Duration │ State      │
+├──────────────────────┼──────────────────────┼──────────┼────────────┤
+│ 02/09/2026, 09:22:07 │ 02/09/2026, 09:22:07 │ 1 second │ ✅ Success │
+└──────────────────────┴──────────────────────┴──────────┴────────────┘
+
+  Name:      crf:pre-poll-0-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:22:07
+  End:       02/09/2026, 09:22:14
+  Duration:  7 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:22:07 │ 02/09/2026, 09:22:14 │ 7 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      crf:pre-wait-0-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:22:14
+  End:       02/09/2026, 09:22:19
+  Duration:  5 seconds
+
+  Name:      crf:pre-poll-1-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:22:19
+  End:       02/09/2026, 09:22:19
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"errored\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"errored\\\",\\\"error\\\":{\\\"message\\\":\\\"ProbeName-ZZZ: ProbeMessage-QQQ\\\",\\\"name\\\":\\\"Error\\\"},\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[\"message\",\"name\"],\"errorName\":\"Error\",\"errorMessage\":\"ProbeName-ZZZ: ProbeMessage-QQQ\"}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:22:19 │ 02/09/2026, 09:22:19 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      crf:answer-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:22:19
+  End:       02/09/2026, 09:22:19
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"r\":\"36e48793\",\"iso\":\"d575aa85\",\"seq\":1,\"ms\":12613,\"status\":\"errored\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"errored\\\",\\\"error\\\":{\\\"message\\\":\\\"ProbeName-ZZZ: ProbeMessage-QQQ\\\",\\\"name\\\":\\\"Error\\\"},\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[\"message\",\"name\"],\"errorName\":\"Error\",\"errorMessage\":\"ProbeName-ZZZ: ProbeMessage-QQQ\"}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:22:19 │ 02/09/2026, 09:22:19 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      crf:restart-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:22:19
+  End:       02/09/2026, 09:22:19
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"r\":\"36e48793\",\"iso\":\"d575aa85\",\"seq\":2,\"ms\":12890,\"kind\":\"function\",\"proto\":[\"constructor\",\"pause\",\"resume\",\"terminate\",\"restart\",\"delete\",\"status\",\"sendEvent\"],\"options\":{\"from\":{\"name\":\"child:throws\",\"count\":1,\"type\":\"do\"}},\"outcome\":\"resolved\",\"thrown\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:22:19 │ 02/09/2026, 09:22:19 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      crf:status-immediate-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:22:19
+  End:       02/09/2026, 09:22:20
+  Duration:  1 second
+  Success:   ✅ Yes
+  Output:    "{\"r\":\"36e48793\",\"iso\":\"d575aa85\",\"seq\":3,\"ms\":13539,\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬──────────┬────────────┐
+│ Start                │ End                  │ Duration │ State      │
+├──────────────────────┼──────────────────────┼──────────┼────────────┤
+│ 02/09/2026, 09:22:19 │ 02/09/2026, 09:22:20 │ 1 second │ ✅ Success │
+└──────────────────────┴──────────────────────┴──────────┴────────────┘
+
+  Name:      crf:settle-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:22:20
+  End:       02/09/2026, 09:22:35
+  Duration:  15 seconds
+
+  Name:      crf:post-poll-0-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:22:35
+  End:       02/09/2026, 09:22:35
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:22:35 │ 02/09/2026, 09:22:35 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      crf:post-wait-0-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:22:35
+  End:       02/09/2026, 09:22:40
+  Duration:  5 seconds
+
+  Name:      crf:post-poll-1-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:22:40
+  End:       02/09/2026, 09:22:40
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:22:40 │ 02/09/2026, 09:22:40 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      crf:post-wait-1-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:22:40
+  End:       02/09/2026, 09:22:45
+  Duration:  5 seconds
+
+  Name:      crf:post-poll-2-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:22:45
+  End:       02/09/2026, 09:22:45
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:22:45 │ 02/09/2026, 09:22:45 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      crf:post-wait-2-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:22:45
+  End:       02/09/2026, 09:22:50
+  Duration:  5 seconds
+
+  Name:      crf:post-poll-3-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:22:50
+  End:       02/09/2026, 09:22:50
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:22:50 │ 02/09/2026, 09:22:50 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      crf:post-wait-3-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:22:50
+  End:       02/09/2026, 09:22:55
+  Duration:  5 seconds
+
+  Name:      crf:post-poll-4-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:22:55
+  End:       02/09/2026, 09:22:55
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:22:55 │ 02/09/2026, 09:22:55 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      crf:post-wait-4-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:22:55
+  End:       02/09/2026, 09:23:00
+  Duration:  5 seconds
+
+  Name:      crf:post-poll-5-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:23:00
+  End:       02/09/2026, 09:23:00
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:23:00 │ 02/09/2026, 09:23:00 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      crf:post-wait-5-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:23:00
+  End:       02/09/2026, 09:23:05
+  Duration:  5 seconds
+
+  Name:      crf:post-poll-6-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:23:05
+  End:       02/09/2026, 09:23:06
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:23:05 │ 02/09/2026, 09:23:06 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      crf:post-wait-6-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:23:06
+  End:       02/09/2026, 09:23:11
+  Duration:  5 seconds
+
+  Name:      crf:post-poll-7-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:23:11
+  End:       02/09/2026, 09:23:11
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:23:11 │ 02/09/2026, 09:23:11 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      crf:post-wait-7-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 09:23:11
+  End:       02/09/2026, 09:23:16
+  Duration:  5 seconds
+
+  Name:      crf:answer-post-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 09:23:16
+  End:       02/09/2026, 09:23:16
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"r\":\"36e48793\",\"iso\":\"d575aa85\",\"seq\":4,\"ms\":69072,\"status\":\"queued\",\"keys\":[\"status\",\"error\",\"output\",\"rollback\"],\"json\":\"{\\\"status\\\":\\\"queued\\\",\\\"error\\\":null,\\\"output\\\":null,\\\"rollback\\\":null}\",\"errorKeys\":[],\"errorName\":null,\"errorMessage\":null,\"wasErrorName\":\"Error\",\"wasErrorMessage\":\"ProbeName-ZZZ: ProbeMessage-QQQ\"}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 09:23:16 │ 02/09/2026, 09:23:16 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
