@@ -767,6 +767,15 @@ const GATHER_POLL_INTERVAL = '30 seconds';
  * (5 children) `floor(10 / 5) = 2` rounds - polls at roughly 30 s and 60 s,
  * now that the loop waits before each one - is generous against a measured
  * few-second convergence, not tight against it.
+ *
+ * **The 2026-09-02 cap correction (#92) made that sentence literal rather
+ * than changing it.** The cap used to poll at rounds 0-2 where this comment
+ * and the ledger both said two polls; it now polls at 0 and 1, i.e. 30 s and
+ * 60 s. Both captures that reached this loop clear it with room: run
+ * `6f75e460`'s five children completed in 5-8 s, and run `54ce776b`'s were
+ * complete at the *first* poll. This interval is deliberately not lengthened
+ * to compensate - there is nothing to compensate for at a two-second-to-30-s
+ * ratio, and a longer wait would only delay a run that is converging.
  */
 const GATHER_POLL_SUBREQUEST_BUDGET = 10;
 
@@ -1109,6 +1118,13 @@ export function summarizeReplacement(
  * rounds 2-4 for the replacement. Round 0 at 180 s also now catches the
  * measured 62-122 s convergence outright, which is why the typical bill falls
  * to 3 as well.
+ *
+ * **The 15-minute cron cap does not reach this**, which is what makes
+ * wall-clock the free lever here rather than merely the cheap one: `scheduled()`
+ * awaits `RESEARCH_WORKFLOW.create()` and returns (src/index.ts), so the cap
+ * is charged against that handler, not against the run. Worth stating because
+ * this loop's worst case - three base polls to 540 s plus two granted rounds
+ * to 900 s - now exceeds 15 minutes on its own, where at 90 s it did not.
  */
 const SUMMARIZE_POLL_INTERVAL = '180 seconds';
 /**
