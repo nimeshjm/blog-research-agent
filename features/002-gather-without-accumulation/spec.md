@@ -262,7 +262,8 @@ UPDATE topics SET status = 'queued', claimed_at = NULL
 
 `TOPIC_CLAIM_TTL = 6 hours`. The margin is explicit both ways: the longest legitimate run
 is bounded by 46 gather steps plus 15 article steps plus inference, minutes rather than
-hours, and the cron gap is 48 hours — so 6 hours cannot reclaim a live run's topic and
+hours, and the cron gap is 24 hours (48 when this was written; the schedule was restored
+daily in #64) — so 6 hours cannot reclaim a live run's topic and
 cannot leave a topic stranded across a cycle. A row with `claimed_at IS NULL` is a
 pre-migration claim and is left alone rather than guessed at.
 
@@ -339,7 +340,7 @@ an unimplemented `selectTopic` in the then-deployed version — which is the poi
 | Bounding the parse costs more than it saves | Measured for two implementations, and it did (#61). The two causes are named as implementation constraints under "What bounding must not cost", and requirement 1 is explicitly droppable if per-request CPU measurement does not support it. The feature does not depend on it: requirement 4 removes the growth term independently |
 | Bounding the parse is not enough on its own | It attacks the dominant measured cost, and requirement 4 attacks the growth term independently. If a full 46-feed run still fails, the remaining lever is forcing an invocation boundary per gather step, which is why acceptance criterion 5 is a real run rather than a bench |
 | `run_candidates` becomes a second cross-run dedupe key | It is per-run scratch, pruned, and `shortlist` reads it scoped to `run_id`. `seen_urls` stays the only cross-run key |
-| Reclaim races a live run | `TOPIC_CLAIM_TTL` of 6 hours against a minutes-long run and a 48-hour cron gap; both margins stated in the design rather than left to be inferred |
+| Reclaim races a live run | `TOPIC_CLAIM_TTL` of 6 hours against a minutes-long run and a 24-hour cron gap (48 when written, daily since #64); both margins stated in the design rather than left to be inferred |
 | `shortlist`'s scoped read relocates the problem rather than removing it | Substantially reduced, not eliminated. The cap and ordering moved into SQL via `published_ms` (`readRunCandidates`'s `LIMIT`/`ORDER BY`), so `shortlist` does zero `Date.parse` calls where it did up to 678 before. It still materializes the capped set — up to `SHORTLIST_MAX_CANDIDATES` candidates — in one step and ranks it in JS, so the risk is not gone: acceptance criterion 5, a real run, is still the check that decides whether that remaining JS work fits |
 | The prose is corrected and the skill is not | The skill is what an author loads before writing a step, so a stale premise there survives every correction elsewhere and is re-derived on the next feature. Requirement 11 names it explicitly and acceptance criterion 11 greps for the stale phrasing rather than checking the three files by hand |
 | The corrected CPU rule is itself wrong | It is measured and the measurement is recorded with it. The failure mode being avoided is an *unmeasured* number derived from documentation, which is what produced this feature |

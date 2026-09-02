@@ -1,6 +1,6 @@
 # blog-research-agent
 
-A scheduled research-and-draft agent for https://nimeshjm.com/blog. Runs every two days on
+A scheduled research-and-draft agent for https://nimeshjm.com/blog. Runs daily on
 Cloudflare Workers, researches a topic from RSS/Atom sources, and opens a pull request
 carrying a research brief and a draft post against the blog repo.
 

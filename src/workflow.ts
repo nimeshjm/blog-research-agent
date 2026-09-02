@@ -450,7 +450,7 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
  *
  * A draft needs at least one source carrying an attributable R&D practice or
  * research finding, corroborated by at least one further independent source.
- * A raw article count is the wrong shape: at a two-day cadence the good case is
+ * A raw article count is the wrong shape: at a daily cadence the good case is
  * one solid sourced practice, not three articles of commentary.
  */
 const MIN_SOURCES = 2;
@@ -517,7 +517,9 @@ export const RUN_CANDIDATE_RETENTION_DAYS = 7;
  * publish at most `PUBLISH_POLL_SUBREQUEST_BUDGET` (4) rounds of
  * `PUBLISH_POLL_INTERVAL` (15 s) = 60 s. 300 + 1,620 + 360 + 60 = 2,340 s,
  * roughly 40 minutes. Six hours is roughly 9x that - too long to race a live
- * run, too short to strand a topic (or a run) across the 48-hour cron gap.
+ * run, too short to strand a topic (or a run) across the cron gap, which is 24
+ * hours since #64 restored the schedule at `0 6 * * *` rather than the 48 it was
+ * when this margin was first stated. 6 h against 24 h keeps both directions.
  * If 6 h were too short for a run, it would already have been too short for
  * that run's topic, which is the point: one constant, two rows.
  */
