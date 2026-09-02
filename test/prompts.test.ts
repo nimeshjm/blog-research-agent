@@ -218,6 +218,21 @@ describe('parseReduceResponse()', () => {
     });
   });
 
+  // #96 made braces part of every body for the first time - the marker is now
+  // `{/* ... */}`. Nothing before this closed the loop from "the prompt asks
+  // for it" to "the body carries it", and a JSON extractor that sliced on
+  // braces rather than parsing would mis-slice a marker inside a string value.
+  // It does not (`tryParseJsonObject` is JSON.parse over candidates), and
+  // `normaliseCitations` only ever rewrites a `【 】` pair, so the marker rides
+  // through untouched. This is what would notice if either changed.
+  it('carries a body containing the MDX marker through the parse and citation pass intact', () => {
+    const body = '## A heading\n\n{/* OPENING INCIDENT: needs a real example */}\n\nProse.';
+    const text = JSON.stringify({ title: 't', description: 'd', tags: ['a'], body });
+    const result = parseReduceResponse(text);
+    expect(result.ok && result.value.body).toBe(body);
+    expect(normaliseCitations(body, [summary()])).toBe(body);
+  });
+
   it('reports invalid-json for text that is not JSON at all', () => {
     expect(parseReduceResponse('not json at all')).toEqual({ ok: false, reason: 'invalid-json' });
   });
