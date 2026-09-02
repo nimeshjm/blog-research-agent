@@ -85,7 +85,7 @@ describe('summarizeArticle()', () => {
       chatFixture(JSON.stringify({ summary: 'It works.', relevance: 0.7, claims: ['c1'], attributablePractice: 'Practice X' })),
     );
 
-    const result = await summarizeArticle(aiEnv, candidate({ url: 'https://example.com/a', title: 'Article A' }), topic());
+    const result = await summarizeArticle(aiEnv, candidate({ url: 'https://example.com/a', title: 'Article A' }), topic(), 'run-test');
 
     expect(result.summary).toEqual({
       url: 'https://example.com/a',
@@ -105,7 +105,7 @@ describe('summarizeArticle()', () => {
         throw new Error('network down');
       }),
     );
-    const result = await summarizeArticle(envWithAi(chatFixture('{}')), candidate(), topic());
+    const result = await summarizeArticle(envWithAi(chatFixture('{}')), candidate(), topic(), 'run-test');
     expect(result.summary).toBeNull();
     expect(result.neurons).toBe(0);
     expect(result.skipReason).toBe('fetch-threw');
@@ -121,7 +121,7 @@ describe('summarizeArticle()', () => {
         throw new Error(longMessage);
       }),
     );
-    const result = await summarizeArticle(envWithAi(chatFixture('{}')), candidate(), topic());
+    const result = await summarizeArticle(envWithAi(chatFixture('{}')), candidate(), topic(), 'run-test');
     expect(result.skipReason).toBe('fetch-threw');
     expect(result.errorMessage).toHaveLength(100);
     expect(result.errorMessage).toBe(longMessage.slice(0, 100));
@@ -129,7 +129,7 @@ describe('summarizeArticle()', () => {
 
   it('returns skipReason: http-error (with the status) on a non-2xx fetch', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 404 })));
-    const result = await summarizeArticle(envWithAi(chatFixture('{}')), candidate(), topic());
+    const result = await summarizeArticle(envWithAi(chatFixture('{}')), candidate(), topic(), 'run-test');
     expect(result.summary).toBeNull();
     expect(result.neurons).toBe(0);
     expect(result.skipReason).toBe('http-error');
@@ -139,7 +139,7 @@ describe('summarizeArticle()', () => {
 
   it('returns skipReason: empty-extract when the article body extracts to nothing', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => articleResponse('<script>only script content</script>')));
-    const result = await summarizeArticle(envWithAi(chatFixture('{}')), candidate(), topic());
+    const result = await summarizeArticle(envWithAi(chatFixture('{}')), candidate(), topic(), 'run-test');
     expect(result.summary).toBeNull();
     expect(result.neurons).toBe(0);
     expect(result.skipReason).toBe('empty-extract');
@@ -151,7 +151,7 @@ describe('summarizeArticle()', () => {
     vi.stubGlobal('fetch', vi.fn(async () => articleResponse('<p>Article prose.</p>')));
     const aiEnv = envWithAi(chatFixture('I think the article is about... (reasoning-fallback prose, not JSON)'));
 
-    const result = await summarizeArticle(aiEnv, candidate(), topic());
+    const result = await summarizeArticle(aiEnv, candidate(), topic(), 'run-test');
 
     expect(result.summary).toBeNull();
     expect(result.neurons).toBeGreaterThan(0);
@@ -162,7 +162,7 @@ describe('summarizeArticle()', () => {
     vi.stubGlobal('fetch', vi.fn(async () => articleResponse('<p>Article prose.</p>')));
     const aiEnv = envWithAi(chatFixture('{"summary": "cut off h', 'length'));
 
-    const result = await summarizeArticle(aiEnv, candidate(), topic());
+    const result = await summarizeArticle(aiEnv, candidate(), topic(), 'run-test');
     expect(result.summary).toBeNull();
     expect(result.skipReason).toBe('truncated');
   });
@@ -170,8 +170,8 @@ describe('summarizeArticle()', () => {
   it('distinguishes truncated from unparseable - both skip before a summary but for different reasons', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => articleResponse('<p>Article prose.</p>')));
 
-    const truncated = await summarizeArticle(envWithAi(chatFixture('{"summary": "cut off h', 'length')), candidate(), topic());
-    const unparseable = await summarizeArticle(envWithAi(chatFixture('not json at all')), candidate(), topic());
+    const truncated = await summarizeArticle(envWithAi(chatFixture('{"summary": "cut off h', 'length')), candidate(), topic(), 'run-test');
+    const unparseable = await summarizeArticle(envWithAi(chatFixture('not json at all')), candidate(), topic(), 'run-test');
 
     expect(truncated.skipReason).toBe('truncated');
     expect(unparseable.skipReason).toBe('unparseable');
@@ -216,6 +216,7 @@ describe("runSummarize() (SummarizeWorkflow.run()'s body)", () => {
       topic: topic(),
       neuronBudget: 10_000,
       index: 0,
+      parentInstanceId: 'parent-own-instance-id',
     };
 
     const result = await runSummarize(aiEnv, liveStep(), summarizeEvent(payload));
@@ -249,6 +250,7 @@ describe("runSummarize() (SummarizeWorkflow.run()'s body)", () => {
       // enough more room for the second call's pre-flight check to pass.
       neuronBudget: SUMMARY_NEURON_ESTIMATE,
       index: 0,
+      parentInstanceId: 'parent-own-instance-id',
     };
 
     const result = await runSummarize(aiEnv, liveStep(), summarizeEvent(payload));
@@ -266,6 +268,7 @@ describe("runSummarize() (SummarizeWorkflow.run()'s body)", () => {
       topic: topic(),
       neuronBudget: 0,
       index: 0,
+      parentInstanceId: 'parent-own-instance-id',
     };
 
     const result = await runSummarize(env, liveStep(), summarizeEvent(payload));
@@ -291,6 +294,7 @@ describe("runSummarize() (SummarizeWorkflow.run()'s body)", () => {
       topic: topic(),
       neuronBudget: 10_000,
       index: 0,
+      parentInstanceId: 'parent-own-instance-id',
     };
 
     const result = await runSummarize(aiEnv, liveStep(), summarizeEvent(payload));

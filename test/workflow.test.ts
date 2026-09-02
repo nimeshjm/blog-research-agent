@@ -1481,14 +1481,15 @@ describe('selectTopic()', () => {
       `INSERT INTO topics (title, angle, status, origin) VALUES ('targeted', NULL, 'queued', 'human') RETURNING id`,
     ).first<{ id: number }>();
     const result = await selectTopic(env, 'run-targeted', insert?.id as number);
-    expect(result?.title).toBe('targeted');
-    expect(result?.status).toBe('in_progress');
+    expect(result.topic?.title).toBe('targeted');
+    expect(result.topic?.status).toBe('in_progress');
+    expect(result.strandedRuns).toBe(0); // targeted path never sweeps
   });
 
   it('drains the queue before proposing', async () => {
     await env.DB.prepare(`INSERT INTO topics (title, angle, status, origin) VALUES ('queued one', NULL, 'queued', 'human')`).run();
     const result = await selectTopic(env, 'run-drain', undefined);
-    expect(result?.title).toBe('queued one');
+    expect(result.topic?.title).toBe('queued one');
   });
 
   it('with an empty queue, proposes and persists a topic idempotently on replay', async () => {
@@ -1511,13 +1512,13 @@ describe('selectTopic()', () => {
     );
 
     const first = await selectTopic(env, 'run-replay', undefined);
-    expect(first?.title).toBe('Brand New Unrelated Topic Nobody Has Written About');
-    expect(first?.origin).toBe('agent');
-    expect(first?.status).toBe('in_progress');
+    expect(first.topic?.title).toBe('Brand New Unrelated Topic Nobody Has Written About');
+    expect(first.topic?.origin).toBe('agent');
+    expect(first.topic?.status).toBe('in_progress');
 
     // Replay: a retried select-topic step must recover the same row, not insert a second one.
     const second = await selectTopic(env, 'run-replay', undefined);
-    expect(second?.id).toBe(first?.id);
+    expect(second.topic?.id).toBe(first.topic?.id);
 
     const rows = await env.DB.prepare(`SELECT COUNT(*) as n FROM topics WHERE origin = 'agent'`).first<{ n: number }>();
     expect(rows?.n).toBe(1);
@@ -1543,7 +1544,7 @@ describe('selectTopic()', () => {
     );
 
     const result = await selectTopic(env, 'run-covered', undefined);
-    expect(result).toBeNull();
+    expect(result.topic).toBeNull();
   });
 
   // -------------------------------------------------------------------------
@@ -1568,7 +1569,7 @@ describe('selectTopic()', () => {
     const afterSelect = await env.DB.prepare('SELECT topic_id FROM runs WHERE instance_id = ?').bind('run-attach').first<{
       topic_id: number | null;
     }>();
-    expect(afterSelect?.topic_id).toBe(result?.id);
+    expect(afterSelect?.topic_id).toBe(result.topic?.id);
   });
 
   // -------------------------------------------------------------------------
@@ -1597,8 +1598,76 @@ describe('selectTopic()', () => {
 
     const result = await selectTopic(env, 'run-reclaim', undefined);
 
-    expect(result?.id).toBe(insert?.id);
-    expect(result?.status).toBe('in_progress');
+    expect(result.topic?.id).toBe(insert?.id);
+    expect(result.topic?.status).toBe('in_progress');
+  });
+
+  // -------------------------------------------------------------------------
+  // #91: the scheduled path's D1 batch also sweeps `runs` rows left
+  // `running` past the same TTL to `failed` - feature 002 requirement 10's
+  // second clause ("updated with its outcome, so a hard step failure is
+  // distinguishable after the fact"), previously unimplemented. Same TTL,
+  // same "unattended by definition" argument as the topic reclaim above.
+  // -------------------------------------------------------------------------
+  it(`a runs row left running ${STALE_AGE_HOURS}h ago, past TOPIC_CLAIM_TTL_HOURS, is swept to failed by a plain scheduled call`, async () => {
+    expect(TOPIC_CLAIM_TTL_HOURS).toBeLessThan(STALE_AGE_HOURS);
+    // A queued topic so the scheduled path resolves inside reclaimAndClaim
+    // and never falls through to proposeTopic's real fetch calls - keeps
+    // this test about the runs sweep, not about stubbing the network too.
+    await env.DB.prepare(`INSERT INTO topics (title, angle, status, origin) VALUES ('queued one', NULL, 'queued', 'human')`).run();
+    await env.DB
+      .prepare(
+        `INSERT INTO runs (instance_id, status, started_at) VALUES ('run-stranded', 'running', datetime('now', '-' || ? || ' hours'))`,
+      )
+      .bind(STALE_AGE_HOURS)
+      .run();
+
+    const result = await selectTopic(env, 'run-sweeper', undefined);
+
+    expect(result.strandedRuns).toBe(1);
+    const row = await env.DB.prepare('SELECT status, finished_at FROM runs WHERE instance_id = ?').bind('run-stranded').first<{
+      status: string;
+      finished_at: string | null;
+    }>();
+    expect(row?.status).toBe('failed');
+    expect(row?.finished_at).not.toBeNull();
+  });
+
+  it(`does not sweep a runs row left running only ${LIVE_AGE_HOURS}h ago, within TOPIC_CLAIM_TTL_HOURS (a live run is not marked failed)`, async () => {
+    expect(TOPIC_CLAIM_TTL_HOURS).toBeGreaterThan(LIVE_AGE_HOURS);
+    // Same reason as the test above: a queued topic keeps this test off
+    // proposeTopic's real fetch calls.
+    await env.DB.prepare(`INSERT INTO topics (title, angle, status, origin) VALUES ('queued one', NULL, 'queued', 'human')`).run();
+    await env.DB
+      .prepare(
+        `INSERT INTO runs (instance_id, status, started_at) VALUES ('run-live', 'running', datetime('now', '-' || ? || ' hours'))`,
+      )
+      .bind(LIVE_AGE_HOURS)
+      .run();
+
+    const result = await selectTopic(env, 'run-sweeper-2', undefined);
+
+    expect(result.strandedRuns).toBe(0);
+    const row = await env.DB.prepare('SELECT status FROM runs WHERE instance_id = ?').bind('run-live').first<{
+      status: string;
+    }>();
+    expect(row?.status).toBe('running');
+  });
+
+  it('never sweeps the calling run\'s own row, which started seconds ago on this same call', async () => {
+    // A queued topic keeps this test off proposeTopic's real fetch calls too.
+    await env.DB.prepare(`INSERT INTO topics (title, angle, status, origin) VALUES ('queued one', NULL, 'queued', 'human')`).run();
+    await startRun(env.DB, 'run-self');
+
+    // selectTopic is called as the second step of a run whose start-run
+    // already wrote this row `running` - the sweep must not be able to mark
+    // its own caller's run failed just because it is the one running it.
+    await selectTopic(env, 'run-self', undefined);
+
+    const row = await env.DB.prepare('SELECT status FROM runs WHERE instance_id = ?').bind('run-self').first<{
+      status: string;
+    }>();
+    expect(row?.status).toBe('running');
   });
 
   it(`a topic claimed ${LIVE_AGE_HOURS}h ago, within TOPIC_CLAIM_TTL_HOURS, is not returned to a second scheduled selectTopic (a live run is not stolen from)`, async () => {
@@ -1616,7 +1685,7 @@ describe('selectTopic()', () => {
 
     const result = await selectTopic(env, 'run-no-steal', undefined);
 
-    expect(result?.title).toBe('other queued');
+    expect(result.topic?.title).toBe('other queued');
   });
 
   // -------------------------------------------------------------------------
@@ -1637,7 +1706,7 @@ describe('selectTopic()', () => {
 
     const result = await selectTopic(env, 'run-named', named?.id as number);
 
-    expect(result?.id).toBe(named?.id);
+    expect(result.topic?.id).toBe(named?.id);
     const strandedRow = await env.DB.prepare('SELECT status FROM topics WHERE id = ?').bind(stranded?.id).first<{
       status: string;
     }>();
@@ -1761,7 +1830,7 @@ describe('synthesizeDraft()', () => {
       ),
     );
 
-    const { draft, neurons } = await synthesizeDraft(aiEnv, topic(), summaries);
+    const { draft, neurons } = await synthesizeDraft(aiEnv, 'run-test', topic(), summaries);
 
     expect(draft.slug).toBe('why-agentic-review-catches-more-bugs');
     expect(draft.title).toBe('Why Agentic Review Catches More Bugs');
@@ -1780,7 +1849,7 @@ describe('synthesizeDraft()', () => {
       chatFixture(JSON.stringify({ title: 'A Title', description: 'd', tags: [], body: 'body' })),
     );
 
-    const { draft } = await synthesizeDraft(aiEnv, topic(), summaries);
+    const { draft } = await synthesizeDraft(aiEnv, 'run-test', topic(), summaries);
 
     expect(draft.brief).toContain('https://example.com/a');
     expect(draft.brief).toContain('https://example.com/b');
@@ -1790,18 +1859,18 @@ describe('synthesizeDraft()', () => {
 
   it('falls back to a topic-id slug when the title has no usable characters', async () => {
     const aiEnv = envWithAi(chatFixture(JSON.stringify({ title: '!!!', description: 'd', tags: [], body: 'b' })));
-    const { draft } = await synthesizeDraft(aiEnv, topic({ id: 42 }), summaries);
+    const { draft } = await synthesizeDraft(aiEnv, 'run-test', topic({ id: 42 }), summaries);
     expect(draft.slug).toBe('research-topic-42');
   });
 
   it('throws when the completion was truncated (finish_reason: length) rather than committing a truncated draft', async () => {
     const aiEnv = envWithAi(chatFixture('{"title": "cut off h', 'length'));
-    await expect(synthesizeDraft(aiEnv, topic(), summaries)).rejects.toThrow(/truncat/i);
+    await expect(synthesizeDraft(aiEnv, 'run-test', topic(), summaries)).rejects.toThrow(/truncat/i);
   });
 
   it('throws when the model response is not valid JSON in the expected shape', async () => {
     const aiEnv = envWithAi(chatFixture('not json at all'));
-    await expect(synthesizeDraft(aiEnv, topic(), summaries)).rejects.toThrow();
+    await expect(synthesizeDraft(aiEnv, 'run-test', topic(), summaries)).rejects.toThrow();
   });
 
   it('names the specific parse failure reason and response length, and never the response text itself', async () => {
@@ -1811,7 +1880,7 @@ describe('synthesizeDraft()', () => {
 
     let caught: Error | undefined;
     try {
-      await synthesizeDraft(aiEnv, topic(), summaries);
+      await synthesizeDraft(aiEnv, 'run-test', topic(), summaries);
     } catch (err) {
       caught = err as Error;
     }

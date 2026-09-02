@@ -104,6 +104,15 @@ export const ATTR_PUBLISH_CHILDREN = 'agent.publish.children';
  * attributes, inside the roughly-eight ceiling.
  */
 export const ATTR_SUMMARIZE_REPLACEMENTS = 'agent.summarize.replacements';
+/**
+ * How many `runs` rows the `select-topic` step's sweep closed this call -
+ * `running` past `TOPIC_CLAIM_TTL_HOURS`, moved to `failed` (#91,
+ * `reclaimAndClaim` in `src/lib/d1.ts`). 0 on almost every run, on the same
+ * `select-topic` span `ATTR_TOPIC_ID` already carries, for the same reason
+ * `ATTR_SUMMARIZE_REPLACEMENTS` above is a count rather than the swept rows'
+ * `instance_id`s: a set of ids is unbounded, a count is not.
+ */
+export const ATTR_RUNS_STRANDED_CLOSED = 'agent.runs.stranded_closed';
 
 // --- gen_ai.* ---------------------------------------------------------------
 // Matches AI Gateway's own exporter conventions, so the two line up if that
