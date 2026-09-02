@@ -1,0 +1,81 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.128.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         summarize-workflow
+Instance Id:           e0f3bd1c-6a52-445c-b184-a16f862d490d-s0
+Version Id:            4cf507c5-0b3b-457a-9d88-4a7f9a8db844
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                02/09/2026, 10:18:35
+Success:               ✅ Yes
+Start:                 02/09/2026, 10:18:37
+End:                   02/09/2026, 10:19:15
+Duration:              38 seconds
+Last Successful Step:  summarize:https://arxiv.org/abs/2609.00065-1
+Steps:
+
+  Name:      summarize:https://arxiv.org/abs/2608.27831-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:18:37
+  End:       02/09/2026, 10:18:48
+  Duration:  11 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2608.27831\",\"title\":\"RealSWE: A Compositional Evaluation of Coding Agents under Realistic User Requests\",\"summary\":\"The paper introduces RealSWE, a benchmark suite that derives 381 multi-variant coding tasks from existing SWE-bench problems but varies the information composition and linguistic style to match real user prompts. An analysis of real-world requests shows they are much shorter, less structured, and more informal than benchmark tasks, with 88% containing only a problem statement versus 7% in existing benchmarks. Experiments with seven LLM-based coding agents reveal that realistic inputs lower resolution rates by about 6.4 percentage points and can alter model rankings, and that explicitly providing Desired Behavior and Motivation markedly improves performance while other context adds little value. The authors argue that prompt design recommendations can boost coding agent effectiveness in practice.\",\"relevance\":0.15,\"claims\":[\"Real user prompts are typically[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 02/09/2026, 10:18:37 │ 02/09/2026, 10:18:48 │ 11 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2608.28632-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:18:48
+  End:       02/09/2026, 10:18:52
+  Duration:  5 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2608.28632\",\"title\":\"AutoScientist-Quant: Self-Evolving Coding Agents for Automatic Research in Quantitative Investment\",\"summary\":\"The paper presents AutoScientist-Quant, a self‑evolving framework where a budget‑aware controller directs large‑language‑model coding agents through hypothesis generation, library selection, model tuning, and deployment for quantitative investment research. By integrating memory retrieval, adaptive decision‑making, and a rigorously separated evaluation pipeline, the system outperforms prior baselines on CSI universes across multiple metrics and market settings.\",\"relevance\":0.42,\"claims\":[\"Existing LLM agent pipelines suffer from non‑adaptive search, manual library/model selection, and test‑window leakage.\",\"A single controller conditioned on remaining budget can decide to improve, combine, pivot, stop, expand nodes, generate alphas, and retrieve past trajectories.\",\"The framework automatically selects libraries and tunes models, closing t[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:18:48 │ 02/09/2026, 10:18:52 │ 5 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2609.00006-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:18:52
+  End:       02/09/2026, 10:19:00
+  Duration:  8 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2609.00006\",\"title\":\"Harness Engineering: Anatomy, Architecture, and Evolution of Coding Agents -- A Source-Code Study of Eleven Systems\",\"summary\":\"The paper conducts a source‑code anatomy of eleven production coding‑agent harnesses, defining a seven‑subsystem model and cataloguing 29 recurring design patterns. It finds that none of the ~4 million lines of Python, TypeScript, or Rust code import a general‑purpose agentic framework or use vector‑based code retrieval, and that the field has shifted from ad‑hoc tools to platform‑level runtimes. A longitudinal snapshot shows convergence toward imitation and a move from prompt‑based policies to configuration‑driven behavior.\",\"relevance\":0.4,\"claims\":[\"No coding‑agent runtime imports a general‑purpose agentic framework across the studied codebases.\",\"All studied runtimes rely on deterministic code retrieval rather than vector‑embedding based methods.\",\"The coding‑agent harnesses have evolved from simple tools to platform‑l[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:18:52 │ 02/09/2026, 10:19:00 │ 8 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2605.05726-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:19:00
+  End:       02/09/2026, 10:19:08
+  Duration:  8 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2605.05726\",\"title\":\"SkillRet: A Large-Scale Benchmark for Skill Retrieval in LLM Agents\",\"summary\":\"The paper introduces SkillRet, a large-scale benchmark comprising over 16k public agent skills and thousands of queries to evaluate skill retrieval for LLM agents. Experiments show that existing off-the-shelf retrievers perform poorly, while task‑specific fine‑tuning on SkillRet yields substantial gains in NDCG@10, highlighting the difficulty of retrieving relevant skills from large libraries. The authors release the dataset, code, and model checkpoints to support future research.\",\"relevance\":0.2,\"claims\":[\"Off‑the‑shelf models struggle with realistic large‑scale skill libraries.\",\"Fine‑tuning on SkillRet improves NDCG@10 by 12.9 points over the best prior retriever.\",\"SkillRet contains 16,129 public agent skills organized into a two‑level taxonomy.\",\"Performance gains arise from better focus on small skill‑relevant signals in long queries.\",\"The benchmark, code, and m[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:19:00 │ 02/09/2026, 10:19:08 │ 8 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2609.00065-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:19:08
+  End:       02/09/2026, 10:19:15
+  Duration:  6 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2609.00065\",\"title\":\"Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents\",\"summary\":\"The paper introduces Scientific Agent Skills, an open library containing 163 procedural knowledge modules across 16 scientific domains to guide language‑model agents in performing defensible analyses. Each skill is packaged as a versioned directory with a human‑readable instruction file, reference materials, and executable scripts, aiming to improve the reliability of agent‑generated code and analyses.\",\"relevance\":0.22,\"claims\":[\"Language‑model agents often produce working code but may lack defensible analytical reasoning.\",\"Defensible scientific analysis requires explicit procedural choices such as accepted statistical tests and authoritative identifier namespaces.\",\"The authors have compiled 163 procedural “skills” covering areas like genomics, cheminformatics, and medical imaging.\",\"Each skill is organized as a versioned directory containing a readable in[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:19:08 │ 02/09/2026, 10:19:15 │ 6 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘

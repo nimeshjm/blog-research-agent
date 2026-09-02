@@ -1,0 +1,81 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.128.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         summarize-workflow
+Instance Id:           e0f3bd1c-6a52-445c-b184-a16f862d490d-s2
+Version Id:            4cf507c5-0b3b-457a-9d88-4a7f9a8db844
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                02/09/2026, 10:18:35
+Success:               ✅ Yes
+Start:                 02/09/2026, 10:18:38
+End:                   02/09/2026, 10:19:10
+Duration:              32 seconds
+Last Successful Step:  summarize:https://arxiv.org/abs/2505.13180-1
+Steps:
+
+  Name:      summarize:https://arxiv.org/abs/2609.01056-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:18:38
+  End:       02/09/2026, 10:18:44
+  Duration:  6 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2609.01056\",\"title\":\"WorldBench: Culturally Grounded Benchmark for Multilingual Agents\",\"summary\":\"WorldBench is a new multilingual benchmark comprising 1,600 persona‑grounded everyday workflow tasks across seven languages and eight cultures, designed to evaluate LLM‑powered agents in realistic, sandboxed environments. It introduces the Constrained Task Success (CTS) metric to assess not only task completion but also minimal state modification, revealing that current frontier models achieve only 49.2% CTS and struggle with long‑horizon, state‑preserving tasks.\",\"relevance\":0.2,\"claims\":[\"Existing benchmarks rarely evaluate state preservation, multilingual performance, and realistic grounded scenarios for agents.\",\"WorldBench provides 1,600 culturally and linguistically diverse tasks filtered by expert human annotators.\",\"The Constrained Task Success (CTS) metric combines instruction compliance with environment preservation for evaluation.\",\"Frontier models attain only [truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:18:38 │ 02/09/2026, 10:18:44 │ 6 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2609.01404-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:18:44
+  End:       02/09/2026, 10:18:52
+  Duration:  8 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2609.01404\",\"title\":\"Evaluating Multimodal LLMs as Generalist Vision-Language-Action Agents for Drone Control: Commanding, Approaching, Tracking and Searching\",\"summary\":\"The paper presents DroneCATS-Agent, an architecture that plugs multimodal large language models (MLLMs) directly into a drone's control loop, and introduces the DroneCATS benchmark to evaluate these models on tasks such as approaching, tracking, searching, and commanding multiple drones. Experiments reveal that while small open‑source models can navigate within success radii, they often fail to follow proper action protocols or declare task completion, highlighting a gap between perception and disciplined action planning for deployable edge agents.\",\"relevance\":0.04,\"claims\":[\"MLLMs can be integrated into drone control loops without fine‑tuning or function‑calling schemas.\",\"The DroneCATS benchmark measures four core drone control capabilities and treats the model as the independent variable.\",\"Small [truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:18:44 │ 02/09/2026, 10:18:52 │ 8 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2609.01535-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:18:52
+  End:       02/09/2026, 10:18:58
+  Duration:  6 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2609.01535\",\"title\":\"Can LLMs Design Video Coding Tools? A Case Study on Planar Mode\",\"summary\":\"The paper investigates whether large language models (LLMs) can autonomously design video coding tools by iteratively generating new Planar mode predictors, evaluating them in the Fraunhofer Versatile Video Encoder, and refining the implementations. Experiments show that LLM‑generated predictors can achieve modest bitrate savings (0.18%) with slight complexity overhead, and similar gains are observed when integrating directional Planar modes in a low‑resolution setting, highlighting both promise and challenges of LLM‑driven coding tool design.\",\"relevance\":0.05,\"claims\":[\"LLMs can generate new Planar prediction implementations that outperform the default mode in VVenC, achieving 0.18% bitrate reduction with 0.4% increased complexity.\",\"A generation‑and‑evaluation loop enables iterative refinement of coding tools based on encoder feedback.\",\"Introducing LLM‑generated directi[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:18:52 │ 02/09/2026, 10:18:58 │ 6 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://developers.googleblog.com/how-to-evaluate-live-voice-agents-in-adk/-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:18:58
+  End:       02/09/2026, 10:19:06
+  Duration:  8 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://developers.googleblog.com/how-to-evaluate-live-voice-agents-in-adk/\",\"title\":\"How to Evaluate Live &amp; Voice Agents in ADK\",\"summary\":\"The article introduces native live evaluation for voice agents in Google ADK, allowing developers to run end‑to‑end tests with simulated users that speak via synthesized audio. It details how to define multi‑agent workflows, author evaluation cases (both dynamic scenarios and fixed conversations), configure live model and audio settings, run the evaluations, and inspect audio‑augmented results in ADK Web. The approach uses rubric‑based LLM judges to score multi‑turn trajectories and can be integrated into CI/CD pipelines.\",\"relevance\":0.05,\"claims\":[\"ADK now supports native live evaluation of voice agents using a simulated audio user.\",\"Developers can author evaluation sets as conversation scenarios with persona‑driven user behavior or as fixed turn scripts.\",\"Rubric‑based LLM judges can automatically score multi‑turn agent trajectories against def[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:18:58 │ 02/09/2026, 10:19:06 │ 8 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2505.13180-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:19:06
+  End:       02/09/2026, 10:19:10
+  Duration:  4 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2505.13180\",\"title\":\"ViPlan: A Benchmark for Visual Planning with Symbolic Predicates and Vision-Language Models\",\"summary\":\"The paper introduces ViPlan, an open‑source benchmark that evaluates visual planning approaches using either vision‑language models as symbolic grounders or as direct planners. Experiments on visual Blocksworld and simulated household robotics tasks reveal that VLM‑as‑grounder methods excel when accurate visual grounding is essential, while VLM‑as‑planner methods dominate in partially observable, language‑rich environments; chain‑of‑thought prompting shows no consistent benefit.\",\"relevance\":0.05,\"claims\":[\"ViPlan provides the first benchmark for comparing VLM‑grounded symbolic planners with direct VLM planning under matched conditions.\",\"In visual Blocksworld tasks, VLM‑as‑grounder methods solve 46% of problems versus 9% for VLM‑as‑planner methods.\",\"In household robotics tasks, VLM‑as‑planner methods solve 34% of problems versus 5% for VLM‑as‑g[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:19:06 │ 02/09/2026, 10:19:10 │ 4 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
