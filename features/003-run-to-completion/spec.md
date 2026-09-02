@@ -332,6 +332,20 @@ to — which is also what keeps the narrowing live on this very run's timeline.
    `run_candidates` (`readSourceWeights`, `src/lib/d1.ts`) rather than from a table
    written down here, which the section above shows would rot within a week.
 
+   **Amended 2026-09-02 (#99): assignment order and emission order are separate
+   decisions.** The paragraph above is about which child a feed lands in, and it stands
+   unchanged — that is a CPU-balancing decision and it stays weight-driven. The order a
+   child *consumes* its chunk in is not the same question, and until now it was
+   heaviest-first only as a side effect of the balancing sort. It is now the source's
+   curation tier (`tierOf`, `src/lib/feeds.ts`), so a child parses its priority feeds
+   before its deferred ones. This does not make a chunk cheaper and is not offered as a
+   CPU mitigation: it decides *what survives* when a chunk does exceed the limit
+   part-way through, which fact 1 says can still happen. On the live allowlist it moves
+   arXiv cs.AI — 783 of ~1,100 items — from first in its chunk to last, where it can
+   only cost itself. The comparator stays total (tier, then weight descending, then name
+   ascending) because these chunks key child ids that must survive replay
+   byte-identically.
+
    **The number of children stays at five, and not only by arithmetic.**
    `pollChildBatch` derives `max(2, floor(GATHER_POLL_SUBREQUEST_BUDGET / childCount))`
    polls from the parent's subrequest share, so a sixth child would drop the parent to

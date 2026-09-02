@@ -13,7 +13,7 @@ import {
   startRun,
 } from './lib/d1';
 import { fetchFeedItems } from './lib/feed-fetch';
-import { loadFeeds } from './lib/feeds';
+import { loadFeeds, SOURCE_TIER_DEFAULT, SOURCE_TIER_DEFERRED, SOURCE_TIER_PRIORITY, sourceTiers, tierOf } from './lib/feeds';
 import { listBlogPostSlugs } from './lib/github';
 import { createLlm, neuronsFor } from './lib/llm';
 import { buildReduceMessages, normaliseCitations, parseReduceResponse } from './lib/prompts';
@@ -632,6 +632,14 @@ export const DEFAULT_SOURCE_WEIGHT = 25;
  * descending then name ascending, and bins tie-break on load, then feed
  * count, then index. The feed-count term is what makes an all-equal-weight
  * input (a first run) come out as round-robin instead of filling bin 0 first.
+ *
+ * **Assignment order and emission order are different questions** (#99,
+ * spec.md requirement 3's 2026-09-02 amendment). Which bin
+ * a source lands in is the balancing decision above and stays weight-driven.
+ * The order a bin's sources come *out* in is a curation decision, and it is
+ * `tierOf`'s (src/lib/feeds.ts): a chunk is emitted priority sources first,
+ * deferred last, so the feed a child parses first is the one most worth
+ * having if that child dies mid-chunk on the CPU limit.
  */
 export function chunkSourcesByVolume(sources: Source[], weights: Map<string, number>, feedsPerChild: number): Source[][] {
   if (sources.length === 0) return [];
@@ -658,7 +666,22 @@ export function chunkSourcesByVolume(sources: Source[], weights: Map<string, num
     bins[target]!.load += weightOf(source);
   }
 
-  return bins.map((b) => b.sources);
+  // Assignment above stays heaviest-first - that is what balances the bins
+  // (#75). Only the order each bin is *emitted* in is curated, because that
+  // is all a child consumes it in (`for (const source of
+  // event.payload.sources)`, src/gather-workflow.ts). Total, not
+  // stability-dependent: these chunks key child ids that must survive replay
+  // byte-identically, so the comparator repeats the assignment sort's own
+  // weight-then-name terms behind the tier rather than leaning on
+  // `Array.prototype.sort` being stable.
+  return bins.map((b) =>
+    [...b.sources].sort(
+      (a, b2) =>
+        tierOf(a) - tierOf(b2) ||
+        weightOf(b2) - weightOf(a) ||
+        (a.name < b2.name ? -1 : a.name > b2.name ? 1 : 0),
+    ),
+  );
 }
 
 /**
@@ -837,6 +860,27 @@ const PRACTICE_SIGNAL_RE =
 const COMMENTARY_SIGNAL_RE = /\b(opinion|thoughts on|roundup|newsletter|weekly|digest|why i think|announcing)\b/i;
 
 /**
+ * How much a source's tier moves its candidates, in the same units as the
+ * signals above: a priority source gains this, a deferred one loses it, and
+ * the default tier is untouched. 3 makes the spread between a priority and a
+ * deferred source 6 - more than the practice signal (+2) and the commentary
+ * signal (-1) combined, so tier dominates a same-topic tie, and less than a
+ * strong topic overlap, so a deferred source's genuinely on-topic paper
+ * still outranks a priority source's off-topic post.
+ *
+ * **Why an offset and not a sort key** (#99, and feature 001 spec.md's
+ * 2026-09-02 amendment). Tier as a primary sort key would
+ * empty the shortlist of everything else: nothing writes `seen_urls`, so
+ * every run's unseen set is the whole gathered set, and at the 2026-09-01
+ * calibration the 9 priority feeds alone supply ~103 candidates against
+ * `SHORTLIST_TOP_N = 15`. The other 35 feeds and both arXiv feeds would then
+ * be gathered and never summarized - and `isGrounded` would be left resting
+ * on whatever those 9 published, with the allowlist's densest supply of
+ * attributable findings ranked out of reach.
+ */
+const TIER_SCORE_WEIGHT = 3;
+
+/**
  * Heuristic relevance score against `topic`. Takes no `Ai` binding by
  * design (spec.md: inference happens in exactly two places, and ranking is
  * not one of them, which is what keeps the feed count invariant to the
@@ -844,9 +888,14 @@ const COMMENTARY_SIGNAL_RE = /\b(opinion|thoughts on|roundup|newsletter|weekly|d
  * material carrying an attributable practice or finding over commentary
  * (spec.md -> Inference: "Ranking in shortlist should therefore favour
  * material that carries an attributable practice or finding over
- * commentary").
+ * commentary"), then by the source's curation tier.
+ *
+ * `tiers` is passed in rather than read here because this is called once per
+ * candidate over up to SHORTLIST_MAX_CANDIDATES of them; a candidate whose
+ * source has left the allowlist scores at `SOURCE_TIER_DEFAULT` (see
+ * `sourceTiers`).
  */
-function relevanceScore(candidate: Candidate, topic: Topic): number {
+function relevanceScore(candidate: Candidate, topic: Topic, tiers: Map<string, number>): number {
   const topicWords = new Set([...tokenize(topic.title), ...tokenize(topic.angle ?? '')]);
   const candidateWords = tokenize(candidate.title);
   let overlap = 0;
@@ -855,6 +904,9 @@ function relevanceScore(candidate: Candidate, topic: Topic): number {
   let score = overlap;
   if (PRACTICE_SIGNAL_RE.test(candidate.title)) score += 2;
   if (COMMENTARY_SIGNAL_RE.test(candidate.title)) score -= 1;
+  const tier = tiers.get(candidate.sourceName) ?? SOURCE_TIER_DEFAULT;
+  if (tier === SOURCE_TIER_PRIORITY) score += TIER_SCORE_WEIGHT;
+  if (tier === SOURCE_TIER_DEFERRED) score -= TIER_SCORE_WEIGHT;
   return score;
 }
 
@@ -865,8 +917,9 @@ function relevanceScore(candidate: Candidate, topic: Topic): number {
  * last) - so this does zero `Date.parse` calls where it used to do one per
  * candidate. Then the batched `seen_urls` dedupe (`findSeenUrls`, chunked at
  * 100 params - `d1.ts` owns that chunking, not reimplemented here), then
- * heuristic ranking against `topic`, then a cap of SHORTLIST_TOP_N. See
- * spec.md, "The aggregate ceiling in `shortlist`".
+ * heuristic ranking against `topic` - which now carries a source-tier term,
+ * see `TIER_SCORE_WEIGHT` - then a cap of SHORTLIST_TOP_N. See spec.md,
+ * "The aggregate ceiling in `shortlist`".
  */
 export async function shortlistCandidates(env: Env, runId: string, topic: Topic): Promise<Candidate[]> {
   const capped = await readRunCandidates(env.DB, runId, SHORTLIST_MAX_CANDIDATES);
@@ -874,8 +927,12 @@ export async function shortlistCandidates(env: Env, runId: string, topic: Topic)
   const seen = await findSeenUrls(env.DB, capped.map((c) => c.url));
   const unseen = capped.filter((c) => !seen.has(c.url));
 
+  // Read once, not per candidate: this runs over up to
+  // SHORTLIST_MAX_CANDIDATES rows inside the parent's own invocation.
+  const tiers = sourceTiers();
+
   return unseen
-    .map((candidate) => ({ candidate, score: relevanceScore(candidate, topic) }))
+    .map((candidate) => ({ candidate, score: relevanceScore(candidate, topic, tiers) }))
     .sort((a, b) => b.score - a.score)
     .slice(0, SHORTLIST_TOP_N)
     .map((r) => r.candidate);
