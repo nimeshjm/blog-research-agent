@@ -234,13 +234,68 @@ describe('readRepoFile()', () => {
   });
 });
 
+/**
+ * The blog repo's open PRs, oldest first - the order the live API returned
+ * them on 2026-09-02, when `list[0]` was PR #1 and that is what run
+ * `e0f3bd1c` recorded.
+ */
+const openPulls = [
+  { html_url: 'https://github.com/nimeshjm/nimeshjm.com/pull/1', head: { ref: 'research/2026-08-31-unrelated' } },
+  { html_url: 'https://github.com/nimeshjm/nimeshjm.com/pull/7', head: { ref: 'research/2026-08-27-x' } },
+];
+
+/**
+ * Emulates `GET /pulls?state=open&head=...`, including the part that made
+ * #95 silent: GitHub *ignores* a `head` that is not `user:ref` rather than
+ * rejecting it, so a malformed filter answers with the whole open list. A
+ * mock that filtered whatever it was sent would pass with the bug put back.
+ */
+function listOpenPulls(input: RequestInfo | URL): unknown[] {
+  const filter = new URL(String(input)).searchParams.get('head');
+  const parsed = filter === null ? null : /^([^:/]+):(.+)$/.exec(filter);
+  if (parsed === null) return openPulls;
+  const [, owner, ref] = parsed;
+  return owner === 'nimeshjm' ? openPulls.filter((pr) => pr.head.ref === ref) : [];
+}
+
 describe('openPullRequest()', () => {
+  // Asserts the sent URL and nothing else, so it stays a live check on the
+  // filter's shape even with the head-ref cross-check below taken away.
+  it('filters on head=owner:ref - a colon, the only shape GitHub actually filters on', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET') return jsonResponse(200, []);
+      return jsonResponse(201, { html_url: 'https://github.com/nimeshjm/nimeshjm.com/pull/12' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await openPullRequest(config, { title: 't', body: 'b', head: 'research/2026-09-02-new', base: 'main' });
+
+    const requested = String(fetchMock.mock.calls[0]?.[0]);
+    expect(requested).toContain('state=open');
+    expect(requested).toContain('head=nimeshjm%3Aresearch%2F2026-09-02-new');
+  });
+
+  it('opens a PR for the requested head rather than reusing an unrelated open one', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET') return jsonResponse(200, listOpenPulls(input));
+      return jsonResponse(201, { html_url: 'https://github.com/nimeshjm/nimeshjm.com/pull/12' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const url = await openPullRequest(config, {
+      title: 't',
+      body: 'b',
+      head: 'research/2026-09-02-new',
+      base: 'main',
+    });
+
+    expect(url).toBe('https://github.com/nimeshjm/nimeshjm.com/pull/12');
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(true);
+  });
+
   it('reuses an existing open PR for the same head instead of opening a second one', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if ((init?.method ?? 'GET') === 'GET') {
-        expect(String(input)).toContain('state=open');
-        return jsonResponse(200, [{ html_url: 'https://github.com/nimeshjm/nimeshjm.com/pull/7' }]);
-      }
+      if ((init?.method ?? 'GET') === 'GET') return jsonResponse(200, listOpenPulls(input));
       throw new Error('should not POST when a PR already exists');
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -253,6 +308,20 @@ describe('openPullRequest()', () => {
     });
 
     expect(url).toBe('https://github.com/nimeshjm/nimeshjm.com/pull/7');
+  });
+
+  it('throws rather than reusing a PR whose head is not the one asked for', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET') {
+        return jsonResponse(200, [openPulls[0]]);
+      }
+      throw new Error('should not POST after a mismatched head');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      openPullRequest(config, { title: 't', body: 'b', head: 'research/2026-09-02-new', base: 'main' }),
+    ).rejects.toThrow(/not for the requested head/);
   });
 
   it('opens a new PR when none is open for that head', async () => {
