@@ -66,6 +66,61 @@ The OpenAI row is the shape of the waste: **1,154 items parsed to keep 62** — 
    that names it via `ResearchParams.topicId` (`src/workflow.ts:299`), i.e. one triggered
    by hand. The scheduled path reaches only `queued` rows, so today a stranded topic waits
    for a human who knows to pass its id.
+
+   **Amended 2026-09-04 (#108): this requirement covers a topic abandoned by a dead run,
+   never one whose run finished.** Nothing in the original text distinguished the two —
+   the reclaim `UPDATE`'s predicate (`WHERE status = 'in_progress' AND claimed_at IS NOT
+   NULL AND claimed_at < …`) has no way to tell a stranded claim from a live one that
+   simply hasn't finished writing back yet, because until now *nothing* ever wrote back:
+   a run that reached `record-success`, `record-no-sources` or `record-no-summaries` left
+   its topic `in_progress`, identical to one whose instance died mid-step. Measured in
+   production ([#108](https://github.com/nimeshjm/blog-research-agent/issues/108)): five
+   consecutive successful runs drew from two topic rows, because each one's topic was
+   reclaimed and re-selected the moment `TOPIC_CLAIM_TTL_HOURS` passed, whether or not it
+   had already produced a pull request. Nine queued topics never ran.
+
+   `recordOutcome` (`src/workflow.ts`) now closes the run's topic on every terminal path
+   that has one, via `recordSeenPruneAndCloseTopic` (`src/lib/d1.ts`): `record-success`
+   closes it to `done`; `record-no-sources` and `record-no-summaries` — both recorded as
+   `insufficient_sources` — close it to `rejected` rather than releasing it back to
+   `queued`. A release was considered and rejected: `queued` rows drain oldest-first, so a
+   released topic is exactly the row the *next* run reaches first, and a topic whose
+   shortage is intrinsic (not just today's feeds) re-fails the same way and re-releases
+   itself — the same loop this amendment exists to close, recurring daily instead of every
+   `TOPIC_CLAIM_TTL_HOURS`. `rejected` avoids that: it is excluded from the scheduled
+   path's `queued` lookup, so it is never auto-selected again, but it is also excluded from
+   `reclaimAndClaim`'s covered-titles set (requirement 3's third set, feature 001
+   `spec.md`), so the same idea can still be proposed afresh later rather than being
+   burned. `record-no-topic` closes nothing, because it never had a topic. The topic-close
+   write is conditional on the row's current status (`AND status = 'in_progress'`), the
+   same pattern `claimRow` already uses, so a replayed terminal step (`run()` re-executes
+   from the top — feature 003 fact 2) is a no-op rather than a second, conflicting
+   transition. It costs no additional subrequest: it is a third statement in the
+   `db.batch()` call requirement 4 of feature 001's amended spec.md already made for the
+   `seen_urls` insert and the `run_candidates` prune.
+
+   **Residual, not closed here: `rejected` can still loop, slower and through a different
+   door.** `rejected`'s exclusion from `reclaimAndClaim`'s covered-titles set is
+   deliberate (#104/#110 — a rejected idea must stay retryable, not burned forever), and
+   `findOrProposeTopic`'s existing-row recovery only matches `status IN ('queued',
+   'in_progress')`, so a `rejected` row is invisible to both. If the queue is empty and
+   the agent's seed feed still yields the same newest item, `proposeTopic` can propose the
+   *same title* again, get a fresh row (not the rejected one), and fail on the same
+   grounding shortage that rejected the first — repeating on every empty-queue run rather
+   than being blocked by dedupe, and accumulating one `rejected` row per attempt. This is
+   the propose path's own version of the loop this amendment closes on the queue-drain
+   path, and it is not fixed here. It is bounded rather than acute: the propose path only
+   runs when the queue is empty (requirement 2, feature 001 `spec.md`) — today's backlog
+   alone defers it for weeks — and the seed feed's newest item rotates over time, so the
+   exact title is unlikely to be reproposed indefinitely. Closing it fully would mean
+   including `rejected` in the covered-titles set, which is the trade #104/#110
+   deliberately declined to make, in the other direction, for the reason stated there.
+   Left as a recorded trade, not a bug reopened.
+
+   This requirement's own text stands unchanged for the case it actually describes: a
+   topic whose run died with no terminal step ever reached is genuinely indistinguishable
+   from a live one about to finish, which is exactly why the TTL — not a webhook — is the
+   mechanism, per requirement 9 below.
 9. **Reclaim cannot steal a live run's topic.** `TOPIC_CLAIM_TTL` exceeds the longest
    legitimate run by a margin that is stated, not implied.
 10. **Every run writes a `runs` row, including one that dies mid-step.** The row is
