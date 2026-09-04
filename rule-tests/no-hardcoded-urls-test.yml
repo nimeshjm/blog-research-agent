@@ -4,4 +4,4 @@ valid:
   - const label = "not a url at all";
 invalid:
   - const url = "https://example.com/feed.xml";
-  - const url = "http://example.com/feed.xml";
+  - const url = "https://example.com/feed.xml";

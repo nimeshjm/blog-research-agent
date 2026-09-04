@@ -1,6 +1,6 @@
 [
-  { "name": "arXiv cs.SE", "feedUrl": "http://export.arxiv.org/rss/cs.SE", "tier": 2 },
-  { "name": "arXiv cs.AI", "feedUrl": "http://export.arxiv.org/rss/cs.AI", "tier": 2 },
+  { "name": "arXiv cs.SE", "feedUrl": "https://export.arxiv.org/rss/cs.SE", "tier": 2 },
+  { "name": "arXiv cs.AI", "feedUrl": "https://export.arxiv.org/rss/cs.AI", "tier": 2 },
   { "name": "OpenAI", "feedUrl": "https://openai.com/blog/rss.xml", "tier": 0 },
   { "name": "Cloudflare", "feedUrl": "https://blog.cloudflare.com/rss/" },
   { "name": "GitHub", "feedUrl": "https://github.blog/feed/" },

@@ -28,6 +28,76 @@ and stops; a human merges.
    because posts with `draft: true` are absent from the feed. At the time of writing the
    repo holds 33 posts and the feed 30 — the 3 missing are all unpublished drafts.
 4. An article already seen in a previous run is not re-read or re-summarized.
+   Amended 2026-09-04 (#100): the table existed and was read from the start, but nothing
+   ever wrote it, so this requirement was inert on every real run until this amendment -
+   `shortlistCandidates`'s `unseen` filter never removed a row in production (only
+   `test/` inserted into `seen_urls` by hand). "Seen" means **the URLs `shortlist`
+   returns**: the up-to-`SHORTLIST_TOP_N` candidates ranked highest against the topic,
+   written by every terminal `record-*` step (`record-success`, `record-no-sources`,
+   `record-no-summaries`) once `shortlist` exists, whatever the run's outcome from that
+   point on - including a run that stops at `record-no-sources` or `record-no-summaries`
+   before a single article is summarized. `record-no-topic` writes none, because
+   `shortlist` has not been computed yet on that path. Two narrower and wider
+   alternatives were considered and rejected:
+   - *Every gathered candidate* (the whole pre-shortlist set, up to
+     `SHORTLIST_MAX_CANDIDATES`) — rejected as too aggressive: the 30-day recency window
+     already gives an article exactly one chance to be topical, and burning a candidate
+     that was fetched but never ranked into the top `SHORTLIST_TOP_N` removes it from
+     every future run's consideration for no benefit - it was never summarized, so
+     nothing was spent on it that a repeat would waste.
+   - *Only URLs cited in the published draft* (the subset of shortlisted URLs that
+     `synthesizeDraft` actually used) — rejected as too narrow: it protects nothing on a
+     run that never reaches `synthesize` (`record-no-sources`, `record-no-summaries`),
+     which is exactly where repeat shortlisting - and the repeat inference spend on the
+     articles that get summarized before either of those gates fires - is most wasteful.
+   The chosen definition matches "we have already considered this" rather than "we have
+   already seen this": a candidate gathered but never shortlisted keeps its one chance:
+   it is not burned by this rule, only by the recency window it was already subject to.
+   The write is idempotent under `run()`'s top-of-function replay
+   (`INSERT OR IGNORE`, `recordSeenAndPrune`, src/lib/d1.ts - not `ON CONFLICT(url) DO
+   NOTHING`, which D1's SQLite rejects on an `INSERT ... SELECT`, confirmed against the
+   real binding) and costs no additional subrequest on the parent's per-invocation
+   budget: it is folded into the same `db.batch()` call `record-*`'s existing
+   `run_candidates` prune already made, in place of that prune's own unbatched call -
+   see `createPublishChildren`'s comment (src/workflow.ts) for the parent's recounted
+   bill, which this addition leaves unchanged. **Consequence, not acted on here:** #99
+   sized `TIER_SCORE_WEIGHT` against an unseen set that was, in practice, the whole
+   gathered set (~103 candidates from the 9 priority feeds alone, 2026-09-01
+   calibration) precisely because `seen_urls` had no writer; with a real writer the
+   unseen set now shrinks run over run, and that sizing argument needs re-checking.
+   `TIER_SCORE_WEIGHT` itself is out of scope for this amendment and is unchanged.
+
+   **The write only happens on a run that reaches a terminal `record-*` step, and a run
+   that dies earlier writes nothing.** `recordOutcome`'s four call sites
+   (`record-no-topic`, `record-no-sources`, `record-no-summaries`, `record-success`) are
+   the only places `seen_urls` is written; a run that throws inside `synthesize` or
+   inside the `await-publish-children` poll loop - after summarizing up to
+   `SHORTLIST_TOP_N` articles at real neuron cost - reaches none of them, so tomorrow's
+   run re-shortlists and re-pays for the same URLs. This is the same run-to-run
+   duplicate spend the issue names, on the path this amendment does not close. Moving
+   the write earlier is deliberately not done here: `shortlist` (the step) is already
+   the largest fixed term in the parent's per-invocation bill (13 of 23 at 1,118
+   candidates, `createPublishChildren`'s comment), `findSeenUrls` runs its chunked
+   lookups as separate `.all()` calls rather than a `db.batch()`, and nothing between
+   `shortlist` and `synthesize` is a D1 call this write could ride along with for free -
+   every option costs a subrequest the parent's 49-of-50 pessimal bill does not have.
+   Accepted as a gap, not fixed.
+
+   **A shortlisted URL that never gets read is still written, and #75's five-run capture
+   (`75-five-runs`) puts a number on how often that happens.** Runs 1-2, before #101's
+   source tiers deployed, shortlisted arXiv exclusively and skipped nothing. Runs 3-5,
+   after, shortlisted vendor engineering blogs instead (`claude.com`, `openai.com`,
+   `www.anthropic.com`, `developers.openai.com`) and those domains 403 the Worker's
+   fetch: 7 of 15 articles skipped in run 3, 4 of 15 in run 4, 4 of 15 in run 5, every
+   skip a 403. Under "write the shortlisted URLs", each of those skipped URLs still
+   lands in `seen_urls` - it was ranked into the top `SHORTLIST_TOP_N` and is therefore
+   "considered" by this requirement's own definition, even though it cost zero neurons
+   and was never actually read. On run 3 that is roughly a third of the shortlist burned
+   on articles the agent never saw. This is accepted, not a defect: a domain that 403s
+   the Worker consistently is genuinely not worth re-shortlisting every day. The residual
+   risk is real and undistinguished by anything here - a 403 that is actually transient
+   rate-limiting, rather than a standing block, loses that article permanently the same
+   way a genuine block does, because this table has no way to tell the two apart.
 5. **The grounding gate.** A run produces a pull request only if it has at least one
    source carrying an **attributable R&D practice or research finding** (a paper, a
    published practice, survey data, a vendor engineering writeup), corroborated by at
@@ -182,8 +252,8 @@ Published by the source itself, at a URL the source controls.
 | Source | Feed | Why |
 |---|---|---|
 | The blog's own archive | `https://nimeshjm.com/rss.xml` | Voice matching and "already covered" dedupe. Carries full post bodies in `content:encoded`. |
-| arXiv cs.SE | `http://export.arxiv.org/rss/cs.SE` | Software engineering research |
-| arXiv cs.AI | `http://export.arxiv.org/rss/cs.AI` | AI research |
+| arXiv cs.SE | `https://export.arxiv.org/rss/cs.SE` | Software engineering research |
+| arXiv cs.AI | `https://export.arxiv.org/rss/cs.AI` | AI research |
 | OpenAI | `https://openai.com/blog/rss.xml` | Vendor capability announcements |
 | Cloudflare | `https://blog.cloudflare.com/rss/` | Platform and agent infrastructure |
 | GitHub | `https://github.blog/feed/` | Developer tooling and AI in the SDLC |
@@ -304,15 +374,24 @@ adds a bounded offset for it — a priority source up, a deferred one down, in t
 units as the practice and commentary signals above. The Anthropic and OpenAI feeds are
 priority; both arXiv feeds are deferred.
 
-It is an **offset and not a sort key**, and the difference is not a detail. Nothing
-writes `seen_urls` ([#100](https://github.com/nimeshjm/blog-research-agent/issues/100)),
-so every run's unseen set is the whole gathered set, and the priority feeds alone supply
-~103 candidates per run against the 15 slots below. Tier as a primary sort key would
-therefore mean the other 35 feeds and both arXiv feeds are gathered and never summarized
-— and would leave requirement 5's grounding gate resting on those nine feeds, with the
+It is an **offset and not a sort key**, and the difference is not a detail. At the time
+this was written, nothing wrote `seen_urls`
+([#100](https://github.com/nimeshjm/blog-research-agent/issues/100)), so every run's
+unseen set was the whole gathered set, and the priority feeds alone supplied ~103
+candidates per run against the 15 slots below. Tier as a primary sort key would
+therefore have meant the other 35 feeds and both arXiv feeds were gathered and never
+summarized — leaving requirement 5's grounding gate resting on those nine feeds, with the
 allowlist's densest supply of attributable findings ranked out of reach. The offset
 dominates a same-topic tie and loses to a strong topic overlap, which is the intended
 shape. Neither tier ever removes a candidate.
+
+**`seen_urls` gained a writer 2026-09-04 (#100 — requirement 4's amendment above), and
+the ~103-candidates premise above is now stale.** The unseen set shrinks run over run
+instead of staying the whole gathered set, so `TIER_SCORE_WEIGHT`'s sizing argument
+needs re-checking against a real unseen set rather than the one measured here. #100 is a
+dedupe fix, not a re-tuning of this weight, so the value and the offset-vs-sort-key
+argument are left exactly as this amendment found them; a follow-up re-measurement is
+what future work should anchor on, not this paragraph's ~103 figure.
 
 Map-reduce rather than one long-context call. The model holds 128k, so this is not a
 context workaround: it keeps each step's parse cheap against the 10 ms-per-invocation
