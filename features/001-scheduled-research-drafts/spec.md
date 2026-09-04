@@ -252,8 +252,8 @@ Published by the source itself, at a URL the source controls.
 | Source | Feed | Why |
 |---|---|---|
 | The blog's own archive | `https://nimeshjm.com/rss.xml` | Voice matching and "already covered" dedupe. Carries full post bodies in `content:encoded`. |
-| arXiv cs.SE | `http://export.arxiv.org/rss/cs.SE` | Software engineering research |
-| arXiv cs.AI | `http://export.arxiv.org/rss/cs.AI` | AI research |
+| arXiv cs.SE | `https://export.arxiv.org/rss/cs.SE` | Software engineering research |
+| arXiv cs.AI | `https://export.arxiv.org/rss/cs.AI` | AI research |
 | OpenAI | `https://openai.com/blog/rss.xml` | Vendor capability announcements |
 | Cloudflare | `https://blog.cloudflare.com/rss/` | Platform and agent infrastructure |
 | GitHub | `https://github.blog/feed/` | Developer tooling and AI in the SDLC |
