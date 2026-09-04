@@ -1,7 +1,7 @@
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 import { env as testEnv } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SEEN_URLS_CHUNK_SIZE, startRun, writeRunCandidates } from '../src/lib/d1';
+import { reclaimAndClaim, SEEN_URLS_CHUNK_SIZE, startRun, writeRunCandidates } from '../src/lib/d1';
 import { loadFeeds, SOURCE_TIER_PRIORITY, tierOf } from '../src/lib/feeds';
 import type {
   ArticleSummary,
@@ -2287,13 +2287,52 @@ describe('ResearchWorkflow.run() publication in a child instance', () => {
   });
 
   /**
+   * The actual fix (#108): before this, nothing ever moved a topic off
+   * `in_progress` on success, so the row was indistinguishable from one
+   * stranded by a dead run and got reclaimed by the TTL sweep forever - five
+   * production runs came from two topic rows. `record-success` runs for
+   * real here, the same way the pr_url test above does, so this proves the
+   * write is reached by `run()`, not just callable in isolation.
+   */
+  it('closes the topic to done on record-success, and the TTL reclaim never picks it up again', async () => {
+    await env.DB.prepare(
+      "INSERT INTO topics (id, title, status, origin, claimed_at) VALUES (1, 't', 'in_progress', 'human', datetime('now', '-100 hours'))",
+    ).run();
+
+    await runOrchestration({}, ['record-success']);
+
+    const row = await env.DB.prepare('SELECT status FROM topics WHERE id = 1').first<{ status: string }>();
+    expect(row?.status).toBe('done');
+
+    // ttlHours: 1 against a 100-hour-old claim - an in_progress row would
+    // certainly be reclaimed here; a closed one must not be.
+    const { row: reclaimed, reclaimedTopics } = await reclaimAndClaim(env.DB, 1, 'some-other-run');
+    expect(reclaimedTopics).toBe(0);
+    expect(reclaimed).toBeNull();
+  });
+
+  // Replay: run() re-executes from the top (spec.md fact 2). A second
+  // record-success for the same run must not error or move the topic off
+  // `done` - `AND status = 'in_progress'` in the topic-close UPDATE is what
+  // makes that a no-op rather than a state-machine violation.
+  it('a replayed record-success leaves an already-closed topic at done', async () => {
+    await env.DB.prepare("INSERT INTO topics (id, title, status, origin) VALUES (1, 't', 'in_progress', 'human')").run();
+
+    await runOrchestration({}, ['record-success']);
+    await runOrchestration({}, ['record-success']);
+
+    const row = await env.DB.prepare('SELECT status FROM topics WHERE id = 1').first<{ status: string }>();
+    expect(row?.status).toBe('done');
+  });
+
+  /**
    * The writer this PR adds (spec.md req. 4, #100): `findSeenUrls` only ever
    * reads `seen_urls`, and until now nothing in `src/` ever inserted into it
-   * - a real orchestration run, not a call to `recordSeenAndPrune` directly,
-   * is what proves `record-success` actually reaches that write, the way
-   * the pr_url test above proves it reaches `recordRunOutcome`. A test that
-   * merely called `recordSeenAndPrune` would pass whether or not `run()`
-   * ever threaded `shortlist` into it.
+   * - a real orchestration run, not a call to `recordSeenPruneAndCloseTopic`
+   * directly, is what proves `record-success` actually reaches that write,
+   * the way the pr_url test above proves it reaches `recordRunOutcome`. A
+   * test that merely called `recordSeenPruneAndCloseTopic` would pass
+   * whether or not `run()` ever threaded `shortlist` into it.
    */
   it('writes the run shortlist into seen_urls, not just the runs row', async () => {
     await env.DB.prepare("INSERT INTO topics (id, title, status, origin) VALUES (1, 't', 'in_progress', 'human')").run();
@@ -2336,6 +2375,14 @@ describe('ResearchWorkflow.run() publication in a child instance', () => {
       .bind('parent-orchestration')
       .first<{ status: string }>();
     expect(outcome?.status).toBe('insufficient_sources');
+
+    // #108: closed to `rejected`, not released back to `queued` - a release
+    // would just be picked up first again next run (oldest-queued ordering)
+    // and likely fail the same way, the daily version of the loop this fix
+    // exists to close. `rejected` is excluded from `reclaimAndClaim`'s
+    // covered-titles set, so the title stays free to be proposed again.
+    const topicRow = await env.DB.prepare('SELECT status FROM topics WHERE id = 1').first<{ status: string }>();
+    expect(topicRow?.status).toBe('rejected');
   });
 
   /**
@@ -2372,6 +2419,11 @@ describe('ResearchWorkflow.run() publication in a child instance', () => {
       .bind('parent-orchestration')
       .first<{ status: string }>();
     expect(outcome?.status).toBe('insufficient_sources');
+
+    // #108, same as record-no-sources above: closed to rejected, not
+    // released back to queued.
+    const topicRow = await env.DB.prepare('SELECT status FROM topics WHERE id = 1').first<{ status: string }>();
+    expect(topicRow?.status).toBe('rejected');
   });
 
   /**

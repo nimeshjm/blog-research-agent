@@ -118,7 +118,8 @@ and stops; a human merges.
    already seen this": a candidate gathered but never shortlisted keeps its one chance:
    it is not burned by this rule, only by the recency window it was already subject to.
    The write is idempotent under `run()`'s top-of-function replay
-   (`INSERT OR IGNORE`, `recordSeenAndPrune`, src/lib/d1.ts - not `ON CONFLICT(url) DO
+   (`INSERT OR IGNORE`, `recordSeenPruneAndCloseTopic` - renamed by #108, feature 002
+   `spec.md` requirement 8's amendment - src/lib/d1.ts - not `ON CONFLICT(url) DO
    NOTHING`, which D1's SQLite rejects on an `INSERT ... SELECT`, confirmed against the
    real binding) and costs no additional subrequest on the parent's per-invocation
    budget: it is folded into the same `db.batch()` call `record-*`'s existing
