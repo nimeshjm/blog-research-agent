@@ -22,18 +22,17 @@ import type {
 } from '../src/lib/types';
 import { initialChildPollState, isTransientChildFailure } from '../src/lib/workflow-children';
 import type { ChildReplacement } from '../src/lib/workflow-children';
+import { proposeAndPersistTopic } from '../src/propose-workflow';
 import {
   chunkSourcesByVolume,
   createGatherChildren,
   createPublishChildren,
   createSummarizeChildren,
   DEFAULT_SOURCE_WEIGHT,
-  DUPLICATE_TOKEN_THRESHOLD,
   isGrounded,
   pollGatherChildren,
   pollPublishChildren,
   pollSummarizeChildren,
-  proposeTopic,
   ResearchWorkflow,
   selectTopic,
   SHORTLIST_MAX_CANDIDATES,
@@ -867,29 +866,56 @@ describe('pollSummarizeChildren()', () => {
   });
 
   // The part that decides whether this mechanism is live code or dead code.
-  // At 3 children the cap is `max(2, floor(9 / 3))` = three polls, and run
-  // `54ce776b` errored in the very round that cap was reached - so a
-  // replacement swapped into `pending` with the cap untouched would get zero
-  // rounds to converge. The grant is what buys it two, at one subrequest each.
-  it('grants the replacement extra poll rounds, because the cap it was created under has none left', async () => {
+  // At 3 children the base cap is `max(2, floor(9 / 3))` = three polls
+  // (threshold round >= 2), and run `54ce776b` errored in the very round
+  // that cap was reached - so a replacement swapped into `pending` with the
+  // cap untouched would be discarded before ever being polled: round 2
+  // would throw instead of returning `{ done: false }`. The grant
+  // (`SUMMARIZE_REPLACEMENT_POLL_ROUNDS`, 1 - reduced from 2 alongside #109's
+  // subrequest correction) is what buys it that one round, at one
+  // subrequest.
+  it('grants the replacement the one poll round it would not otherwise have had', async () => {
+    const { fake, summarizeEnv, ids } = await createChildrenFor(3);
+    fake.setStatus(ids[0]!, { status: 'errored', error: TRANSIENT_CHILD_ERROR });
+    fake.setStatus(ids[1]!, { status: 'complete', output: { summaries: [], neuronsSpent: 0 } });
+    fake.setStatus(ids[2]!, { status: 'complete', output: { summaries: [], neuronsSpent: 0 } });
+
+    // Without the grant this round throws instead of returning `{ done:
+    // false }` - the base cap's threshold (round >= 2) is reached in the
+    // very round the replacement is created.
+    const replaced = await pollSummarizeChildren(summarizeEnv, ids, fresh(ids), 2, replaceFor(summarizeEnv, 3));
+    if (replaced.done) throw new Error('expected the replacement to still be pending');
+
+    fake.setStatus(`${ids[0]}r1`, { status: 'complete', output: { summaries: [], neuronsSpent: 5 } });
+    fake.polled.length = 0;
+
+    // Round 3 is the one granted round, and it is also where the cap would
+    // throw if the replacement were still pending (`extraRounds: 1` makes
+    // this the last one) - so this is the only chance it gets, and it
+    // succeeds within it.
+    const result = await pollSummarizeChildren(summarizeEnv, ids, replaced.state, 3, replaceFor(summarizeEnv, 3));
+
+    expect(result).toEqual({ done: true, summaries: [], neuronsSpent: 5 });
+    // One subrequest for the granted round, not three: only the replacement
+    // is pending, which is what `isReplaceable`'s last clause guarantees.
+    expect(fake.polled).toEqual([`${ids[0]}r1`]);
+  });
+
+  it('throws at the granted round rather than hanging, when the replacement has not converged by then', async () => {
     const { fake, summarizeEnv, ids } = await createChildrenFor(3);
     fake.setStatus(ids[0]!, { status: 'errored', error: TRANSIENT_CHILD_ERROR });
     fake.setStatus(ids[1]!, { status: 'complete', output: { summaries: [], neuronsSpent: 0 } });
     fake.setStatus(ids[2]!, { status: 'complete', output: { summaries: [], neuronsSpent: 0 } });
 
     const replaced = await pollSummarizeChildren(summarizeEnv, ids, fresh(ids), 2, replaceFor(summarizeEnv, 3));
-
     if (replaced.done) throw new Error('expected the replacement to still be pending');
     fake.setStatus(`${ids[0]}r1`, { status: 'running' });
     fake.polled.length = 0;
 
-    await expect(pollSummarizeChildren(summarizeEnv, ids, replaced.state, 3, replaceFor(summarizeEnv, 3)))
-      .resolves.toMatchObject({ done: false });
-    await expect(pollSummarizeChildren(summarizeEnv, ids, replaced.state, 4, replaceFor(summarizeEnv, 3)))
-      .rejects.toThrow(/still not complete after 5 polls/);
-    // One subrequest per granted round, not three: only the replacement is
-    // pending, which is what `isReplaceable`'s last clause guarantees.
-    expect(fake.polled).toEqual([`${ids[0]}r1`, `${ids[0]}r1`]);
+    await expect(pollSummarizeChildren(summarizeEnv, ids, replaced.state, 3, replaceFor(summarizeEnv, 3))).rejects.toThrow(
+      /still not complete after 4 polls/,
+    );
+    expect(fake.polled).toEqual([`${ids[0]}r1`]); // it did poll before throwing
   });
 
   it('does not re-poll a child that already completed, and carries its summaries forward', async () => {
@@ -1475,6 +1501,23 @@ describe('shortlistCandidates()', () => {
   });
 });
 
+/**
+ * `selectTopic` plus the `ProposeWorkflow` child it now delegates to on an
+ * empty queue (#109), composed the same way `run()`'s `select-topic` step,
+ * `create-propose-children` step and poll loop are (src/workflow.ts) - just
+ * without the Workflow machinery, which `test/propose-workflow.test.ts`'s
+ * own `createProposeChildren`/`pollProposeChildren` tests already cover.
+ * Tests below that exercise the propose path call this instead of
+ * `selectTopic` alone, so their assertions on the resolved topic read the
+ * same as before the child existed - only the call target changed.
+ */
+async function resolveTopic(callEnv: Env, instanceId: string, topicId: number | undefined) {
+  const result = await selectTopic(callEnv, instanceId, topicId);
+  if (result.topic !== null || result.proposalInput === undefined) return result;
+  const { topic } = await proposeAndPersistTopic(callEnv, result.proposalInput.coveredTopicTitles, instanceId);
+  return { ...result, topic };
+}
+
 describe('selectTopic()', () => {
   it('claims a specific topic by id when topicId is set', async () => {
     const insert = await env.DB.prepare(
@@ -1490,6 +1533,13 @@ describe('selectTopic()', () => {
     await env.DB.prepare(`INSERT INTO topics (title, angle, status, origin) VALUES ('queued one', NULL, 'queued', 'human')`).run();
     const result = await selectTopic(env, 'run-drain', undefined);
     expect(result.topic?.title).toBe('queued one');
+  });
+
+  it('with an empty queue, selectTopic returns a proposal input instead of resolving a topic inline (#109)', async () => {
+    const result = await selectTopic(env, 'run-empty-queue', undefined);
+    expect(result.topic).toBeNull();
+    expect(result.proposalInput).toBeDefined();
+    expect(Array.isArray(result.proposalInput?.coveredTopicTitles)).toBe(true);
   });
 
   it('with an empty queue, proposes and persists a topic idempotently on replay', async () => {
@@ -1518,15 +1568,15 @@ describe('selectTopic()', () => {
     // something to exclude against.
     await startRun(env.DB, 'run-replay');
 
-    const first = await selectTopic(env, 'run-replay', undefined);
+    const first = await resolveTopic(env, 'run-replay', undefined);
     expect(first.topic?.title).toBe('Brand New Unrelated Topic Nobody Has Written About');
     expect(first.topic?.origin).toBe('agent');
     expect(first.topic?.status).toBe('in_progress');
 
-    // Replay: a retried select-topic step must recover the same row, not
-    // insert a second one, and must not reject its own deterministic
-    // proposal as "already covered" by itself (#104).
-    const second = await selectTopic(env, 'run-replay', undefined);
+    // Replay: a retried select-topic step (now: a retried propose child) must
+    // recover the same row, not insert a second one, and must not reject its
+    // own deterministic proposal as "already covered" by itself (#104).
+    const second = await resolveTopic(env, 'run-replay', undefined);
     expect(second.topic?.id).toBe(first.topic?.id);
 
     const rows = await env.DB.prepare(`SELECT COUNT(*) as n FROM topics WHERE origin = 'agent'`).first<{ n: number }>();
@@ -1552,18 +1602,19 @@ describe('selectTopic()', () => {
       }),
     );
 
-    const result = await selectTopic(env, 'run-covered', undefined);
+    const result = await resolveTopic(env, 'run-covered', undefined);
     expect(result.topic).toBeNull();
   });
 
   // #104: end-to-end through the real D1 batch, not just proposeTopic() in
   // isolation - proves reclaimAndClaim's fourth statement actually reaches
-  // proposeTopic through selectTopic. Reproduces PR #2 -> PR #3: #2's title
-  // is a `topics` row (origin: agent, status: in_progress - exactly what
-  // findOrProposeTopic leaves behind, and #104's design note on why `done`
-  // is never reached in practice), and the seed feed's only candidate is
-  // #3's near-duplicate. Without the fix this returns #3's title; the fixed
-  // behaviour returns null, matching "no genuinely uncovered candidate".
+  // proposeTopic through selectTopic (and, since #109, the propose child).
+  // Reproduces PR #2 -> PR #3: #2's title is a `topics` row (origin: agent,
+  // status: in_progress - exactly what findOrProposeTopic leaves behind, and
+  // #104's design note on why `done` is never reached in practice), and the
+  // seed feed's only candidate is #3's near-duplicate. Without the fix this
+  // returns #3's title; the fixed behaviour returns null, matching "no
+  // genuinely uncovered candidate".
   it('with an empty queue, a topics row from an earlier propose blocks a near-duplicate seed candidate (#104)', async () => {
     const seed = loadFeeds()[0];
     if (seed === undefined) throw new Error('no seed feed configured');
@@ -1590,7 +1641,7 @@ describe('selectTopic()', () => {
       }),
     );
 
-    const result = await selectTopic(env, 'run-topics-dedupe', undefined);
+    const result = await resolveTopic(env, 'run-topics-dedupe', undefined);
     expect(result.topic).toBeNull();
   });
 
@@ -1761,129 +1812,8 @@ describe('selectTopic()', () => {
   });
 });
 
-describe('proposeTopic()', () => {
-  it('checks against BOTH the blog feed (published) and repo directory listing (drafted)', async () => {
-    const seed = loadFeeds()[0];
-    if (seed === undefined) throw new Error('no seed feed configured');
-
-    const calls: string[] = [];
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        calls.push(url);
-        if (url === env.BLOG_FEED_URL) return new Response(rssFeed([{ title: 'Published post title', url: 'https://blog.test.example/p' }]));
-        if (url.startsWith(env.GITHUB_API_BASE)) {
-          return jsonResponse(200, [{ name: 'drafted-only-slug', type: 'dir' }]);
-        }
-        if (url === seed.feedUrl) {
-          return new Response(
-            rssFeed([
-              { title: 'Drafted Only Slug', url: 'https://seed.example/drafted' },
-              { title: 'Genuinely Novel Idea', url: 'https://seed.example/novel' },
-            ]),
-          );
-        }
-        throw new Error(`unexpected fetch: ${url}`);
-      }),
-    );
-
-    const result = await proposeTopic(env, []);
-
-    expect(calls).toContain(env.BLOG_FEED_URL);
-    expect(calls.some((c) => c.startsWith(env.GITHUB_API_BASE))).toBe(true);
-    // "Drafted Only Slug" collides with the repo-only slug and is skipped;
-    // the first genuinely uncovered item is proposed instead.
-    expect(result?.title).toBe('Genuinely Novel Idea');
-  });
-
-  it(`treats fewer than ${DUPLICATE_TOKEN_THRESHOLD} shared words as not a duplicate`, async () => {
-    const seed = loadFeeds()[0];
-    if (seed === undefined) throw new Error('no seed feed configured');
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url === env.BLOG_FEED_URL) return new Response(rssFeed([{ title: 'agentic pull request review', url: 'https://blog.test.example/p' }]));
-        if (url.startsWith(env.GITHUB_API_BASE)) return jsonResponse(200, []);
-        if (url === seed.feedUrl) {
-          // Shares only one meaningful word ("agentic") with the published title.
-          return new Response(rssFeed([{ title: 'agentic infrastructure provisioning', url: 'https://seed.example/one-word' }]));
-        }
-        throw new Error(`unexpected fetch: ${url}`);
-      }),
-    );
-
-    const result = await proposeTopic(env, []);
-    expect(result?.title).toBe('agentic infrastructure provisioning');
-  });
-
-  it('returns null when the blog feed cannot be fetched', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
-    const result = await proposeTopic(env, []);
-    expect(result).toBeNull();
-  });
-
-  // #104: reproduces the observed case - blog PR #2's title landed in
-  // `topics` (origin: agent), and blog PR #3 was proposed two days later
-  // sharing four non-stopword tokens with it ("structure", "behavior",
-  // "coalescence", "system"), past DUPLICATE_TOKEN_THRESHOLD (2). Neither
-  // the published feed nor the repo directory listing sees an unmerged
-  // draft, so `coveredTopicTitles` - the third covered set - is the only
-  // thing that can catch this. Without the fix, this test fails: nothing
-  // else in `proposeTopic` rejects the near-duplicate.
-  it('rejects a seed candidate that overlaps a title in coveredTopicTitles, even though it is absent from the feed and the repo', async () => {
-    const seed = loadFeeds()[0];
-    if (seed === undefined) throw new Error('no seed feed configured');
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url === env.BLOG_FEED_URL) return new Response(rssFeed([]));
-        if (url.startsWith(env.GITHUB_API_BASE)) return jsonResponse(200, []);
-        if (url === seed.feedUrl) {
-          return new Response(
-            rssFeed([
-              {
-                title: 'Structure-Behavior Coalescence: Rethinking System Design',
-                url: 'https://seed.example/sbc-2',
-              },
-              { title: 'Genuinely Unrelated Topic', url: 'https://seed.example/unrelated' },
-            ]),
-          );
-        }
-        throw new Error(`unexpected fetch: ${url}`);
-      }),
-    );
-
-    const result = await proposeTopic(env, ['Structure-Behavior Coalescence: A Unified Lens for System Design']);
-
-    // The near-duplicate of the topics-table title is skipped; the
-    // genuinely uncovered item is proposed instead.
-    expect(result?.title).toBe('Genuinely Unrelated Topic');
-  });
-
-  it(`does not reject a seed candidate sharing fewer than ${DUPLICATE_TOKEN_THRESHOLD} words with a coveredTopicTitles entry`, async () => {
-    const seed = loadFeeds()[0];
-    if (seed === undefined) throw new Error('no seed feed configured');
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url === env.BLOG_FEED_URL) return new Response(rssFeed([]));
-        if (url.startsWith(env.GITHUB_API_BASE)) return jsonResponse(200, []);
-        if (url === seed.feedUrl) {
-          // Shares only one meaningful word ("agentic") with the topics-table title.
-          return new Response(rssFeed([{ title: 'agentic infrastructure provisioning', url: 'https://seed.example/one-word' }]));
-        }
-        throw new Error(`unexpected fetch: ${url}`);
-      }),
-    );
-
-    const result = await proposeTopic(env, ['agentic pull request review']);
-    expect(result?.title).toBe('agentic infrastructure provisioning');
-  });
-});
+// proposeTopic()'s own tests moved to test/propose-workflow.test.ts (#109),
+// alongside the ProposeWorkflow child it now runs inside.
 
 // ---------------------------------------------------------------------------
 // synthesizeDraft() / isGrounded() / openPullRequest()
@@ -2048,7 +1978,7 @@ function orchestrationStep(outputs: Record<string, unknown>, liveNames: string[]
 async function runOrchestration(overrides: Record<string, unknown> = {}, liveNames: string[] = []): Promise<string[]> {
   const outputs: Record<string, unknown> = {
     'start-run': null,
-    'select-topic': topic(),
+    'select-topic': { topic: topic(), strandedRuns: 0 },
     'load-sources': [] as Source[],
     'create-gather-children': ['child-g0', 'child-g1'],
     'await-gather-children:0': { done: true, total: 7 },
@@ -2279,7 +2209,10 @@ describe('ResearchWorkflow.run() publication in a child instance', () => {
    * something accidentally derived from a canned or stale value.
    */
   it('writes nothing to seen_urls on the record-no-topic path, where no shortlist exists yet', async () => {
-    await runOrchestration({ 'select-topic': null }, ['record-no-topic']);
+    // proposalInput absent, the same as the named-topic and queue-draining
+    // paths - so the propose-child loop below is skipped and this reaches
+    // record-no-topic directly, the same as before #109.
+    await runOrchestration({ 'select-topic': { topic: null, strandedRuns: 0 } }, ['record-no-topic']);
 
     const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM seen_urls').first<{ n: number }>();
     expect(count?.n).toBe(0);
@@ -2288,5 +2221,106 @@ describe('ResearchWorkflow.run() publication in a child instance', () => {
       .bind('parent-orchestration')
       .first<{ status: string }>();
     expect(outcome?.status).toBe('no_topic');
+  });
+});
+
+describe('ResearchWorkflow.run() proposing in a child instance (#109)', () => {
+  /**
+   * The default `runOrchestration()` shape (`select-topic` resolves a topic
+   * directly, `proposalInput` absent) is the named-topic/queue-draining
+   * path - the only one any run has ever taken until #108. This proves the
+   * propose loop costs the parent nothing on that path: no
+   * `create-propose-children` step, no `await-propose-children` round.
+   */
+  it('never creates a propose child on the named-topic or queue-draining paths', async () => {
+    const calls = await runOrchestration();
+
+    expect(calls).not.toContain('create-propose-children');
+    expect(calls.filter((c) => c.startsWith('await-propose-children'))).toEqual([]);
+  });
+
+  it('creates and polls a propose child when select-topic signals an empty queue, then continues to shortlist', async () => {
+    const proposed = topic({ id: 99, title: 'Agent Proposed Topic' });
+    const calls = await runOrchestration({
+      'select-topic': { topic: null, strandedRuns: 0, proposalInput: { coveredTopicTitles: [] } },
+      'create-propose-children': ['child-x0'],
+      'await-propose-children:0': { done: true, topic: proposed },
+    });
+
+    expect(calls.slice(calls.indexOf('select-topic'), calls.indexOf('shortlist'))).toEqual([
+      'select-topic',
+      'create-propose-children',
+      'await-propose-children-wait:0',
+      'await-propose-children:0',
+      'load-sources',
+      'create-gather-children',
+      'await-gather-children-wait:0',
+      'await-gather-children:0',
+    ]);
+  });
+
+  it('sleeps before the first poll of the propose child batch, not after it', async () => {
+    const calls = await runOrchestration({
+      'select-topic': { topic: null, strandedRuns: 0, proposalInput: { coveredTopicTitles: [] } },
+      'create-propose-children': ['child-x0'],
+      'await-propose-children:0': { done: true, topic: topic() },
+    });
+
+    expect(calls.indexOf('await-propose-children-wait:0')).toBe(calls.indexOf('await-propose-children:0') - 1);
+    expect(calls.indexOf('create-propose-children')).toBe(calls.indexOf('await-propose-children-wait:0') - 1);
+  });
+
+  it('polls a second propose round when the first finds the child still running', async () => {
+    const calls = await runOrchestration({
+      'select-topic': { topic: null, strandedRuns: 0, proposalInput: { coveredTopicTitles: [] } },
+      'create-propose-children': ['child-x0'],
+      'await-propose-children:0': { done: false, state: { pending: ['child-x0'], outputs: {} } },
+      'await-propose-children:1': { done: true, topic: topic() },
+    });
+
+    expect(calls.slice(calls.indexOf('create-propose-children'), calls.indexOf('load-sources'))).toEqual([
+      'create-propose-children',
+      'await-propose-children-wait:0',
+      'await-propose-children:0',
+      'await-propose-children-wait:1',
+      'await-propose-children:1',
+    ]);
+  });
+
+  /**
+   * The propose path's own "nothing uncovered" outcome (`proposeTopic`
+   * returning null, unchanged since before #109): the child completes
+   * cleanly with `{ topic: null }`, and `run()` must fall through to
+   * `record-no-topic` exactly as the old inline propose branch did, not
+   * throw. This is the scenario `ProposeChildOutput`'s wrapper object exists
+   * for (src/lib/types.ts's doc comment; test/propose-workflow.test.ts's
+   * `pollProposeChildren()` tests prove the mechanism in isolation) - this
+   * test proves `run()` reaches the right outcome with it wired in.
+   */
+  it('falls through to record-no-topic when the propose child finds nothing to propose', async () => {
+    await runOrchestration(
+      {
+        'select-topic': { topic: null, strandedRuns: 0, proposalInput: { coveredTopicTitles: [] } },
+        'create-propose-children': ['child-x0'],
+        'await-propose-children:0': { done: true, topic: null },
+      },
+      ['record-no-topic'],
+    );
+
+    const outcome = await env.DB.prepare('SELECT status FROM runs WHERE instance_id = ?')
+      .bind('parent-orchestration')
+      .first<{ status: string }>();
+    expect(outcome?.status).toBe('no_topic');
+  });
+
+  it('a failed propose child fails the run, and shortlist never runs', async () => {
+    const failure = new Error('propose child child-x0 errored');
+    await expect(
+      runOrchestration({
+        'select-topic': { topic: null, strandedRuns: 0, proposalInput: { coveredTopicTitles: [] } },
+        'create-propose-children': ['child-x0'],
+        'await-propose-children:0': failure,
+      }),
+    ).rejects.toThrow('propose child child-x0 errored');
   });
 });

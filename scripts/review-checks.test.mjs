@@ -425,8 +425,8 @@ const rows = [
       mustReplace(
         dir,
         'src/workflow.ts',
-        "    const topic = await traceStep('select-topic', {}, async (span) => {",
-        "    await traced('spread-only-mutation-probe', { ...({ x: 1 }) }, async () => {});\n    const topic = await traceStep('select-topic', {}, async (span) => {",
+        "    const selectResult = await traceStep('select-topic', {}, async (span) => {",
+        "    await traced('spread-only-mutation-probe', { ...({ x: 1 }) }, async () => {});\n    const selectResult = await traceStep('select-topic', {}, async (span) => {",
       );
       // `traced` isn't imported in workflow.ts today - add it so the file still parses as intended.
       mustReplace(
@@ -449,8 +449,8 @@ const rows = [
       mustReplace(
         dir,
         'src/workflow.ts',
-        "    const topic = await traceStep('select-topic', {}, async (span) => {",
-        "    await traced('spread-plus-forbidden-probe', { ...({ x: 1 }), [ATTR_TOPIC_ID]: ({ message: 'x' }).message }, async () => {});\n    const topic = await traceStep('select-topic', {}, async (span) => {",
+        "    const selectResult = await traceStep('select-topic', {}, async (span) => {",
+        "    await traced('spread-plus-forbidden-probe', { ...({ x: 1 }), [ATTR_TOPIC_ID]: ({ message: 'x' }).message }, async () => {});\n    const selectResult = await traceStep('select-topic', {}, async (span) => {",
       );
       mustReplace(
         dir,

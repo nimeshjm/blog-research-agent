@@ -3,7 +3,6 @@ import {
   attachRunTopic,
   claimRow,
   claimTopicById,
-  findOrProposeTopic,
   findSeenUrls,
   readRunCandidates,
   readSourceWeights,
@@ -13,12 +12,11 @@ import {
   recordSeenAndPrune,
   startRun,
 } from './lib/d1';
-import { fetchFeedItems } from './lib/feed-fetch';
 import { loadFeeds, SOURCE_TIER_DEFAULT, SOURCE_TIER_DEFERRED, SOURCE_TIER_PRIORITY, sourceTiers, tierOf } from './lib/feeds';
-import { listBlogPostSlugs } from './lib/github';
 import { createLlm, neuronsFor } from './lib/llm';
 import { buildReduceMessages, normaliseCitations, parseReduceResponse } from './lib/prompts';
 import type { ReduceParseFailure } from './lib/prompts';
+import { tokenize } from './lib/text';
 import { createChildBatch, initialChildPollState, pollChildBatch } from './lib/workflow-children';
 import type { ChildReplacement } from './lib/workflow-children';
 import type {
@@ -29,6 +27,10 @@ import type {
   GatherParams,
   GatherPollResult,
   GatherPollState,
+  ProposeChildOutput,
+  ProposeParams,
+  ProposePollResult,
+  ProposePollState,
   PublishParams,
   PublishPollResult,
   PublishPollState,
@@ -45,6 +47,7 @@ import {
   ATTR_GATHER_CHILDREN,
   ATTR_NEURONS_BUDGET,
   ATTR_NEURONS_SPENT,
+  ATTR_PROPOSE_CHILDREN,
   ATTR_PUBLISH_CHILDREN,
   ATTR_RUN_STATUS,
   ATTR_RUNS_STRANDED_CLOSED,
@@ -128,12 +131,52 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
     // `reclaimAndClaim` (src/lib/d1.ts) for why the two sweeps share one
     // batch, and `TOPIC_CLAIM_TTL_HOURS`'s own comment for why the sweep is
     // replay-safe here.
-    const topic = await traceStep('select-topic', {}, async (span) => {
+    const selectResult = await traceStep('select-topic', {}, async (span) => {
       const result = await selectTopic(this.env, event.instanceId, event.payload.topicId);
       if (result.topic !== null) span.setAttribute(ATTR_TOPIC_ID, result.topic.id);
       span.setAttribute(ATTR_RUNS_STRANDED_CLOSED, result.strandedRuns);
-      return result.topic;
+      return result;
     });
+
+    let topic = selectResult.topic;
+
+    // 1b. Only reached when the queue was empty (spec.md req. 2):
+    // `selectResult.proposalInput` is set instead of `topic` being resolved
+    // inline (#109) - see `SelectTopicResult`'s doc comment and
+    // `createProposeChildren`'s below for why. Skipped entirely on the
+    // named-topic and queue-draining paths, where this is `undefined` and
+    // the loop below costs the parent nothing - same shape the other three
+    // create/poll loops already use, just conditional on needing it at all.
+    if (topic === null && selectResult.proposalInput !== undefined) {
+      const { coveredTopicTitles } = selectResult.proposalInput;
+
+      const proposeChildIds = await traceStep('create-propose-children', {}, async (span) => {
+        const ids = await createProposeChildren(this.env, event.instanceId, coveredTopicTitles);
+        span.setAttribute(ATTR_PROPOSE_CHILDREN, ids.length);
+        return ids;
+      });
+
+      let proposeState: ProposePollState = initialChildPollState(proposeChildIds);
+      for (let round = 0; ; round++) {
+        // Wait-then-poll, same reason as the other three loops below: a
+        // round fired a second after `createBatch` is guaranteed to find
+        // nothing complete and spends a subrequest learning what the wait
+        // would have told it for free.
+        await step.sleep(`await-propose-children-wait:${round}`, PROPOSE_POLL_INTERVAL);
+        const state = proposeState;
+        const outcome: ProposePollResult = await traceStep(`await-propose-children:${round}`, {}, async (span) => {
+          const result = await pollProposeChildren(this.env, proposeChildIds, state, round);
+          span.setAttribute(ATTR_PROPOSE_CHILDREN, proposeChildIds.length);
+          if (result.done && result.topic !== null) span.setAttribute(ATTR_TOPIC_ID, result.topic.id);
+          return result;
+        });
+        if (outcome.done) {
+          topic = outcome.topic;
+          break;
+        }
+        proposeState = outcome.state;
+      }
+    }
 
     if (topic === null) {
       await traceStep(
@@ -511,20 +554,24 @@ export const RUN_CANDIDATE_RETENTION_DAYS = 7;
  * the pre-#75 "46 gather steps plus 15 article steps" this comment used to
  * cite** (stale even before #91 - there is no per-feed or per-article step on
  * the parent any more). The parent's longest legitimate wall clock is now
- * bounded by the three poll loops' own backstops, worst case, back to back:
- * gather at most `GATHER_POLL_SUBREQUEST_BUDGET` (10) rounds of
- * `GATHER_POLL_INTERVAL` (30 s) = 300 s; summarize at most
- * `SUMMARIZE_POLL_SUBREQUEST_BUDGET` (9) rounds of `SUMMARIZE_POLL_INTERVAL`
- * (180 s) = 1,620 s, plus the one-replacement grant
- * (`SUMMARIZE_REPLACEMENT_POLL_ROUNDS`, 2 rounds at the same 180 s) = 360 s;
+ * bounded by the four poll loops' own backstops, worst case, back to back
+ * (propose added 2026-09-04, #109 - only on the propose path, and this
+ * margin only grows by adding it): gather at most
+ * `GATHER_POLL_SUBREQUEST_BUDGET` (10) rounds of `GATHER_POLL_INTERVAL`
+ * (30 s) = 300 s; summarize at most `SUMMARIZE_POLL_SUBREQUEST_BUDGET` (9)
+ * rounds of `SUMMARIZE_POLL_INTERVAL` (180 s) = 1,620 s, plus the
+ * one-replacement grant (`SUMMARIZE_REPLACEMENT_POLL_ROUNDS`, 1 round at the
+ * same 180 s, reduced from 2 alongside #109's subrequest correction) = 180 s;
  * publish at most `PUBLISH_POLL_SUBREQUEST_BUDGET` (4) rounds of
- * `PUBLISH_POLL_INTERVAL` (15 s) = 60 s. 300 + 1,620 + 360 + 60 = 2,340 s,
- * roughly 40 minutes. Six hours is roughly 9x that - too long to race a live
- * run, too short to strand a topic (or a run) across the cron gap, which is 24
- * hours since #64 restored the schedule at `0 6 * * *` rather than the 48 it was
- * when this margin was first stated. 6 h against 24 h keeps both directions.
- * If 6 h were too short for a run, it would already have been too short for
- * that run's topic, which is the point: one constant, two rows.
+ * `PUBLISH_POLL_INTERVAL` (15 s) = 60 s; propose at most
+ * `PROPOSE_POLL_SUBREQUEST_BUDGET` (2) rounds of `PROPOSE_POLL_INTERVAL`
+ * (15 s) = 30 s. 300 + 1,620 + 180 + 60 + 30 = 2,190 s, roughly 37 minutes.
+ * Six hours is roughly 10x that - too long to race a live run, too short to
+ * strand a topic (or a run) across the cron gap, which is 24 hours since #64
+ * restored the schedule at `0 6 * * *` rather than the 48 it was when this
+ * margin was first stated. 6 h against 24 h keeps both directions. If 6 h
+ * were too short for a run, it would already have been too short for that
+ * run's topic, which is the point: one constant, two rows.
  */
 export const TOPIC_CLAIM_TTL_HOURS = 6;
 /** Newest-first ceiling: 40 of D1's 50 queries, ten spare. */
@@ -536,18 +583,6 @@ export const SHORTLIST_MAX_CANDIDATES = 4000;
  * measured in #18, so this is not a knob to turn casually.
  */
 export const SHORTLIST_TOP_N = 15;
-/**
- * How many meaningful title-word overlaps with an existing published post,
- * drafted post, or previously-claimed `topics` row count as "already
- * covered" when the agent proposes its own topic (spec.md req. 3). Heuristic,
- * not semantic - see "Deferred: Vectorize semantic dedupe" in spec.md, which
- * is what a real version of this check would use. Two shared non-stopword
- * tokens is deliberately low: a proposal that shares that much vocabulary
- * with something already on the blog - or already claimed by this agent - is
- * cheap to skip and expensive to publish twice (#104: PRs #2 and #3 shared
- * four).
- */
-export const DUPLICATE_TOKEN_THRESHOLD = 2;
 
 // ---------------------------------------------------------------------------
 // Step bodies.
@@ -556,10 +591,23 @@ export const DUPLICATE_TOKEN_THRESHOLD = 2;
 // the caller can enforce NEURON_BUDGET_PER_RUN between steps.
 // ---------------------------------------------------------------------------
 
-/** `selectTopic`'s result: the topic (or null, falling through to `record-no-topic`) plus how many `runs` rows the scheduled path's sweep closed - see `run()`'s `select-topic` step, which is the only reader of the second field. */
+/**
+ * `selectTopic`'s result: the topic (or null, falling through to
+ * `record-no-topic`) plus how many `runs` rows the scheduled path's sweep
+ * closed - see `run()`'s `select-topic` step, which is the only reader of
+ * the second field.
+ *
+ * `proposalInput` is set instead of `topic` being resolved inline (#109)
+ * when, and only when, the queue was empty: `run()` reads it to create a
+ * `ProposeWorkflow` child rather than proposing a topic in this step's own
+ * invocation - see `createProposeChildren`'s comment below for why. Absent
+ * on the named-topic and queue-draining paths, so a run that never needs
+ * this mechanism carries no trace of it in this step's output.
+ */
 export interface SelectTopicResult {
   topic: Topic | null;
   strandedRuns: number;
+  proposalInput?: { coveredTopicTitles: string[] };
 }
 
 export async function selectTopic(env: Env, instanceId: string, topicId: number | undefined): Promise<SelectTopicResult> {
@@ -608,20 +656,20 @@ export async function selectTopic(env: Env, instanceId: string, topicId: number 
   // and this repo's own `topics` table (#104 - the agent's own past
   // proposals, which live only on `research/*` branches until a human
   // merges their pull request and so are invisible to both of the other two
-  // reads; see `proposeTopic`'s own doc comment for why). `coveredTopicTitles`
-  // above is already read, at no extra subrequest - the other two reads are
-  // `proposeTopic`'s own job. See features/001-scheduled-research-drafts/
-  // plan.md, steps 3 and 4, for why the feed/repo reads landed in this step.
-  const proposal = await proposeTopic(env, coveredTopicTitles);
-  if (proposal === null) return { topic: null, strandedRuns };
-
-  // attachRunTopic runs on all three success paths, not only this one: a run
-  // that dies later - in gather, not in select-topic - must still record
-  // which topic it stranded, which is what pairs req. 8's reclaim with req.
-  // 10's runs row (the runs row says which topic, the TTL brings it back).
-  const proposed = await findOrProposeTopic(env.DB, proposal);
-  await attachRunTopic(env.DB, instanceId, proposed.id);
-  return { topic: proposed, strandedRuns };
+  // reads). `coveredTopicTitles` above is already read, at no extra
+  // subrequest - the other two reads are the propose child's own job.
+  //
+  // **Runs in a `ProposeWorkflow` child, not here (#109).** Doing the three
+  // fetches plus the `topics` read/insert/attach inline in this step, as an
+  // earlier version of this function did, took `select-topic`'s subrequest
+  // term from ~3 to 6-7 on this path - fine while the queue never actually
+  // emptied, and over the parent's 50-subrequest-per-invocation ceiling the
+  // moment it does (issue #109). `createProposeChildren`'s comment below has
+  // the full arithmetic for both paths. `selectTopic` itself stays
+  // synchronous and returns this sentinel; `run()` is what creates and polls
+  // the child, the same shape it already uses for gather, summarize and
+  // publish.
+  return { topic: null, strandedRuns, proposalInput: { coveredTopicTitles } };
 }
 
 async function loadSources(_env: Env): Promise<Source[]> {
@@ -629,81 +677,180 @@ async function loadSources(_env: Env): Promise<Source[]> {
 }
 
 /**
- * Generates a candidate {title, angle} without inference (spec.md is
- * explicit that inference happens in exactly two places - summarizeArticle
- * and synthesizeDraft - neither of which is this). Deterministic and cheap
- * enough to run inside the single `select-topic` step's budget:
+ * Creates the run's single `ProposeWorkflow` child (spec.md requirement 2,
+ * extended 2026-09-04, #109), the same one-child, no-chunking shape
+ * `createPublishChildren` below already uses - `selectTopic`'s propose
+ * branch (this file, above) is a fixed block of I/O with nothing to chunk,
+ * not per-item work.
  *
- *  1. The "published" set: parse BLOG_FEED_URL (one fetch) for post titles.
- *  2. The "drafted" set: list post slugs under src/content/blog/ at the
- *     repo's default branch (one fetch, `listBlogPostSlugs` - github.ts).
- *     This catches a *hand-written* draft with `draft: true` committed
- *     straight to the default branch - it does not catch the agent's own
- *     drafts, because the agent never commits there. CLAUDE.md: "The agent
- *     writes to branches only" - `research/<yyyy-mm-dd>-<slug>`, reaching
- *     `main` only once a human merges the pull request it opens. (#104
- *     corrects this doc comment's previous claim that "repo slugs minus feed
- *     slugs already *is* the drafted set": that was true of the
- *     hand-written drafts spec.md's "33 posts, 30 in the feed" measured, and
- *     has never been true of the agent's own - PRs #2 and #3 both sat as
- *     open, unmerged pull requests when this bug was found.)
- *  3. The agent's own "previously claimed" set: `coveredTopicTitles`,
- *     already read - at no extra subrequest - from this repo's own `topics`
- *     table by the same `db.batch()` call `reclaimAndClaim` makes in
- *     `selectTopic` (#104). This is what catches the case the two reads
- *     above cannot: a topic the agent proposed and is still drafting, or
- *     already drafted, on a branch neither the feed nor the repo's default
- *     branch has ever seen. Querying the blog repo's open pull requests
- *     instead was considered and rejected - it would make proposal depend
- *     on PR state, so a *closed and rejected* draft would stay burned
- *     forever rather than becoming proposable again once the PR closes.
- *  4. The candidate itself: the newest item from the first configured
- *     discovery feed (deterministic, and - at 62 items - small enough to
- *     parse well inside this step's CPU budget alongside the reads above)
- *     whose title does not overlap the union of all three covered sets past
- *     DUPLICATE_TOKEN_THRESHOLD.
+ * **Why this exists: the propose path was never costed, and #109 measured
+ * it.** `createPublishChildren`'s comment derives the parent's fixed
+ * subrequest bill on the *queue-draining* path - the only path any run has
+ * ever taken (every completed run's `topic_id` traces back to a `queued`
+ * row; #108 is what starts making the queue actually drain). Run inline,
+ * the propose branch cost `fetchFeedTitles` (1) + `listBlogPostSlugs` (1) +
+ * the seed `fetchFeedItems` (1) + `findOrProposeTopic`'s `SELECT` (1) + its
+ * `INSERT` (1, new proposal only) + `attachRunTopic` (1) = 6-7, replacing
+ * the queue-draining path's 3-subrequest `select-topic` term outright. That
+ * takes the parent's fixed total from 24 (see the corrected figure below) to
+ * 30-31, and the pessimal total over the platform's 50-subrequest ceiling -
+ * issue #109's whole point, and the same failure mode as run `0357f119`.
  *
- * Returns null on any read failure or when every candidate from the seed
- * feed is already covered - `selectTopic` falls through to the existing
- * `record-no-topic` exit either way.
+ * **The fix moves that block into a child, and also moves `attachRunTopic`
+ * into it** (`ProposeParams.parentInstanceId`, the same shape
+ * `GatherParams.runId` already uses to let a child write into a row keyed by
+ * an id that is not its own): the parent's own term for this path becomes
+ * just the `reclaimAndClaim` batch (already spent, shared with the
+ * queue-draining path) plus this step's `createBatch` call - 2, one less
+ * than queue-draining's 3, because `attachRunTopic` no longer runs here at
+ * all. See `propose-workflow.ts`'s header comment for the child-side
+ * arithmetic (6-7 of the child's own fresh 50).
+ *
+ * **The full recount, derived directly from the current tree rather than
+ * carried forward from an earlier estimate** (issue #109 asked for this
+ * explicitly, having found the seed-feed redirect it originally charged 2
+ * for fixed by commit `b00e96c` - every feed is `https://` now, so every
+ * fetch above and in `createGatherChildren`'s own arithmetic costs exactly
+ * one subrequest):
+ *
+ * | term | queue-draining | propose (this child) |
+ * |---|---|---|
+ * | `start-run` | 1 | 1 |
+ * | `select-topic` | 3 (batch + `claimRow` + `attachRunTopic`) | 2 (batch + `create-propose-children`) |
+ * | `load-sources` | 0 | 0 |
+ * | `create-gather-children` | 2 | 2 |
+ * | `shortlist` | 13 (at ~1,118 candidates) | 13 |
+ * | `create-summarize-children` | 1 | 1 |
+ * | `synthesize` | 1 AI call | 1 AI call |
+ * | `create-publish-children` | 1 | 1 |
+ * | `record-success` | 2 | 2 |
+ * | **fixed total** | **24** | **23** |
+ *
+ * **`start-run`'s own 1 is stated explicitly here, where `createPublishChildren`'s
+ * comment folded it silently into "~3 D1 calls for start-run and select-topic"
+ * (spec.md's own words for run `0357f119`'s capture) and #91's later recount
+ * then read that "~3" as `select-topic` alone, leaving `start-run` uncounted
+ * in the running sum ever since.** `startRun` (`src/lib/d1.ts`) is
+ * unambiguously one `db.prepare().bind().run()` call - CLAUDE.md's "any D1 ...
+ * binding call" - so the queue-draining fixed total this comment has stated
+ * as **23** for several recounts is **24**. This is a pre-existing omission
+ * #109 surfaced while deriving the propose path fresh, not something #109
+ * caused; `createPublishChildren`'s own comment is corrected alongside this
+ * one, and any other cross-reference to "23 fixed" / "49 of 50" elsewhere in
+ * this file is now stale by the same +1.
+ *
+ * **Pessimal totals, with every poll budget exhausted**
+ * (`GATHER_POLL_SUBREQUEST_BUDGET` 10 + `SUMMARIZE_POLL_SUBREQUEST_BUDGET` 9 +
+ * `SUMMARIZE_REPLACEMENT_SUBREQUEST_ALLOWANCE` + `PUBLISH_POLL_SUBREQUEST_BUDGET`
+ * 4, plus `PROPOSE_POLL_SUBREQUEST_BUDGET` 2 on the propose path only):
+ *
+ * - Queue-draining: 24 + 10 + 9 + `SUMMARIZE_REPLACEMENT_SUBREQUEST_ALLOWANCE` + 4.
+ * - Propose: 23 + 10 + 9 + `SUMMARIZE_REPLACEMENT_SUBREQUEST_ALLOWANCE` + 4 + 2.
+ *
+ * At `SUMMARIZE_REPLACEMENT_SUBREQUEST_ALLOWANCE`'s previous value of 3, the
+ * propose path pessimal is **51 of 50** - over, by exactly the margin
+ * `start-run`'s correction above removes from queue-draining's own spare.
+ * `SUMMARIZE_REPLACEMENT_SUBREQUEST_ALLOWANCE`'s own comment already invites
+ * this: "if the parent's fixed cost grows, the honest answer is that the
+ * allowance goes rather than that the arithmetic is restated." It is reduced
+ * to 2 alongside this change (that constant's own comment has the
+ * requirement-4 argument for why one round of margin, not two, is still
+ * enough) - which puts:
+ *
+ * - Queue-draining at 24 + 10 + 9 + 2 + 4 = **49 of 50**, one spare - the same
+ *   figure this comment has stated for several recounts, arrived at by two
+ *   corrections that happen to cancel (`start-run`'s `+1`, the allowance's
+ *   `-1`), not because neither correction was needed.
+ * - Propose at 23 + 10 + 9 + 2 + 4 + 2 = **50 of 50**, none spare. Not over,
+ *   which is the requirement; genuinely no margin, which is worth stating
+ *   plainly rather than rounding away - a run that reaches every backstop on
+ *   this path at once has a worse problem than the last subrequest, the same
+ *   argument `PUBLISH_POLL_SUBREQUEST_BUDGET`'s comment already makes about
+ *   its own four spare.
+ *
+ * Ids are deterministic (`${parentInstanceId}-x0`), the same replay argument
+ * `createGatherChildren`'s own comment makes - `run()` re-executes from the
+ * top on every replay, so a second call here must not create a different
+ * child. `createChildBatch` verifies a duplicate-id failure against reality
+ * rather than assuming it.
  */
-export async function proposeTopic(
+export async function createProposeChildren(
   env: Env,
+  parentInstanceId: string,
   coveredTopicTitles: string[],
-): Promise<{ title: string; angle: string | null } | null> {
-  const [publishedTitles, draftedSlugs] = await Promise.all([
-    fetchFeedTitles(env.BLOG_FEED_URL),
-    listBlogPostSlugs({ apiBase: env.GITHUB_API_BASE, token: env.GITHUB_TOKEN, repo: env.BLOG_REPO }).catch(
-      () => [] as string[],
-    ),
+): Promise<string[]> {
+  return createChildBatch(env.PROPOSE_WORKFLOW, [
+    { id: `${parentInstanceId}-x0`, params: { coveredTopicTitles, parentInstanceId } satisfies ProposeParams },
   ]);
-
-  const covered = new Set<string>();
-  for (const title of publishedTitles) for (const word of tokenize(title)) covered.add(word);
-  for (const slug of draftedSlugs) for (const word of tokenize(slug.replace(/-/g, ' '))) covered.add(word);
-  for (const title of coveredTopicTitles) for (const word of tokenize(title)) covered.add(word);
-
-  const seed = loadFeeds()[0];
-  if (seed === undefined) return null;
-  const seedItems = await fetchFeedItems(seed.feedUrl);
-
-  for (const item of seedItems) {
-    if (item.title === '') continue;
-    const words = tokenize(item.title);
-    const overlap = words.filter((w) => covered.has(w)).length;
-    if (overlap < DUPLICATE_TOKEN_THRESHOLD) {
-      return { title: item.title, angle: null };
-    }
-  }
-  return null;
 }
 
-async function fetchFeedTitles(feedUrl: string): Promise<string[]> {
-  // No bound: the seed-feed read that backs proposeTopic wants the newest
-  // item regardless of the window (spec.md req. 12 - bounding it could
-  // change which topic gets proposed).
-  const items = await fetchFeedItems(feedUrl);
-  return items.map((i) => i.title);
+/**
+ * Poll cadence for `await-propose-children`. Short, like publish's: this
+ * child makes at most three sequential fetches and a couple of D1 calls, no
+ * model call, so its convergence is gather's order of magnitude (5-8 s, run
+ * `6f75e460`) rather than summarize's. 15 s is the wait-first ordering's
+ * whole point applied to that - round 0 lands past a child measured in
+ * single-digit seconds instead of a second after `createBatch`.
+ */
+const PROPOSE_POLL_INTERVAL = '15 seconds';
+/**
+ * The poll backstop is a subrequest budget, not a round count
+ * (`pollChildBatch`'s own comment) - but at **one** child the two coincide,
+ * the same reason `PUBLISH_POLL_SUBREQUEST_BUDGET`'s comment gives:
+ * `max(2, floor(budget / childCount))` divides by 1, so this number *is* the
+ * poll count and, since the corrected cap counts the poll it throws in, also
+ * this loop's actual subrequest bill. 2 is the floor `pollChildBatch` itself
+ * enforces (`max(2, ...)`) - there is no smaller budget to give this loop,
+ * and `createProposeChildren`'s recount above is what confirms 2 is exactly
+ * what the propose path's remaining margin affords.
+ */
+const PROPOSE_POLL_SUBREQUEST_BUDGET = 2;
+
+/**
+ * One `await-propose-children` round, via `pollChildBatch`
+ * (src/lib/workflow-children.ts). One child, so a round costs one
+ * subrequest and `combine` receives a one-element array - `[output]`
+ * destructured rather than merged, the same shape `pollPublishChildren`
+ * uses. A child that is `errored` or `terminated` fails this step
+ * immediately, the same requirement-4 rule every other poll loop enforces.
+ */
+export async function pollProposeChildren(
+  env: Env,
+  childIds: string[],
+  state: ProposePollState,
+  round: number,
+): Promise<ProposePollResult> {
+  const outcome = await pollChildBatch(
+    env.PROPOSE_WORKFLOW,
+    childIds,
+    state,
+    round,
+    PROPOSE_POLL_SUBREQUEST_BUDGET,
+    'propose',
+    validateProposeOutput,
+    ([output]) => output?.topic ?? null,
+  );
+  return outcome.done ? { done: true, topic: outcome.result } : outcome;
+}
+
+/**
+ * `InstanceStatus.output` is `unknown` - this is what actually enforces a
+ * propose child's "returns `{ topic }`" contract, per plan.md's question 3
+ * ("validates rather than casts"), the same rule every other child's own
+ * `validate*Output` applies. `topic` is checked shallowly (an object with an
+ * `id` when non-null) rather than field-by-field: this validates the
+ * child/parent boundary against a malformed step output, not the D1 row
+ * shape `findOrProposeTopic` (src/lib/d1.ts) already owns.
+ */
+function validateProposeOutput(output: unknown, childId: string): ProposeChildOutput {
+  if (typeof output !== 'object' || output === null || !('topic' in output)) {
+    throw new Error(`propose child ${childId} returned a non-object output`);
+  }
+  const topic = (output as { topic: unknown }).topic;
+  if (topic !== null && (typeof topic !== 'object' || !('id' in topic))) {
+    throw new Error(`propose child ${childId} returned a malformed topic`);
+  }
+  return { topic: topic as Topic | null };
 }
 
 /**
@@ -969,19 +1116,6 @@ function validateGatherOutput(output: unknown, childId: string): number {
   return output;
 }
 
-const STOPWORDS = new Set([
-  'the', 'a', 'an', 'of', 'in', 'on', 'for', 'to', 'and', 'or', 'is', 'are',
-  'with', 'how', 'why', 'what', 'this', 'that', 'from', 'at', 'by', 'as',
-  'it', 'its', 'be', 'we', 'you', 'your', 'new', 'v1', 'vs',
-]);
-
-function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((w) => w.length > 2 && !STOPWORDS.has(w));
-}
-
 /**
  * A paper/finding/first-hand-practice writeup, favoured because that is
  * what the grounding gate (isGrounded, MIN_PRACTICES) needs at least one of.
@@ -1197,22 +1331,33 @@ function summarizeChildOptions(
  * Subrequests the replacement mechanism may spend in the summarize poll loop
  * (spec.md requirement 4's narrowing, 2026-09-01 (#92)): one `createBatch`
  * for the replacement plus `SUMMARIZE_REPLACEMENT_POLL_ROUNDS` polls of it.
- * `floor(3 / (1 + 2))` is what makes it **one replacement per run** -
+ * `floor(2 / (1 + 1))` is what makes it **one replacement per run** -
  * "once per child" bounds nothing useful, because three children could each
  * be replaced once.
  *
- * 3 is what the parent's ledger has: 46 of 50 pessimal
- * (`createPublishChildren`'s recount), four spare, and this takes it to 49.
- * And 3 is reachable rather than nominal: the round that *creates* the
+ * **Reduced from 3 to 2 on 2026-09-04 (#109), spending this comment's own
+ * invitation.** `createProposeChildren`'s comment (above `selectTopic`'s
+ * step bodies) derives the parent's corrected fixed cost - `start-run` was
+ * never actually counted in this file's running "23 fixed" figure, which
+ * should have been 24 - and the propose path's own new poll loop
+ * (`PROPOSE_POLL_SUBREQUEST_BUDGET`, 2) on top of that left the propose
+ * path's pessimal total at 51 of 50 at this constant's previous value. "If
+ * the parent's fixed cost grows, the honest answer is that the allowance
+ * goes rather than that the arithmetic is restated" (this comment, before
+ * this edit) - so it goes, from 3 to 2, which is what brings both paths back
+ * under 50 (see `createProposeChildren`'s recount for the full arithmetic).
+ *
+ * And 2 is reachable rather than nominal: the round that *creates* the
  * replacement can itself still cost `childIds.length`, because its siblings
  * may be the ones that completed in that very round - only the rounds *after*
  * it are guaranteed to poll a single child.
  *
- * If the parent's fixed cost grows, this is the first thing that stops
- * fitting, and the honest answer then is that the allowance goes rather than
- * that the arithmetic is restated. `shortlist` is the term that grows.
+ * If the parent's fixed cost grows again, this is still the first thing
+ * that stops fitting - and it is already at the floor `isReplaceable`'s
+ * `floor(allowance / (1 + extraRounds))` needs to keep permitting even one
+ * replacement, so the next move is `shortlist`'s own term, not this one.
  */
-const SUMMARIZE_REPLACEMENT_SUBREQUEST_ALLOWANCE = 3;
+const SUMMARIZE_REPLACEMENT_SUBREQUEST_ALLOWANCE = 2;
 /**
  * Extra poll rounds a replacement grants, on top of the cap
  * `SUMMARIZE_POLL_SUBREQUEST_BUDGET` derives. They have to be an explicit
@@ -1224,13 +1369,16 @@ const SUMMARIZE_REPLACEMENT_SUBREQUEST_ALLOWANCE = 3;
  * untouched gets whatever happens to remain, which is what makes the
  * mechanism dead code on the very run that motivated it.
  *
- * 2, because a from-scratch summarize child needs a full child duration -
- * 62-122 s measured on run `0357f119` - and at `SUMMARIZE_POLL_INTERVAL`'s
- * 180 s one round already covers that with margin. The second is the margin,
- * and it is affordable at one subrequest per round: 360 s against a measured
- * 122 s worst case.
+ * **Reduced from 2 to 1 on 2026-09-04 (#109), alongside
+ * `SUMMARIZE_REPLACEMENT_SUBREQUEST_ALLOWANCE`'s own reduction** (that
+ * constant's comment has why): 1, because a from-scratch summarize child
+ * needs a full child duration - 62-122 s measured on run `0357f119` - and at
+ * `SUMMARIZE_POLL_INTERVAL`'s 180 s one round already covers that with
+ * margin. What is lost is the *second* round of margin on top of that, not
+ * the margin itself - 180 s against a measured 122 s worst case is still
+ * comfortable, just no longer doubled.
  */
-const SUMMARIZE_REPLACEMENT_POLL_ROUNDS = 2;
+const SUMMARIZE_REPLACEMENT_POLL_ROUNDS = 1;
 
 /**
  * The capability to replace a transiently-failed summarize child, handed to
@@ -1547,6 +1695,25 @@ function validateSummarizeOutput(output: unknown, childId: string): SummarizeChi
  * written. Unlike `select-topic`'s #91 recount above, there is no spare
  * traded away or bought back here: the insert rides in the batch slot the
  * prune already had, at no incremental cost.
+ *
+ * **Recounted a final time 2026-09-04 (#109), and this one does not net to
+ * zero.** #109 costed the *propose* branch of `select-topic` - reached only
+ * when the queue is empty, which no run had ever done until #108 - and in
+ * deriving that figure fresh from the tree found that `start-run`'s own one
+ * D1 call was never actually in this comment's running sum: every recount
+ * above reads "~3 D1 calls for start-run and select-topic" (spec.md's own
+ * words, quoting run `0357f119`'s capture) as belonging to `select-topic`
+ * alone, so `start-run`'s 1 was silently dropped. Corrected, the
+ * queue-draining fixed total is **24**, not 23, and the pessimal total
+ * without requirement 4's narrowing is **47**, not 46.
+ * `SUMMARIZE_REPLACEMENT_SUBREQUEST_ALLOWANCE` is reduced 3 -> 2 alongside
+ * this fix (that constant's own comment has the argument), which is what
+ * brings the queue-draining pessimal back to **49 of 50** - the figure this
+ * comment has stated throughout, arrived at now by two corrections that
+ * cancel rather than by neither being needed. See `createProposeChildren`'s
+ * own comment (above `selectTopic`'s step bodies, near the top of this file)
+ * for the propose path's own figures, which this comment's history never
+ * carried: 23 fixed, 50 of 50 pessimal - under the ceiling, with none spare.
  */
 export async function createPublishChildren(env: Env, parentInstanceId: string, draft: Draft): Promise<string[]> {
   return createChildBatch(env.PUBLISH_WORKFLOW, [
@@ -1579,9 +1746,10 @@ const PUBLISH_POLL_INTERVAL = '15 seconds';
  * the three backstops per round of tolerance bought, which is why 4 polls cost
  * 4 subrequests here where summarize's 3 cost 9.
  *
- * 4 rather than more: 23 fixed subrequests (`createPublishChildren`'s recount)
- * plus gather's 10 and summarize's 9 leaves 8, and taking half of it keeps a
- * few spare for the redirects the arithmetic cannot see. 4 rounds at
+ * 4 rather than more: 24 fixed subrequests (`createPublishChildren`'s recount,
+ * corrected 2026-09-04, #109, to count `start-run`) plus gather's 10 and
+ * summarize's 9 leaves 7, and 4 keeps a few spare for the redirects the
+ * arithmetic cannot see. 4 rounds at
  * `PUBLISH_POLL_INTERVAL` covers 60 s against a child expected to finish in
  * seconds - generous rather than tight, and the interval is the free lever if
  * that turns out wrong (`SUMMARIZE_POLL_INTERVAL`'s comment has the argument).

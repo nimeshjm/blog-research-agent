@@ -232,6 +232,11 @@ function stepNamePrefix(text) {
 // SummarizeWorkflow children the same way gather's was - `summarize` itself
 // was already here (the per-article step, unchanged, now issued from
 // src/summarize-workflow.ts instead of src/workflow.ts).
+//
+// `await-propose-children`/`await-propose-children-wait` added 2026-09-04
+// (#109): `selectTopic`'s propose branch's own poll loop, the same
+// round-interpolates-deterministically argument as the other three pairs -
+// round N is always the Nth iteration of `run()`'s propose loop.
 const DYNAMIC_STEP_PREFIXES = new Set([
   'gather',
   'summarize',
@@ -241,6 +246,8 @@ const DYNAMIC_STEP_PREFIXES = new Set([
   'await-summarize-children-wait',
   'await-publish-children',
   'await-publish-children-wait',
+  'await-propose-children',
+  'await-propose-children-wait',
 ]);
 const INFERENCE_STEP_PREFIXES = new Set(['summarize', 'synthesize']);
 

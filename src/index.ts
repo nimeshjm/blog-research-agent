@@ -5,6 +5,7 @@ export { ResearchWorkflow } from './workflow';
 export { GatherWorkflow } from './gather-workflow';
 export { SummarizeWorkflow } from './summarize-workflow';
 export { PublishWorkflow } from './publish-workflow';
+export { ProposeWorkflow } from './propose-workflow';
 
 /**
  * Cron only starts a Workflow instance; all orchestration lives in the
