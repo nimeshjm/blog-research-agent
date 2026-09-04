@@ -468,6 +468,22 @@ export async function attachRunTopic(db: D1Database, instanceId: string, topicId
   await db.prepare(`UPDATE runs SET topic_id = ? WHERE instance_id = ?`).bind(topicId, instanceId).run();
 }
 
+/**
+ * How many of `topics`'s own titles feed `proposeTopic`'s dedupe check
+ * (spec.md req. 3, #104). `topics` gains at most one agent-origin row per
+ * scheduled run that finds the queue empty - `findOrProposeTopic` is the
+ * only writer on that path - so this bound is a recency window measured in
+ * runs, not a hard cap ever expected to bind soon: 300 is comfortably past a
+ * year of daily empty-queue runs. It exists because the read rides
+ * `select-topic`'s own step, which already tokenizes two feed reads inside
+ * the same 10 ms-per-invocation CPU budget (CLAUDE.md's "Platform rules") -
+ * tokenizing 300 short titles costs microseconds next to that, but an
+ * unbounded `SELECT` growing forever is exactly the #75 class of bug this
+ * repo has already been bitten by once (see `chunkSourcesByVolume`'s own
+ * comment for that incident).
+ */
+export const TOPIC_DEDUPE_TITLE_LIMIT = 300;
+
 /** What `reclaimAndClaim` below hands back: the row `selectTopic` still has to `claimRow`, plus both sweeps' counts for observability. */
 export interface ReclaimAndClaimResult {
   row: TopicRow | null;
@@ -475,16 +491,64 @@ export interface ReclaimAndClaimResult {
   reclaimedTopics: number;
   /** `runs` rows this call swept from `running` to `failed` past the same TTL (#91) - see this function's own comment. */
   strandedRuns: number;
+  /**
+   * Up to `TOPIC_DEDUPE_TITLE_LIMIT` most-recent titles from `topics` in
+   * status `queued`, `in_progress` or `done` - never `rejected` (#104): a
+   * rejected proposal is an explicit signal that its title should be free to
+   * try again, not burned forever. Excludes whichever row is already linked
+   * to `currentInstanceId` via `runs.topic_id`, if any - see this function's
+   * own comment on why that exclusion has to be here, not in `proposeTopic`.
+   * Read unconditionally, whether or not `row` is null, because it rides the
+   * same `db.batch()` call as the two sweeps above - see this function's own
+   * comment for why that makes it free on every path. `selectTopic` passes
+   * it straight to `proposeTopic` (src/workflow.ts) so a proposal is deduped
+   * against the agent's own past proposals without a second read.
+   */
+  coveredTopicTitles: string[];
 }
 
 /**
  * Consolidates the scheduled path's reclaim sweep, the new stale-run sweep
- * (#91), and the oldest-queued lookup into one `db.batch()` - one
- * subrequest, three statements, run in order inside one transaction. This is
- * the same trick `writeRunCandidates` above uses for its `DELETE`+`INSERT`
- * pair: `db.batch()` is one subrequest whatever the statement count, so
- * folding a third statement in is free where a fourth standalone call would
- * not be.
+ * (#91), the oldest-queued lookup, and (#104) a read of `topics`'s own
+ * covered titles into one `db.batch()` - one subrequest, four statements,
+ * run in order inside one transaction. This is the same trick
+ * `writeRunCandidates` above uses for its `DELETE`+`INSERT` pair: `db.batch()`
+ * is one subrequest whatever the statement count, so folding a fourth
+ * statement in is free where a fifth standalone call would not be. The
+ * fourth statement has no data dependency on the other three - it is a
+ * fixed-shape read, like the oldest-queued lookup - so it fits the same
+ * "bound before any of them run" rule the third statement already does; see
+ * this function's own comment on `claimRow` below for the one statement here
+ * that does *not* fit it.
+ *
+ * **Why the fourth statement excludes `currentInstanceId`'s own topic.**
+ * `findOrProposeTopic` recovers a retried `select-topic` step's earlier
+ * INSERT by exact title match - the comment on that function calls this
+ * "the same run's proposal is deterministic." Without the exclusion, a
+ * retry that reaches this call *after* an earlier attempt's INSERT already
+ * committed would see its own just-inserted title back in
+ * `coveredTopicTitles`, `proposeTopic` would reject its own deterministic
+ * seed candidate as "already covered" - by itself - and the retry would
+ * propose nothing instead of recovering the same topic. `AND topic_id IS
+ * NOT NULL` in the subquery matters for a reason beyond tidiness: SQL's
+ * `NOT IN` against a list containing NULL evaluates to NULL - never true -
+ * for every row, which would silently empty `coveredTopicTitles` on any
+ * call where `runs` holds an untouched row for this instance.
+ *
+ * **This narrows the replay window rather than closing it.** The exclusion
+ * relies on `runs.topic_id` already naming this row, and `attachRunTopic`
+ * sets that column in a *separate* call after `findOrProposeTopic`'s INSERT
+ * returns (`selectTopic`, src/workflow.ts) - the two are not one atomic
+ * write. A replay that lands between them (INSERT committed,
+ * `attachRunTopic` never ran) still sees its own title here, and
+ * `proposeTopic` still rejects its own candidate as self-covered - the
+ * same failure this comment exists to prevent, just for that one
+ * sub-window rather than every retry. Before #104 this exact window
+ * degraded gracefully, because nothing yet read `coveredTopicTitles`:
+ * `proposeTopic` would re-derive the same candidate and `findOrProposeTopic`
+ * would recover the existing row by title. Making the INSERT and the
+ * `runs.topic_id` link one atomic write would close this fully; that is a
+ * larger change than #104's scope and is not made here.
  *
  * **Order is load-bearing.** The reclaim `UPDATE` has to run before the
  * `SELECT`, in the same transaction, so the `SELECT` can see topics the
@@ -526,7 +590,16 @@ export interface ReclaimAndClaimResult {
  * evaluate to `NULL`, never true, when `claimed_at` is `NULL`. The clause is
  * kept as an explicit statement of that intent, not as the mechanism.
  */
-export async function reclaimAndClaim(db: D1Database, ttlHours: number): Promise<ReclaimAndClaimResult> {
+export async function reclaimAndClaim(
+  db: D1Database,
+  ttlHours: number,
+  // Required, not defaulted - CLAUDE.md's `tracerFor` is the precedent this
+  // repo already uses for "a call site can't forget an instance id": a
+  // default here would make it easy for a future caller to silently skip
+  // the self-exclusion the comment above explains, reopening #104's replay
+  // bug rather than merely narrowing it.
+  currentInstanceId: string,
+): Promise<ReclaimAndClaimResult> {
   const results = await db.batch<TopicRow>([
     db
       .prepare(
@@ -544,16 +617,25 @@ export async function reclaimAndClaim(db: D1Database, ttlHours: number): Promise
       )
       .bind(ttlHours),
     db.prepare(`SELECT ${TOPIC_COLUMNS} FROM topics WHERE status = 'queued' ORDER BY created_at ASC, id ASC LIMIT 1`),
+    db
+      .prepare(
+        `SELECT ${TOPIC_COLUMNS} FROM topics
+          WHERE status IN ('queued', 'in_progress', 'done')
+            AND id NOT IN (SELECT topic_id FROM runs WHERE instance_id = ? AND topic_id IS NOT NULL)
+          ORDER BY created_at DESC, id DESC LIMIT ?`,
+      )
+      .bind(currentInstanceId, TOPIC_DEDUPE_TITLE_LIMIT),
   ]);
 
   // Indexed with `?.` rather than destructured-and-cast: `db.batch()`
-  // guarantees three results back in the order the three statements went in,
+  // guarantees four results back in the order the four statements went in,
   // but `noUncheckedIndexedAccess` cannot see that from the array's static
-  // type, and the `?? 0` / `?? null` fallbacks below are what this needs to
-  // be total anyway - no cast required to get there.
+  // type, and the `?? 0` / `?? null` / `?? []` fallbacks below are what this
+  // needs to be total anyway - no cast required to get there.
   return {
     row: results[2]?.results[0] ?? null,
     reclaimedTopics: results[0]?.meta?.changes ?? 0,
     strandedRuns: results[1]?.meta?.changes ?? 0,
+    coveredTopicTitles: (results[3]?.results ?? []).map((r) => r.title),
   };
 }

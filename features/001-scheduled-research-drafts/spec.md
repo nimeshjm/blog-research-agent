@@ -23,10 +23,52 @@ and stops; a human merges.
    around.
 2. When the topic queue has a `queued` row, the run uses the oldest one. Only when the
    queue is empty does the agent propose its own topic.
-3. A proposed topic must not duplicate anything already **published or drafted**. The
-   published set comes from `BLOG_FEED_URL`; the drafted set comes from the blog repo,
-   because posts with `draft: true` are absent from the feed. At the time of writing the
-   repo holds 33 posts and the feed 30 — the 3 missing are all unpublished drafts.
+3. A proposed topic must not duplicate anything already **published, drafted, or
+   previously proposed by this agent**. The published set comes from `BLOG_FEED_URL`.
+   The second set comes from every post directory under `src/content/blog/` at the
+   blog repo's default branch (`listBlogPostSlugs`) — that read returns every post,
+   not only drafts, but posts with `draft: true` are absent from the feed, so the
+   subset the feed doesn't already cover is exactly the hand-written drafts. At the
+   time of writing the repo holds 33 posts and the feed 30 — the 3 missing are all
+   unpublished drafts.
+
+   **Amended 2026-09-04 (#104): a third covered set, this repo's own `topics` table.**
+   The first two sets only ever see a draft once a human has merged its pull request —
+   the agent itself writes only to `research/<yyyy-mm-dd>-<slug>` branches (CLAUDE.md:
+   "The agent writes to branches only") and stops. An unmerged draft is therefore
+   invisible to the published and hand-written-drafted checks for as long as its PR
+   stays open, and requirement 3 did not hold for the agent's own drafts: PRs #2 and #3
+   (2026-09-01, 2026-09-02) shared four non-stopword title tokens —`structure`,
+   `behavior`, `coalescence`, `system` — against `DUPLICATE_TOKEN_THRESHOLD = 2`, and
+   both were still open when #3 was proposed. #3 would have been rejected had #2's
+   title counted as covered.
+
+   `topics` now supplies that third set directly: every title in status `queued`,
+   `in_progress` or `done` (never `rejected` — an explicitly rejected proposal should be
+   retryable, not burned forever), most-recent first, capped at
+   `TOPIC_DEDUPE_TITLE_LIMIT` (300 — see that constant's own comment in `src/lib/d1.ts`
+   for the CPU-budget argument for the cap). It rides the same `db.batch()` call
+   `reclaimAndClaim` already makes on the scheduled path (#91), so it costs the parent
+   Workflow no additional subrequest. One carve-out: a run's own topic — the row
+   `runs.topic_id` already names for this instance — is excluded from the set, so a
+   retried `select-topic` step does not reject its own deterministic proposal as a
+   duplicate of itself. That exclusion narrows, rather than closes, the replay window
+   between `findOrProposeTopic`'s `INSERT` and the later call that links it to
+   `runs.topic_id`; see `reclaimAndClaim` in `src/lib/d1.ts` for which side of that
+   window it covers and which it does not.
+
+   **Rejected alternative: query the blog repo's open pull requests (or its
+   `research/*` branches) instead.** Either is one more subrequest against
+   `src/lib/github.ts`'s existing REST client, and would catch the same PRs #2/#3 case.
+   It was rejected because it makes proposal depend on PR *state*: a draft whose PR was
+   closed without merging — rejected by a human, or superseded — would stay burned
+   forever rather than becoming a legitimate topic again once the PR closes. Dedupe
+   against `topics` has no such dependency and also requires no second network read,
+   since the table already exists and is already read on this path.
+
+   Token overlap stays a heuristic here, as it already was for the published and
+   hand-written-drafted sets — see "Deferred: Vectorize semantic dedupe" below, which
+   is the real version of all three checks, not just this one.
 4. An article already seen in a previous run is not re-read or re-summarized.
    Amended 2026-09-04 (#100): the table existed and was read from the start, but nothing
    ever wrote it, so this requirement was inert on every real run until this amendment -
@@ -589,7 +631,8 @@ research brief; the committed file is the draft.
    Checking out the branch and running the blog's own build succeeds.
 4. A second run on the same day re-reads no article present in `seen_urls`.
 5. With an empty queue, a run proposes a topic that duplicates neither the published
-   feed nor any `draft: true` post in the repo.
+   feed, nor any `draft: true` post in the repo, nor a title already recorded in
+   `topics` (#104).
 6. A run whose sources carry no attributable practice, or only one source in total,
    opens no PR and writes a `runs` row with status `insufficient_sources` — even if
    several articles were summarized.
@@ -623,11 +666,16 @@ research brief; the committed file is the draft.
 | A generated post breaks the blog build | `image` omitted (the `image()` helper requires a real file) and frontmatter validated against `src/content.config.ts` before the PR is opened. |
 | A merged draft publishes accidentally | `draft: true` on every generated post, independent of the merge gate. |
 | Proposing a topic already drafted but unpublished | Dedupe reads repo drafts as well as the feed (requirement 3). |
+| Proposing a near-duplicate of the agent's own unmerged draft | Dedupe also reads this repo's own `topics` table, which the blog-repo reads above cannot see while a PR is open (requirement 3, #104). |
 
 ## Deferred
 
-- **Vectorize semantic dedupe** — v1 uses URL and title similarity in D1. Worth adding
-  once there are enough runs for near-duplicate topics to actually show up.
+- **Vectorize semantic dedupe** ([#9](https://github.com/nimeshjm/blog-research-agent/issues/9))
+  — v1 uses URL and title token-overlap similarity in D1 (`DUPLICATE_TOKEN_THRESHOLD`,
+  now checked against three covered sets per #104). Near-duplicate topics have now
+  shown up twice (#104: PRs #2 and #3), which is the case token overlap catches only by
+  coincidence of shared vocabulary — it would miss two titles that mean the same thing
+  in different words. Semantic embeddings are the real fix; this PR does not build it.
 - **A real search API** (Brave free tier) — widens discovery past the allowlist, but is
   neither Cloudflare nor key-free. Most likely second iteration.
 - **Continuous evals** (playbook stage 4) — needs real drafts to evaluate first.

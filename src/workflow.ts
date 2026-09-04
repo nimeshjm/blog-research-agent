@@ -537,13 +537,15 @@ export const SHORTLIST_MAX_CANDIDATES = 4000;
  */
 export const SHORTLIST_TOP_N = 15;
 /**
- * How many meaningful title-word overlaps with an existing (published or
- * drafted) post count as "already covered" when the agent proposes its own
- * topic (spec.md req. 3). Heuristic, not semantic - see "Deferred: Vectorize
- * semantic dedupe" in spec.md, which is what a real version of this check
- * would use. Two shared non-stopword tokens is deliberately low: a proposal
- * that shares that much vocabulary with something already on the blog is
- * cheap to skip and expensive to publish twice.
+ * How many meaningful title-word overlaps with an existing published post,
+ * drafted post, or previously-claimed `topics` row count as "already
+ * covered" when the agent proposes its own topic (spec.md req. 3). Heuristic,
+ * not semantic - see "Deferred: Vectorize semantic dedupe" in spec.md, which
+ * is what a real version of this check would use. Two shared non-stopword
+ * tokens is deliberately low: a proposal that shares that much vocabulary
+ * with something already on the blog - or already claimed by this agent - is
+ * cheap to skip and expensive to publish twice (#104: PRs #2 and #3 shared
+ * four).
  */
 export const DUPLICATE_TOKEN_THRESHOLD = 2;
 
@@ -584,7 +586,9 @@ export async function selectTopic(env: Env, instanceId: string, topicId: number 
   // `failed` here too - see that function's comment for why one `db.batch()`
   // carries both sweeps plus the queued-topic lookup at one subrequest, and
   // `TOPIC_CLAIM_TTL_HOURS`'s own comment for the margin both sweeps share.
-  const { row, strandedRuns } = await reclaimAndClaim(env.DB, TOPIC_CLAIM_TTL_HOURS);
+  // #104 folds a fourth read into that same batch - `coveredTopicTitles` -
+  // for `proposeTopic` below to dedupe against, still at one subrequest.
+  const { row, strandedRuns, coveredTopicTitles } = await reclaimAndClaim(env.DB, TOPIC_CLAIM_TTL_HOURS, instanceId);
   if (row !== null) {
     // Not part of the batch above - it needs the id the batch's own SELECT
     // just returned, and a db.batch() call's statements are all bound before
@@ -597,17 +601,18 @@ export async function selectTopic(env: Env, instanceId: string, topicId: number 
   }
 
   // Only reached when the queue is empty (spec.md req. 2). Proposing a topic
-  // needs BOTH a non-inference way to generate a candidate and a dedupe
-  // check against BLOG_FEED_URL and `draft: true` posts in the blog repo
-  // (spec req. 3 - drafts are absent from the feed, so a feed-only check
-  // proposes what is already half-written). Neither read seam existed in
-  // #46 (feeds.ts there is the allowlist *loader* only; github.ts there is
-  // scoped to the branch/commit/PR write path). Both now do - feed.ts
-  // (parsing) is new in this PR, and github.ts gained `listBlogPostSlugs`
-  // here - so the reassignment plan.md records lands the work in this step
-  // instead. See features/001-scheduled-research-drafts/plan.md, steps 3
-  // and 4.
-  const proposal = await proposeTopic(env);
+  // needs a non-inference way to generate a candidate and a dedupe check
+  // against three covered sets (spec req. 3): BLOG_FEED_URL (published),
+  // `draft: true` posts in the blog repo (hand-written drafts - absent from
+  // the feed, so a feed-only check proposes what is already half-written),
+  // and this repo's own `topics` table (#104 - the agent's own past
+  // proposals, which live only on `research/*` branches until a human
+  // merges their pull request and so are invisible to both of the other two
+  // reads; see `proposeTopic`'s own doc comment for why). `coveredTopicTitles`
+  // above is already read, at no extra subrequest - the other two reads are
+  // `proposeTopic`'s own job. See features/001-scheduled-research-drafts/
+  // plan.md, steps 3 and 4, for why the feed/repo reads landed in this step.
+  const proposal = await proposeTopic(env, coveredTopicTitles);
   if (proposal === null) return { topic: null, strandedRuns };
 
   // attachRunTopic runs on all three success paths, not only this one: a run
@@ -631,22 +636,41 @@ async function loadSources(_env: Env): Promise<Source[]> {
  *
  *  1. The "published" set: parse BLOG_FEED_URL (one fetch) for post titles.
  *  2. The "drafted" set: list post slugs under src/content/blog/ at the
- *     repo's default branch (one fetch, `listBlogPostSlugs` -
- *     github.ts) - no per-post read needed, because spec.md's own measured
- *     fact ("the repo holds 33 posts and the feed 30 - the 3 missing are
- *     all unpublished drafts") means repo slugs minus feed slugs already
- *     *is* the drafted set, without reading a single file's frontmatter.
- *  3. The candidate itself: the newest item from the first configured
+ *     repo's default branch (one fetch, `listBlogPostSlugs` - github.ts).
+ *     This catches a *hand-written* draft with `draft: true` committed
+ *     straight to the default branch - it does not catch the agent's own
+ *     drafts, because the agent never commits there. CLAUDE.md: "The agent
+ *     writes to branches only" - `research/<yyyy-mm-dd>-<slug>`, reaching
+ *     `main` only once a human merges the pull request it opens. (#104
+ *     corrects this doc comment's previous claim that "repo slugs minus feed
+ *     slugs already *is* the drafted set": that was true of the
+ *     hand-written drafts spec.md's "33 posts, 30 in the feed" measured, and
+ *     has never been true of the agent's own - PRs #2 and #3 both sat as
+ *     open, unmerged pull requests when this bug was found.)
+ *  3. The agent's own "previously claimed" set: `coveredTopicTitles`,
+ *     already read - at no extra subrequest - from this repo's own `topics`
+ *     table by the same `db.batch()` call `reclaimAndClaim` makes in
+ *     `selectTopic` (#104). This is what catches the case the two reads
+ *     above cannot: a topic the agent proposed and is still drafting, or
+ *     already drafted, on a branch neither the feed nor the repo's default
+ *     branch has ever seen. Querying the blog repo's open pull requests
+ *     instead was considered and rejected - it would make proposal depend
+ *     on PR state, so a *closed and rejected* draft would stay burned
+ *     forever rather than becoming proposable again once the PR closes.
+ *  4. The candidate itself: the newest item from the first configured
  *     discovery feed (deterministic, and - at 62 items - small enough to
- *     parse well inside this step's CPU budget even alongside the two
- *     reads above) whose title does not overlap either covered set past
+ *     parse well inside this step's CPU budget alongside the reads above)
+ *     whose title does not overlap the union of all three covered sets past
  *     DUPLICATE_TOKEN_THRESHOLD.
  *
  * Returns null on any read failure or when every candidate from the seed
  * feed is already covered - `selectTopic` falls through to the existing
  * `record-no-topic` exit either way.
  */
-export async function proposeTopic(env: Env): Promise<{ title: string; angle: string | null } | null> {
+export async function proposeTopic(
+  env: Env,
+  coveredTopicTitles: string[],
+): Promise<{ title: string; angle: string | null } | null> {
   const [publishedTitles, draftedSlugs] = await Promise.all([
     fetchFeedTitles(env.BLOG_FEED_URL),
     listBlogPostSlugs({ apiBase: env.GITHUB_API_BASE, token: env.GITHUB_TOKEN, repo: env.BLOG_REPO }).catch(
@@ -657,6 +681,7 @@ export async function proposeTopic(env: Env): Promise<{ title: string; angle: st
   const covered = new Set<string>();
   for (const title of publishedTitles) for (const word of tokenize(title)) covered.add(word);
   for (const slug of draftedSlugs) for (const word of tokenize(slug.replace(/-/g, ' '))) covered.add(word);
+  for (const title of coveredTopicTitles) for (const word of tokenize(title)) covered.add(word);
 
   const seed = loadFeeds()[0];
   if (seed === undefined) return null;
