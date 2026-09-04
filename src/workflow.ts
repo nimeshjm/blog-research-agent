@@ -44,6 +44,7 @@ import type {
 import {
   ATTR_GATHER_CHILDREN,
   ATTR_NEURONS_BUDGET,
+  ATTR_NEURONS_DAILY_SPENT,
   ATTR_NEURONS_SPENT,
   ATTR_PUBLISH_CHILDREN,
   ATTR_RUN_STATUS,
@@ -127,13 +128,38 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
     // `failed` in the same D1 call that reclaims stale topics - see
     // `reclaimAndClaim` (src/lib/d1.ts) for why the two sweeps share one
     // batch, and `TOPIC_CLAIM_TTL_HOURS`'s own comment for why the sweep is
-    // replay-safe here.
-    const topic = await traceStep('select-topic', {}, async (span) => {
+    // replay-safe here. `agent.neurons.daily_spent` is set only when the
+    // scheduled path actually computed it (#111) - null on the
+    // manually-targeted path, which skips the daily neuron guard entirely
+    // (`selectTopic`'s own comment on why).
+    const topicResult = await traceStep('select-topic', {}, async (span) => {
       const result = await selectTopic(this.env, event.instanceId, event.payload.topicId);
       if (result.topic !== null) span.setAttribute(ATTR_TOPIC_ID, result.topic.id);
       span.setAttribute(ATTR_RUNS_STRANDED_CLOSED, result.strandedRuns);
-      return result.topic;
+      if (result.dailyNeuronsSpent !== null) span.setAttribute(ATTR_NEURONS_DAILY_SPENT, result.dailyNeuronsSpent);
+      return result;
     });
+    const topic = topicResult.topic;
+
+    // #111: a budget skip is not "the queue was empty" - it gets its own
+    // step name and `runs.status` so the two stay distinguishable after the
+    // fact, rather than a budget-driven skip quietly inflating `no_topic`'s
+    // count (see `selectTopic`'s own comment on why this branch never
+    // reaches `claimRow` or `proposeTopic`).
+    if (topic === null && topicResult.budgetExhausted) {
+      await traceStep(
+        'record-budget-skipped',
+        {
+          [ATTR_NEURONS_SPENT]: neuronsSpent,
+          [ATTR_NEURONS_BUDGET]: budget,
+          [ATTR_RUN_STATUS]: 'budget_skipped',
+        },
+        async () => {
+          return recordOutcome(this.env, event.instanceId, { status: 'budget_skipped', neuronsSpent });
+        },
+      );
+      return;
+    }
 
     if (topic === null) {
       await traceStep(
@@ -548,6 +574,17 @@ export const SHORTLIST_TOP_N = 15;
  * four).
  */
 export const DUPLICATE_TOKEN_THRESHOLD = 2;
+/**
+ * The Workers AI free allocation itself (#111) - "All limits reset daily at
+ * 00:00 UTC" per Cloudflare's own pricing docs, checked 2026-09-04. Not a
+ * `wrangler.toml` var: it is a fact about the platform's free tier, the same
+ * status `SEEN_URLS_MAX_QUERIES` and `SEEN_URLS_CHUNK_SIZE` (src/lib/d1.ts)
+ * already have for D1's limits - those are not tunable either, because
+ * turning the knob would not change what Cloudflare actually enforces.
+ * `NEURON_DAILY_RESERVE` (wrangler.toml), compared against this constant, is
+ * the part of the guard that *is* a knob.
+ */
+export const NEURON_DAILY_BUDGET = 10000;
 
 // ---------------------------------------------------------------------------
 // Step bodies.
@@ -556,10 +593,34 @@ export const DUPLICATE_TOKEN_THRESHOLD = 2;
 // the caller can enforce NEURON_BUDGET_PER_RUN between steps.
 // ---------------------------------------------------------------------------
 
-/** `selectTopic`'s result: the topic (or null, falling through to `record-no-topic`) plus how many `runs` rows the scheduled path's sweep closed - see `run()`'s `select-topic` step, which is the only reader of the second field. */
+/**
+ * `selectTopic`'s result: the topic (or null, falling through to
+ * `record-no-topic` or, #111, `record-budget-skipped`) plus how many `runs`
+ * rows the scheduled path's sweep closed - see `run()`'s `select-topic`
+ * step, which is the only reader of the fields below `topic`.
+ */
 export interface SelectTopicResult {
   topic: Topic | null;
   strandedRuns: number;
+  /**
+   * #111: true when the scheduled path's daily neuron guard skipped
+   * claiming (and, further down, proposing) because today's aggregate
+   * `runs.neurons_spent` plus `NEURON_DAILY_RESERVE` would exceed
+   * `NEURON_DAILY_BUDGET`. Always false on the manually-targeted path,
+   * which does not run the guard - see this function's own comment on why.
+   * `run()` reads this to choose `record-budget-skipped` over
+   * `record-no-topic` so the two stay distinguishable in `runs.status`.
+   */
+  budgetExhausted: boolean;
+  /**
+   * Today's aggregate `runs.neurons_spent` (UTC), as `reclaimAndClaim`
+   * (src/lib/d1.ts) computed it - null on the manually-targeted path, which
+   * never calls `reclaimAndClaim` and so never learns this number. `run()`
+   * sets it on the `select-topic` span (`ATTR_NEURONS_DAILY_SPENT`) only
+   * when non-null, the same conditional-set pattern `ATTR_TOPIC_ID` already
+   * uses for a value this function does not always have.
+   */
+  dailyNeuronsSpent: number | null;
 }
 
 export async function selectTopic(env: Env, instanceId: string, topicId: number | undefined): Promise<SelectTopicResult> {
@@ -570,11 +631,16 @@ export async function selectTopic(env: Env, instanceId: string, topicId: number 
   // also reclaim - a hand-triggered run reclaiming *other* runs' stranded
   // topics would widen its blast radius for no gain. It does not sweep
   // stranded runs either, for the same reason (#91): a targeted run's blast
-  // radius stays scoped to the topic it was told to research.
+  // radius stays scoped to the topic it was told to research. The daily
+  // neuron guard (#111, below) follows the same argument and does not run
+  // here either - a human who names a topic has already decided this run
+  // should happen, the same way a hand-triggered run already shares the
+  // day's allowance with the scheduled one rather than being blocked by it
+  // (wrangler.toml's cron comment).
   if (topicId !== undefined) {
     const named = await claimTopicById(env.DB, topicId);
     if (named !== null) await attachRunTopic(env.DB, instanceId, named.id);
-    return { topic: named, strandedRuns: 0 };
+    return { topic: named, strandedRuns: 0, budgetExhausted: false, dailyNeuronsSpent: null };
   }
 
   // Scheduled path only: a topic left in_progress past TOPIC_CLAIM_TTL_HOURS
@@ -587,8 +653,30 @@ export async function selectTopic(env: Env, instanceId: string, topicId: number 
   // carries both sweeps plus the queued-topic lookup at one subrequest, and
   // `TOPIC_CLAIM_TTL_HOURS`'s own comment for the margin both sweeps share.
   // #104 folds a fourth read into that same batch - `coveredTopicTitles` -
-  // for `proposeTopic` below to dedupe against, still at one subrequest.
-  const { row, strandedRuns, coveredTopicTitles } = await reclaimAndClaim(env.DB, TOPIC_CLAIM_TTL_HOURS, instanceId);
+  // for `proposeTopic` below to dedupe against, and #111 a fifth -
+  // `dailyNeuronsSpent`, read next - still at one subrequest.
+  const { row, strandedRuns, coveredTopicTitles, dailyNeuronsSpent } = await reclaimAndClaim(
+    env.DB,
+    TOPIC_CLAIM_TTL_HOURS,
+    instanceId,
+  );
+
+  // #111: the daily neuron guard. `claimRow` and `findOrProposeTopic` below
+  // are the only two calls on this path that change any row's status (their
+  // own comments say so), and this returns before either runs - so a
+  // skipped run strands no topic (it is never moved off `queued`) and needs
+  // no TTL wait to recover: the next call to this same function, at the next
+  // cron slot, sees exactly the queue this one did. Checked *before*
+  // `claimRow`, not after: claiming first and then declining to research
+  // would leave a topic `in_progress` for nothing until the TTL freed it,
+  // exactly the stranding this guard exists to avoid. See
+  // `NEURON_DAILY_RESERVE`'s own comment in wrangler.toml for why the
+  // reserve is sized against measured run spend rather than
+  // `NEURON_BUDGET_PER_RUN`'s worst case.
+  if (dailyNeuronsSpent + Number(env.NEURON_DAILY_RESERVE) > NEURON_DAILY_BUDGET) {
+    return { topic: null, strandedRuns, budgetExhausted: true, dailyNeuronsSpent };
+  }
+
   if (row !== null) {
     // Not part of the batch above - it needs the id the batch's own SELECT
     // just returned, and a db.batch() call's statements are all bound before
@@ -596,24 +684,25 @@ export async function selectTopic(env: Env, instanceId: string, topicId: number 
     const queued = await claimRow(env.DB, row);
     if (queued !== null) {
       await attachRunTopic(env.DB, instanceId, queued.id);
-      return { topic: queued, strandedRuns };
+      return { topic: queued, strandedRuns, budgetExhausted: false, dailyNeuronsSpent };
     }
   }
 
-  // Only reached when the queue is empty (spec.md req. 2). Proposing a topic
-  // needs a non-inference way to generate a candidate and a dedupe check
-  // against three covered sets (spec req. 3): BLOG_FEED_URL (published),
-  // `draft: true` posts in the blog repo (hand-written drafts - absent from
-  // the feed, so a feed-only check proposes what is already half-written),
-  // and this repo's own `topics` table (#104 - the agent's own past
-  // proposals, which live only on `research/*` branches until a human
-  // merges their pull request and so are invisible to both of the other two
-  // reads; see `proposeTopic`'s own doc comment for why). `coveredTopicTitles`
-  // above is already read, at no extra subrequest - the other two reads are
+  // Only reached when the queue is empty (spec.md req. 2) and the guard
+  // above did not already return. Proposing a topic needs a non-inference
+  // way to generate a candidate and a dedupe check against three covered
+  // sets (spec req. 3): BLOG_FEED_URL (published), `draft: true` posts in
+  // the blog repo (hand-written drafts - absent from the feed, so a
+  // feed-only check proposes what is already half-written), and this
+  // repo's own `topics` table (#104 - the agent's own past proposals, which
+  // live only on `research/*` branches until a human merges their pull
+  // request and so are invisible to both of the other two reads; see
+  // `proposeTopic`'s own doc comment for why). `coveredTopicTitles` above is
+  // already read, at no extra subrequest - the other two reads are
   // `proposeTopic`'s own job. See features/001-scheduled-research-drafts/
   // plan.md, steps 3 and 4, for why the feed/repo reads landed in this step.
   const proposal = await proposeTopic(env, coveredTopicTitles);
-  if (proposal === null) return { topic: null, strandedRuns };
+  if (proposal === null) return { topic: null, strandedRuns, budgetExhausted: false, dailyNeuronsSpent };
 
   // attachRunTopic runs on all three success paths, not only this one: a run
   // that dies later - in gather, not in select-topic - must still record
@@ -621,7 +710,7 @@ export async function selectTopic(env: Env, instanceId: string, topicId: number 
   // 10's runs row (the runs row says which topic, the TTL brings it back).
   const proposed = await findOrProposeTopic(env.DB, proposal);
   await attachRunTopic(env.DB, instanceId, proposed.id);
-  return { topic: proposed, strandedRuns };
+  return { topic: proposed, strandedRuns, budgetExhausted: false, dailyNeuronsSpent };
 }
 
 async function loadSources(_env: Env): Promise<Source[]> {
@@ -1547,6 +1636,18 @@ function validateSummarizeOutput(output: unknown, childId: string): SummarizeChi
  * written. Unlike `select-topic`'s #91 recount above, there is no spare
  * traded away or bought back here: the insert rides in the batch slot the
  * prune already had, at no incremental cost.
+ *
+ * **Recounted again 2026-09-04 (#111, the daily neuron guard), and this one
+ * also costs nothing - on the pessimal path it costs less.**
+ * `reclaimAndClaim`'s batch gains a fifth, fixed-shape `SELECT` summing
+ * today's `runs.neurons_spent` - still one subrequest per call, so
+ * `select-topic`'s term stays **3** and the **23 fixed** / **49 of 50
+ * pessimal** figures both stand unchanged. A run the guard skips is
+ * actually cheaper than a typical run, not more expensive: it returns
+ * before `claimRow` or `attachRunTopic` ever run, so that path's real cost
+ * is **1** subrequest for `select-topic` rather than 3, and
+ * `record-budget-skipped` costs whatever `record-no-topic` already cost -
+ * the same `recordOutcome` call, a different `status` string.
  */
 export async function createPublishChildren(env: Env, parentInstanceId: string, draft: Draft): Promise<string[]> {
   return createChildBatch(env.PUBLISH_WORKFLOW, [

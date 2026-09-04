@@ -856,6 +856,61 @@ describe('reclaimAndClaim()', () => {
       expect(result.coveredTopicTitles).toContain('some title');
     });
   });
+
+  // #111: the daily neuron guard's own read - the fifth statement in the
+  // same db.batch() call the tests above already exercise.
+  describe('dailyNeuronsSpent (#111)', () => {
+    it('is 0 when no runs have started today', async () => {
+      const result = await reclaimAndClaim(env.DB, 6, 'test-instance');
+      expect(result.dailyNeuronsSpent).toBe(0);
+    });
+
+    it("sums today's runs.neurons_spent across every status, not just succeeded", async () => {
+      for (const [instanceId, status, neurons] of [
+        ['run-succeeded', 'succeeded', 1600],
+        ['run-failed', 'failed', 900],
+        ['run-insufficient', 'insufficient_sources', 400],
+        ['run-no-topic', 'no_topic', 0],
+      ] as const) {
+        await env.DB
+          .prepare(`INSERT INTO runs (instance_id, status, neurons_spent) VALUES (?, ?, ?)`)
+          .bind(instanceId, status, neurons)
+          .run();
+      }
+
+      const result = await reclaimAndClaim(env.DB, 6, 'test-instance');
+
+      expect(result.dailyNeuronsSpent).toBe(1600 + 900 + 400 + 0);
+    });
+
+    it('excludes a run started before today (UTC), not just before 24h ago', async () => {
+      // A run started yesterday but well within the last 24h (23h ago) must
+      // not count - the boundary is the UTC calendar day
+      // (`started_at >= date('now')`), not a rolling window. Anchoring the
+      // fixture with a real 23h offset, rather than asserting against
+      // `date('now')` a second time, is what actually exercises the
+      // calendar-day boundary instead of restating it.
+      await env.DB
+        .prepare(
+          `INSERT INTO runs (instance_id, status, neurons_spent, started_at)
+           VALUES ('run-yesterday', 'succeeded', 5000, datetime('now', '-1 day', 'start of day', '+23 hours'))`,
+        )
+        .run();
+
+      const result = await reclaimAndClaim(env.DB, 6, 'test-instance');
+
+      expect(result.dailyNeuronsSpent).toBe(0);
+    });
+
+    it("includes the calling run's own row, contributing 0 since start-run always writes it at 0", async () => {
+      await startRun(env.DB, 'run-self-spend');
+      await env.DB.prepare(`INSERT INTO runs (instance_id, status, neurons_spent) VALUES ('run-other', 'succeeded', 750)`).run();
+
+      const result = await reclaimAndClaim(env.DB, 6, 'run-self-spend');
+
+      expect(result.dailyNeuronsSpent).toBe(750);
+    });
+  });
 });
 
 describe('recordRunSpend()', () => {
