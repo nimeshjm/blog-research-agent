@@ -620,7 +620,14 @@ const rows = [
     // scenario the sentinel minimum exists to catch.
     name: 'rename the tracerFor seam function (matcher stops resolving step-name calls)',
     expectFail: ['step-names-unique', 'step-names-static'],
-    expectPassStillGreen: ['span-attributes-allowlisted'], // 12 non-tracerFor-bound sites remain, still >= 8
+    // Verified 2026-09-04 (#109) after extending this row to a fifth file:
+    // `span-attributes-allowlisted` counts every `span.setAttribute(...)`
+    // call regardless of callee (unaffected by the rename) plus any attrs
+    // object literal reached through `traced`/`tracedStep`/a tracerFor-bound
+    // identifier - with all five files renamed that resolves 30 sites, not
+    // the "12" this comment previously stated (stale since before this file
+    // had a `propose-workflow.ts` to count at all). Still >= 8.
+    expectPassStillGreen: ['span-attributes-allowlisted'], // 30 sites remain, still >= 8
     // The rename doesn't create a duplicate or a bad template - it makes the
     // matcher stop resolving step-name calls at all (0 calls found), which
     // would otherwise mean an *empty* finding set and a false PASS. The FAIL
@@ -670,6 +677,19 @@ const rows = [
         "import { tracerForRenamed } from './lib/trace'",
       );
       mustReplace(dir, 'src/publish-workflow.ts', 'tracerFor(step, event)', 'tracerForRenamed(step, event)');
+      // Extended 2026-09-04 (#109): ProposeWorkflow is the fifth. Same failure
+      // mode, third occurrence - one file left calling the real `tracerFor`
+      // keeps `traceStep` in the global `tracerBoundNames` set, and every
+      // renamed file's own calls carry on resolving through it, so the
+      // sentinel never fires and this row passes while proving nothing. That
+      // is exactly what it did from #109 landing until this pair was added.
+      mustReplace(
+        dir,
+        'src/propose-workflow.ts',
+        "import { tracerFor } from './lib/trace'",
+        "import { tracerForRenamed } from './lib/trace'",
+      );
+      mustReplace(dir, 'src/propose-workflow.ts', 'tracerFor(step, event)', 'tracerForRenamed(step, event)');
     },
   },
   // -------------------------------------------------------------------------

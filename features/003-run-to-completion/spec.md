@@ -175,6 +175,29 @@ budget exhausted (10 + 9 + 4) is **46 of 50**, which fits where 29 + 10 + 9 woul
 have. Four spare is not margin, and is not meant to be — a run that reaches all three
 backstops has a worse problem than four subrequests.
 
+**Corrected 2026-09-04 ([#109](https://github.com/nimeshjm/blog-research-agent/issues/109)):
+the table above under-counted `start-run` by one, and this section's pessimal figure has
+been at the platform's ceiling since the day it was written.** The table's own
+parenthesised terms sum to 23 on their own — 3 + 0 + 2 + 13 + 1 + 1 + 1 + 2 — with
+`start-run` named in the first row's label but contributing nothing to that sum.
+`startRun` (`src/lib/d1.ts`) is unambiguously one `db.prepare().bind().run()` call, i.e.
+one subrequest (CLAUDE.md: "any D1 ... binding call"), so the true fixed total was
+**24**, not 23, and the true pessimal figure two paragraphs above was **47 of 50**, not
+46 — three spare, not four, and this is *before* requirement 4's narrowing (see that
+requirement's own dated correction) spends any of it.
+
+This was not found by a run failing. #109 discovered it while costing `selectTopic`'s
+propose branch fresh from the tree rather than reusing this table's own arithmetic — the
+propose branch had never been costed at all until then, because no run had ever taken it
+(criterion 2's five-run sequence below, and every run before it, drained the queue). It
+is a pre-existing omission this table carried from the day it was written, not something
+#109's own change caused; the parent has been running this whole time with three
+subrequests of margin against the ceiling rather than four, undiscovered because the
+pessimal path — every poll budget simultaneously exhausted — has never occurred. See
+`createPublishChildren`'s comment (`src/workflow.ts`) for the corrected figures carried
+forward, and for the propose path's own figures (#109), which this table never had a row
+for at all.
+
 **`shortlist`'s 13 is now the largest single term and the only one that follows the feed
 allowlist.** It was 4 at run `6f75e460`'s 264 candidates. The risk table below records it
 rather than tuning it, and the reason is unchanged: D1 caps a statement at 100 bound
@@ -474,7 +497,9 @@ are two of the five this section reports. Recorded as a divergence rather than b
      explicit **subrequest allowance** that keeps the parent's pessimal total inside 50.
      "Once per child" on its own bounds nothing useful, because nine children could each
      be replaced once; the allowance is what makes the ledger arithmetic in the design
-     section true, and at today's 46 pessimal it permits one replacement per run. The
+     section true, and at the design section's pessimal — 47, corrected 2026-09-04, #109;
+     see that section's dated finding — it permits one replacement per run, at an
+     allowance reduced the same day to 2 (see the dated correction below this list). The
      record of what has already been replaced travels in the poll step's **own output**,
      never a closure, because `run()` re-executes on replay (fact 2) — the same argument
      criterion 8's second extension already makes for the carried per-child outputs.
@@ -517,8 +542,47 @@ are two of the five this section reports. Recorded as a divergence rather than b
    still reported**, because the replacement is recorded in the step output and on the
    span; and a **replacement that also fails still fails the run**, so nothing is
    swallowed. What is genuinely conceded is *immediacy* — a run whose replacement also
-   fails now takes one or two extra poll rounds to say so. That cost is bounded by the
-   poll interval rather than open-ended, and it is the trade this narrowing makes.
+   fails now takes one extra poll round to say so (reduced from up to two, below). That
+   cost is bounded by the poll interval rather than open-ended, and it is the trade this
+   narrowing makes.
+
+   **Reduced 2026-09-04 ([#109](https://github.com/nimeshjm/blog-research-agent/issues/109)):
+   the allowance and its extra rounds both went down by one, and the capability survives
+   at the new floor.** `selectTopic`'s propose branch moved into its own child instance in
+   the same change (this spec's "Gather in child instances" pattern, extended a fourth
+   time), and that child's own poll loop needed 2 subrequests the parent's pessimal total
+   had no room for once the design section's `start-run` correction (above) was applied:
+   24 fixed + 10 (gather) + 9 (summarize) + this allowance's old 3 + 4 (publish) + 2
+   (propose) was 52 of 50 on the propose path. `SUMMARIZE_REPLACEMENT_SUBREQUEST_ALLOWANCE`
+   went 3 → 2 and `SUMMARIZE_REPLACEMENT_POLL_ROUNDS` (the extra rounds inside it) went
+   2 → 1, bringing both paths back under 50: queue-draining to **49 of 50** (the corrected
+   fixed total's own spare, traded for the allowance's cut — two corrections landing on
+   the same number for different reasons, not one cancelling the other by design) and
+   propose to **50 of 50**, none spare (accepted for now; widening that margin is filed as
+   a follow-up rather than done in #109).
+
+   `floor(2 / (1 + 1)) = 1`: the capability still buys **one replacement per run**,
+   unchanged. What changed is how many chances that one replacement gets to converge
+   before the round cap catches it — **one** poll at `SUMMARIZE_POLL_INTERVAL` (180 s),
+   not two. Whether that still catches run `54ce776b`'s own transient — the ~311 s
+   convergence this narrowing was originally sized against — has to be read off the same
+   numbers the design section already worked out, not assumed: that run's summarize
+   children were created at ~18:33:23 and the transient surfaced at 18:38:34, ~311 s in.
+   The replacement is created in the same round the original errors (itself within the
+   base cap), and its one granted round then polls it a further 180 s later — comfortably
+   past a **from-scratch** summarize child's own measured 62–122 s convergence, the same
+   window `SUMMARIZE_POLL_INTERVAL` was set against. So one round still catches it; what is
+   lost is only the *second* round of margin on top of that, not the fit to the run this
+   mechanism exists for.
+
+   This cut is defensible now in a way it would not have been when this requirement was
+   first narrowed, because criterion 2's five-run sequence (below) has since measured the
+   thing the risk table could previously only bound: **the replacement mechanism fired 0
+   times in 45 children.** It is live code that has never fired since the run it was
+   written for, and this reduces its own tolerance — not the run's — on a path that has
+   not been exercised even once. If it is ever exercised and the single granted round is
+   not enough, the honest next step is to widen the allowance again with a captured run
+   behind the number, the same way this one narrowed it without one.
 
    The reason this lands on requirement 4 rather than requirement 1 is a platform fact,
    stated under requirement 1: `step.do`'s retry configuration is chosen before the body
@@ -760,8 +824,12 @@ with what the measurement said:
   runtime. **Measured: the call resolves and the instance then sits in `queued` for ten
   minutes of polls with its `error` cleared.** Types were not the runtime.
 
-**The costing, against the parent's own ledger** — 23 fixed and 46 pessimal
-(`createPublishChildren`'s comment, `src/workflow.ts`), four spare. **The 46 only became
+**The costing, against the parent's own ledger** — 23 fixed and 46 pessimal at the time
+this was written (`createPublishChildren`'s comment, `src/workflow.ts`), four spare.
+**Both figures were themselves off by one** — corrected 2026-09-04 (#109); see the design
+section's dated finding above — because `start-run` was never actually in this running
+sum: the true figures were **24 fixed and 47 pessimal, three spare**, not four, before
+this narrowing's allowance is even added. **The 46 only became
 true on 2026-09-02**: `pollChildBatch`'s round cap counted the rounds *before* the one it
 throws in, and the throwing round has already spent one subrequest per pending child on
 the statuses it throws about — so the three poll budgets (10 + 9 + 4) were really costing
@@ -777,12 +845,24 @@ it at round 1 and leave rounds 2–4 for the replacement.
 
 | mechanism | create or restart | extra poll rounds | pessimal total |
 |---|---|---|---|
-| recreate (adopted) | 1 | 2, at 1 subrequest each — only the replacement is pending, which requirement 4's fifth clause makes a precondition rather than a hope | **49 of 50** |
+| recreate (adopted) | 1 | 2, at 1 subrequest each — only the replacement is pending, which requirement 4's fifth clause makes a precondition rather than a hope | **49 of 50** (figures as they stood on 2026-09-02; see below) |
 | restart (not adopted) | 1 | 1 | **48 of 50** |
 
+**This table is superseded, not merely stale, as of 2026-09-04 (#109).** With `start-run`
+correctly counted (24 fixed, not 23) the adopted row's pessimal was actually **50 of 50**
+the whole time this table stood — the ceiling itself, zero spare, through every run
+criterion 2 measured. And the mechanism the adopted row describes is no longer what the
+code implements: the extra poll rounds went 2 → 1 and the allowance 3 → 2 the same day,
+to make room for `selectTopic`'s own new propose-path child (requirement 4's own dated
+correction above has the full arithmetic and the argument for why one round still
+suffices). The adopted row today reads **1 extra poll round, 1 subrequest**, pessimal
+**49 of 50** on the queue-draining path and **50 of 50** on the propose path — not the "2"
+and "49" printed above, which describe a mechanism this build no longer runs.
+
 Both fit, and neither leaves room for a second replacement — which is why the bound in
-requirement 4 is stated in subrequests rather than as "once per child": at 46 pessimal the
-allowance buys one replacement per run. The extra rounds are genuinely extra rather than
+requirement 4 is stated in subrequests rather than as "once per child": at the corrected
+47 pessimal (see above) the allowance — now 2, not 3 — still buys one replacement per run.
+The extra rounds are genuinely extra rather than
 slack being reclaimed, because a child has to hang before it errors and by then the cap is
 mostly spent: this run hit `pollChildBatch`'s cap in the same round its child errored under
 the four-poll behaviour, and under the corrected three-poll cap at 180 s the ~311 s failure
@@ -790,6 +870,12 @@ is seen at round 1 with one round left. Whatever is left over is not two. If the
 parent's fixed cost grows — `shortlist` is the term that follows the allowlist, and it
 quadrupled in five days — this is the first thing that stops fitting, and the honest
 answer then is that the allowance goes rather than that the arithmetic is restated.
+
+**That is exactly what happened, 2026-09-04 (#109) — not because `shortlist` grew, but
+because the propose path's own new child needed the room instead.** The allowance went
+3 → 2, precisely the move this paragraph named in advance, on the strength of a different
+term growing: not `shortlist`, but a fourth poll loop this design did not anticipate
+because the propose path had never been costed until #109 costed it.
 
 **Not every child is equally safe to replace, and publication is the exception.** A
 summarize child writes nothing outside its own return value, so replacing one has no side
@@ -938,7 +1024,7 @@ margin rather than fitted to two data points.
 
 | risk | mitigation |
 |---|---|
-| **`shortlist` can exhaust the parent's invocation on its own, and nothing upstream stops it.** `findSeenUrls` chunks 100 URLs per D1 query; at `SHORTLIST_MAX_CANDIDATES`'s 4,000-row ceiling that is **40 queries — 40 subrequests — in the parent's invocation before a single child is polled.** Gather, summarize and (since 2026-09-01) publication all leaving the parent does not touch this. **Partly fired 2026-09-01 on run `0357f119`: 1,118 candidates, 13 subrequests in `shortlist`, and the parent died at `open-pull-request`.** | **Still not mitigated, and still deliberately not tuned — but no longer hypothetical.** The estimate this row was filed with (3 queries at run `6f75e460`'s 264 candidates) went stale in five days: `0357f119` gathered 1,118 and spent 13, and `shortlist` is now the largest single term in the parent's fixed cost. That did not kill the run on its own — 13 of 50 is not 40 — but it is what made the poll loops' 19 unaffordable, so the mitigations this run actually motivated are **cheaper polling** (`pollChildBatch`, and the wait-then-poll ordering in `run()`) and **publication in a child**, neither of them a change to `shortlist`. With both landed it is 13 of a fixed 23 - the largest term in the parent's bill, where it used to be one of several. **The 12 queries are a floor, not a knob:** D1 caps a prepared statement at 100 bound parameters, so the chunk size is the platform's and `findSeenUrls` cannot be tuned below `ceil(candidates / 100)` without a different dedupe strategy altogether. The number to watch is still candidates per run, and it quadrupled in five days; `findSeenUrls` throws rather than truncating past 50 chunks, so the ceiling itself stays loud. Recorded here so the next person to widen `GATHER_WINDOW_DAYS` — or to wonder why the parent's fixed cost moved — finds it. |
+| **`shortlist` can exhaust the parent's invocation on its own, and nothing upstream stops it.** `findSeenUrls` chunks 100 URLs per D1 query; at `SHORTLIST_MAX_CANDIDATES`'s 4,000-row ceiling that is **40 queries — 40 subrequests — in the parent's invocation before a single child is polled.** Gather, summarize and (since 2026-09-01) publication all leaving the parent does not touch this. **Partly fired 2026-09-01 on run `0357f119`: 1,118 candidates, 13 subrequests in `shortlist`, and the parent died at `open-pull-request`.** | **Still not mitigated, and still deliberately not tuned — but no longer hypothetical.** The estimate this row was filed with (3 queries at run `6f75e460`'s 264 candidates) went stale in five days: `0357f119` gathered 1,118 and spent 13, and `shortlist` is now the largest single term in the parent's fixed cost. That did not kill the run on its own — 13 of 50 is not 40 — but it is what made the poll loops' 19 unaffordable, so the mitigations this run actually motivated are **cheaper polling** (`pollChildBatch`, and the wait-then-poll ordering in `run()`) and **publication in a child**, neither of them a change to `shortlist`. With both landed it is 13 of a fixed 24 (corrected from 23, 2026-09-04, #109 - `start-run` was never actually counted; see the design section's dated finding) - the largest term in the parent's bill, where it used to be one of several. **The 12 queries are a floor, not a knob:** D1 caps a prepared statement at 100 bound parameters, so the chunk size is the platform's and `findSeenUrls` cannot be tuned below `ceil(candidates / 100)` without a different dedupe strategy altogether. The number to watch is still candidates per run, and it quadrupled in five days; `findSeenUrls` throws rather than truncating past 50 chunks, so the ceiling itself stays loud. Recorded here so the next person to widen `GATHER_WINDOW_DAYS` — or to wonder why the parent's fixed cost moved — finds it. |
 | **Two runs contradict each other about the CPU premise, and neither settles it.** On 2026-08-31 run `0199648c` parsed all **46 feeds in the parent's own steps** with no `1102`, and `FINDINGS.md` §7.1 measured a single `run()` execution absorbing 5x10^8 arithmetic iterations in one isolate with no boundary, twice — three survivals at that size across two builds (114, 149, 695 ms of wall for the burn) against deaths at 10^9 and above, on a **Free** account with `[limits]` set in neither `wrangler.toml`, which reads as an enforced ceiling above ~115 ms of arithmetic and below ~230 ms. This row previously concluded from that pair that the premise was dead. On 2026-09-01 run `bd33248b` then killed a gather **child** on its fourth feed with `Worker exceeded CPU time limit.`, 917 items already parsed in that invocation (`probe/captures/bd33248b-0fab-4abc-abce-92246a40b1b1-g0.txt`). Both cannot describe the same enforced ceiling, and fact 1 says the failure is non-deterministic, so neither run settles it alone. The candidate explanation is **volume**: cs.AI returned 352 items on 2026-08-27 and 783 on 2026-09-01, so the two runs were not parsing the same workload even though they were parsing the same 46 feeds. | **Not mitigated, and the contradiction is itself the finding — it is the evidence requirement 3's volume-balanced distribution is argued from.** Whatever the ceiling is, chunking that counts feeds while cost scales with items decides its own outcome by which chunk the heaviest feed lands in, and that holds on either reading of these two runs; the amendment therefore does not rest on `bd33248b` alone, which fact 1 forbids. The synthetic burn stays a bound rather than a CPU figure — a `Math.sqrt` loop does not transfer to `parseFeed`'s allocation and GC behaviour, which is exactly the gap the two real runs sit in. Neither `wrangler.toml` declares `[limits]`, so a per-script `cpu_ms` difference is ruled out; the account plan remains uninspectable from here. Criterion 2's five consecutive runs are what decide. |
 | ~~**A child instance is not a fresh subrequest budget either.**~~ **Closed 2026-08-31 by run `6f75e460`:** five gather children completed in 5-8 seconds and the parent, relieved of 46 feed fetches, summarised 14 articles where the previous run summarised 0. A child is a fresh budget. What remains open is narrower — whether the parent's residue (`shortlist`, `synthesize` and its poll loops) stays inside 50 now that gather, the articles *and* the pull request have all left it. That is arithmetic rather than inference: those are bounded and do not grow with the allowlist — but the resource in question changed on 2026-08-31. CPU is no longer what bites (`FINDINGS.md` §7.1, and run `0199648c` completed all 46 gathers with no `1102`); the 50-subrequest-per-invocation ceiling is. | Nothing measured it. It is adopted because it is the only remaining candidate with a mechanism story, and because `step.sleep` and retry are both measured *not* to be one. Criterion 2 is a repeated real run precisely because it is what decides — the same shape feature 002 used, and the same reason. If children do not help, the spec is wrong and the finding is worth as much as the fix would have been. |
 | **Free-tier limits on concurrent or daily Workflow instances are not recorded anywhere in this repo.** A design that creates ten instances per run may hit a ceiling nobody has cited. | `plan.md` must find and cite the number before choosing `GATHER_FEEDS_PER_CHILD`, and the design tolerates sequential children if concurrency is capped — children are independent, so running them one at a time costs wall-clock and nothing else. |

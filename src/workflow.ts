@@ -739,6 +739,16 @@ async function loadSources(_env: Env): Promise<Source[]> {
  * one, and any other cross-reference to "23 fixed" / "49 of 50" elsewhere in
  * this file is now stale by the same +1.
  *
+ * **Two more changes landed the same day, and neither moves a number
+ * above.** #108 gives every terminal `record-*` step a third statement in
+ * the `db.batch()` #100 already created for the `seen_urls` insert and the
+ * `run_candidates` prune - a topic-close `UPDATE` - so `record-success`'s
+ * term stays **2**. #111 adds a daily-neuron-guard read that rides a
+ * `db.batch()` which already existed, for the same reason - also free. Both
+ * are recorded here because a reader who cannot find them in this comment
+ * has no way to know they were considered rather than missed, which is
+ * exactly the failure mode `start-run` above is a case of.
+ *
  * **Pessimal totals, with every poll budget exhausted**
  * (`GATHER_POLL_SUBREQUEST_BUDGET` 10 + `SUMMARIZE_POLL_SUBREQUEST_BUDGET` 9 +
  * `SUMMARIZE_REPLACEMENT_SUBREQUEST_ALLOWANCE` + `PUBLISH_POLL_SUBREQUEST_BUDGET`
@@ -766,7 +776,11 @@ async function loadSources(_env: Env): Promise<Source[]> {
  *   plainly rather than rounding away - a run that reaches every backstop on
  *   this path at once has a worse problem than the last subrequest, the same
  *   argument `PUBLISH_POLL_SUBREQUEST_BUDGET`'s comment already makes about
- *   its own four spare.
+ *   its own four spare. Accepted for now rather than fixed here; widening it
+ *   is filed as [#114](https://github.com/nimeshjm/blog-research-agent/issues/114)
+ *   ("The propose path runs at exactly 50 of 50 subrequests: move `shortlist`
+ *   out of the parent, and make the ledger self-checking"), so a reader does
+ *   not have to wonder whether zero spare here was noticed rather than missed.
  *
  * Ids are deterministic (`${parentInstanceId}-x0`), the same replay argument
  * `createGatherChildren`'s own comment makes - `run()` re-executes from the
