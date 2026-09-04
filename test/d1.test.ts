@@ -14,6 +14,7 @@ import {
   recordRunSpend,
   SEEN_URLS_CHUNK_SIZE,
   startRun,
+  TOPIC_DEDUPE_TITLE_LIMIT,
   writeRunCandidates,
 } from '../src/lib/d1';
 import type { Candidate, Env } from '../src/lib/types';
@@ -75,7 +76,7 @@ describe('reclaimAndClaim() + claimRow() (queue draining)', () => {
       .bind('newer', null, '2026-08-20T00:00:00Z')
       .run();
 
-    const { row } = await reclaimAndClaim(env.DB, 6);
+    const { row } = await reclaimAndClaim(env.DB, 6, 'test-instance');
     const claimed = row === null ? null : await claimRow(env.DB, row);
 
     expect(claimed?.title).toBe('older');
@@ -95,9 +96,9 @@ describe('reclaimAndClaim() + claimRow() (queue draining)', () => {
       `INSERT INTO topics (title, angle, status, origin) VALUES ('only', NULL, 'queued', 'human')`,
     ).run();
 
-    const first = await reclaimAndClaim(env.DB, 6);
+    const first = await reclaimAndClaim(env.DB, 6, 'test-instance');
     const firstClaimed = first.row === null ? null : await claimRow(env.DB, first.row);
-    const second = await reclaimAndClaim(env.DB, 6);
+    const second = await reclaimAndClaim(env.DB, 6, 'test-instance');
 
     expect(firstClaimed?.status).toBe('in_progress');
     expect(second.row).toBeNull();
@@ -108,7 +109,7 @@ describe('reclaimAndClaim() + claimRow() (queue draining)', () => {
       `INSERT INTO topics (title, angle, status, origin) VALUES ('stampable', NULL, 'queued', 'human')`,
     ).run();
 
-    const { row } = await reclaimAndClaim(env.DB, 6);
+    const { row } = await reclaimAndClaim(env.DB, 6, 'test-instance');
     if (row !== null) await claimRow(env.DB, row);
 
     const persisted = await env.DB.prepare(`SELECT claimed_at FROM topics WHERE title = 'stampable'`).first<{
@@ -592,7 +593,7 @@ describe('reclaimAndClaim()', () => {
       .prepare(`INSERT INTO runs (instance_id, status, started_at) VALUES ('stranded-run', 'running', datetime('now', '-7 hours'))`)
       .run();
 
-    const result = await reclaimAndClaim(env.DB, 6);
+    const result = await reclaimAndClaim(env.DB, 6, 'test-instance');
 
     expect(result.reclaimedTopics).toBe(1);
     expect(result.strandedRuns).toBe(1);
@@ -622,7 +623,7 @@ describe('reclaimAndClaim()', () => {
       )
       .first<{ id: number }>();
 
-    const result = await reclaimAndClaim(env.DB, 6);
+    const result = await reclaimAndClaim(env.DB, 6, 'test-instance');
     expect(result.reclaimedTopics).toBe(0);
     expect(result.row).toBeNull(); // not returned to queued, so not selectable either
 
@@ -639,7 +640,7 @@ describe('reclaimAndClaim()', () => {
       )
       .first<{ id: number }>();
 
-    const result = await reclaimAndClaim(env.DB, 6);
+    const result = await reclaimAndClaim(env.DB, 6, 'test-instance');
     expect(result.reclaimedTopics).toBe(0);
 
     const row = await env.DB.prepare('SELECT status FROM topics WHERE id = ?').bind(insert?.id).first<{
@@ -656,7 +657,7 @@ describe('reclaimAndClaim()', () => {
       `INSERT INTO topics (title, angle, status, origin, created_at) VALUES ('newer', NULL, 'queued', 'human', '2026-08-20T00:00:00Z')`,
     ).run();
 
-    const result = await reclaimAndClaim(env.DB, 6);
+    const result = await reclaimAndClaim(env.DB, 6, 'test-instance');
 
     expect(result.reclaimedTopics).toBe(0);
     expect(result.strandedRuns).toBe(0);
@@ -668,14 +669,14 @@ describe('reclaimAndClaim()', () => {
   });
 
   it('returns a null row when the queue is empty', async () => {
-    const result = await reclaimAndClaim(env.DB, 6);
+    const result = await reclaimAndClaim(env.DB, 6, 'test-instance');
     expect(result.row).toBeNull();
   });
 
   it('never sweeps a runs row within the TTL (a live run is not marked failed)', async () => {
     await env.DB.prepare(`INSERT INTO runs (instance_id, status, started_at) VALUES ('live-run', 'running', datetime('now'))`).run();
 
-    const result = await reclaimAndClaim(env.DB, 6);
+    const result = await reclaimAndClaim(env.DB, 6, 'test-instance');
 
     expect(result.strandedRuns).toBe(0);
     const row = await env.DB.prepare('SELECT status FROM runs WHERE instance_id = ?').bind('live-run').first<{
@@ -694,12 +695,97 @@ describe('reclaimAndClaim()', () => {
       )
       .run();
 
-    await reclaimAndClaim(env.DB, 6);
+    await reclaimAndClaim(env.DB, 6, 'test-instance');
 
     const row = await env.DB.prepare('SELECT status FROM runs WHERE instance_id = ?').bind('done-run').first<{
       status: string;
     }>();
     expect(row?.status).toBe('succeeded');
+  });
+
+  // #104: coveredTopicTitles - the fourth statement in the same db.batch()
+  // call, so `proposeTopic` (src/workflow.ts) can dedupe against the
+  // agent's own past proposals at no extra subrequest.
+  describe('coveredTopicTitles (#104)', () => {
+    it('includes queued, in_progress and done titles but excludes rejected ones', async () => {
+      for (const [title, status] of [
+        ['queued title', 'queued'],
+        ['in-progress title', 'in_progress'],
+        ['done title', 'done'],
+        ['rejected title', 'rejected'],
+      ] as const) {
+        await env.DB
+          .prepare(`INSERT INTO topics (title, angle, status, origin) VALUES (?, NULL, ?, 'agent')`)
+          .bind(title, status)
+          .run();
+      }
+
+      const result = await reclaimAndClaim(env.DB, 6, 'test-instance');
+
+      expect(result.coveredTopicTitles).toEqual(
+        expect.arrayContaining(['queued title', 'in-progress title', 'done title']),
+      );
+      expect(result.coveredTopicTitles).not.toContain('rejected title');
+    });
+
+    it('returns at most TOPIC_DEDUPE_TITLE_LIMIT titles, newest first', async () => {
+      const total = TOPIC_DEDUPE_TITLE_LIMIT + 5;
+      const base = Date.UTC(2026, 0, 1);
+      const rows = Array.from({ length: total }, (_, i) => ({
+        title: `title-${i}`,
+        // Strictly increasing - title-(total-1) is newest.
+        createdAt: new Date(base + i * 1000).toISOString(),
+      }));
+
+      // Chunked INSERT...VALUES in one db.batch() call: D1 caps a query at
+      // 100 bound parameters (CLAUDE.md), and this repo's own convention
+      // (findSeenUrls, SEEN_URLS_CHUNK_SIZE) is to chunk rather than assume
+      // a bulk write fits in one statement.
+      const perStatement = 20;
+      const statements = [];
+      for (let i = 0; i < rows.length; i += perStatement) {
+        const chunk = rows.slice(i, i + perStatement);
+        const placeholders = chunk.map(() => '(?, NULL, ?, ?, ?)').join(', ');
+        const binds = chunk.flatMap((r) => [r.title, 'in_progress', 'agent', r.createdAt]);
+        statements.push(
+          env.DB.prepare(`INSERT INTO topics (title, angle, status, origin, created_at) VALUES ${placeholders}`).bind(...binds),
+        );
+      }
+      await env.DB.batch(statements);
+
+      const result = await reclaimAndClaim(env.DB, 6, 'test-instance');
+
+      expect(result.coveredTopicTitles).toHaveLength(TOPIC_DEDUPE_TITLE_LIMIT);
+      // Newest TOPIC_DEDUPE_TITLE_LIMIT titles, i.e. the oldest 5 (title-0..title-4) are dropped.
+      expect(result.coveredTopicTitles).not.toContain('title-0');
+      expect(result.coveredTopicTitles).not.toContain('title-4');
+      expect(result.coveredTopicTitles[0]).toBe(`title-${total - 1}`); // newest first
+      expect(result.coveredTopicTitles).toContain('title-5'); // oldest surviving title
+    });
+
+    it("excludes currentInstanceId's own already-linked topic, so a retried select-topic step does not self-reject its own deterministic proposal", async () => {
+      const own = await env.DB
+        .prepare(`INSERT INTO topics (title, angle, status, origin) VALUES ('my own proposal', NULL, 'in_progress', 'agent') RETURNING id`)
+        .first<{ id: number }>();
+      await env.DB
+        .prepare(`INSERT INTO topics (title, angle, status, origin) VALUES ('someone else entirely', NULL, 'in_progress', 'agent')`)
+        .run();
+      await startRun(env.DB, 'run-self');
+      await env.DB.prepare(`UPDATE runs SET topic_id = ? WHERE instance_id = 'run-self'`).bind(own?.id).run();
+
+      const result = await reclaimAndClaim(env.DB, 6, 'run-self');
+
+      expect(result.coveredTopicTitles).not.toContain('my own proposal');
+      expect(result.coveredTopicTitles).toContain('someone else entirely');
+    });
+
+    it('excludes nothing for an instance id with no linked topic (the exclusion is scoped, not a blanket exclude-everything)', async () => {
+      await env.DB.prepare(`INSERT INTO topics (title, angle, status, origin) VALUES ('some title', NULL, 'in_progress', 'agent')`).run();
+
+      const result = await reclaimAndClaim(env.DB, 6, 'an-instance-with-no-topic-linked');
+
+      expect(result.coveredTopicTitles).toContain('some title');
+    });
   });
 });
 

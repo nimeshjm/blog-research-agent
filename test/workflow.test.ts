@@ -1511,12 +1511,21 @@ describe('selectTopic()', () => {
       }),
     );
 
+    // start-run always precedes select-topic in the real pipeline (run() in
+    // src/workflow.ts) - required here since #104, so attachRunTopic's write
+    // has a runs row to land on and reclaimAndClaim's self-exclusion
+    // (coveredTopicTitles must not contain this same run's own proposal) has
+    // something to exclude against.
+    await startRun(env.DB, 'run-replay');
+
     const first = await selectTopic(env, 'run-replay', undefined);
     expect(first.topic?.title).toBe('Brand New Unrelated Topic Nobody Has Written About');
     expect(first.topic?.origin).toBe('agent');
     expect(first.topic?.status).toBe('in_progress');
 
-    // Replay: a retried select-topic step must recover the same row, not insert a second one.
+    // Replay: a retried select-topic step must recover the same row, not
+    // insert a second one, and must not reject its own deterministic
+    // proposal as "already covered" by itself (#104).
     const second = await selectTopic(env, 'run-replay', undefined);
     expect(second.topic?.id).toBe(first.topic?.id);
 
@@ -1544,6 +1553,44 @@ describe('selectTopic()', () => {
     );
 
     const result = await selectTopic(env, 'run-covered', undefined);
+    expect(result.topic).toBeNull();
+  });
+
+  // #104: end-to-end through the real D1 batch, not just proposeTopic() in
+  // isolation - proves reclaimAndClaim's fourth statement actually reaches
+  // proposeTopic through selectTopic. Reproduces PR #2 -> PR #3: #2's title
+  // is a `topics` row (origin: agent, status: in_progress - exactly what
+  // findOrProposeTopic leaves behind, and #104's design note on why `done`
+  // is never reached in practice), and the seed feed's only candidate is
+  // #3's near-duplicate. Without the fix this returns #3's title; the fixed
+  // behaviour returns null, matching "no genuinely uncovered candidate".
+  it('with an empty queue, a topics row from an earlier propose blocks a near-duplicate seed candidate (#104)', async () => {
+    const seed = loadFeeds()[0];
+    if (seed === undefined) throw new Error('no seed feed configured');
+
+    await env.DB
+      .prepare(
+        `INSERT INTO topics (title, angle, status, origin) VALUES (?, NULL, 'in_progress', 'agent')`,
+      )
+      .bind('Structure-Behavior Coalescence: A Unified Lens for System Design')
+      .run();
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === env.BLOG_FEED_URL) return new Response(rssFeed([]));
+        if (url.startsWith(env.GITHUB_API_BASE)) return jsonResponse(200, []);
+        if (url === seed.feedUrl) {
+          return new Response(
+            rssFeed([{ title: 'Structure-Behavior Coalescence: Rethinking System Design', url: 'https://seed.example/sbc-2' }]),
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    const result = await selectTopic(env, 'run-topics-dedupe', undefined);
     expect(result.topic).toBeNull();
   });
 
@@ -1741,7 +1788,7 @@ describe('proposeTopic()', () => {
       }),
     );
 
-    const result = await proposeTopic(env);
+    const result = await proposeTopic(env, []);
 
     expect(calls).toContain(env.BLOG_FEED_URL);
     expect(calls.some((c) => c.startsWith(env.GITHUB_API_BASE))).toBe(true);
@@ -1767,14 +1814,74 @@ describe('proposeTopic()', () => {
       }),
     );
 
-    const result = await proposeTopic(env);
+    const result = await proposeTopic(env, []);
     expect(result?.title).toBe('agentic infrastructure provisioning');
   });
 
   it('returns null when the blog feed cannot be fetched', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
-    const result = await proposeTopic(env);
+    const result = await proposeTopic(env, []);
     expect(result).toBeNull();
+  });
+
+  // #104: reproduces the observed case - blog PR #2's title landed in
+  // `topics` (origin: agent), and blog PR #3 was proposed two days later
+  // sharing four non-stopword tokens with it ("structure", "behavior",
+  // "coalescence", "system"), past DUPLICATE_TOKEN_THRESHOLD (2). Neither
+  // the published feed nor the repo directory listing sees an unmerged
+  // draft, so `coveredTopicTitles` - the third covered set - is the only
+  // thing that can catch this. Without the fix, this test fails: nothing
+  // else in `proposeTopic` rejects the near-duplicate.
+  it('rejects a seed candidate that overlaps a title in coveredTopicTitles, even though it is absent from the feed and the repo', async () => {
+    const seed = loadFeeds()[0];
+    if (seed === undefined) throw new Error('no seed feed configured');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === env.BLOG_FEED_URL) return new Response(rssFeed([]));
+        if (url.startsWith(env.GITHUB_API_BASE)) return jsonResponse(200, []);
+        if (url === seed.feedUrl) {
+          return new Response(
+            rssFeed([
+              {
+                title: 'Structure-Behavior Coalescence: Rethinking System Design',
+                url: 'https://seed.example/sbc-2',
+              },
+              { title: 'Genuinely Unrelated Topic', url: 'https://seed.example/unrelated' },
+            ]),
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    const result = await proposeTopic(env, ['Structure-Behavior Coalescence: A Unified Lens for System Design']);
+
+    // The near-duplicate of the topics-table title is skipped; the
+    // genuinely uncovered item is proposed instead.
+    expect(result?.title).toBe('Genuinely Unrelated Topic');
+  });
+
+  it(`does not reject a seed candidate sharing fewer than ${DUPLICATE_TOKEN_THRESHOLD} words with a coveredTopicTitles entry`, async () => {
+    const seed = loadFeeds()[0];
+    if (seed === undefined) throw new Error('no seed feed configured');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === env.BLOG_FEED_URL) return new Response(rssFeed([]));
+        if (url.startsWith(env.GITHUB_API_BASE)) return jsonResponse(200, []);
+        if (url === seed.feedUrl) {
+          // Shares only one meaningful word ("agentic") with the topics-table title.
+          return new Response(rssFeed([{ title: 'agentic infrastructure provisioning', url: 'https://seed.example/one-word' }]));
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    const result = await proposeTopic(env, ['agentic pull request review']);
+    expect(result?.title).toBe('agentic infrastructure provisioning');
   });
 });
 
