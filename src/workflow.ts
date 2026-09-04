@@ -10,7 +10,7 @@ import {
   reclaimAndClaim,
   recordRunOutcome,
   recordRunSpend,
-  recordSeenAndPrune,
+  recordSeenPruneAndCloseTopic,
   startRun,
 } from './lib/d1';
 import { fetchFeedItems } from './lib/feed-fetch';
@@ -245,6 +245,7 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
             topicId: topic.id,
             neuronsSpent,
             seen: shortlist,
+            closeTopic: 'rejected',
           });
         },
       );
@@ -369,6 +370,7 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
             topicId: topic.id,
             neuronsSpent,
             seen: shortlist,
+            closeTopic: 'rejected',
           });
         },
       );
@@ -442,6 +444,7 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
           neuronsSpent,
           prUrl,
           seen: shortlist,
+          closeTopic: 'done',
         });
       },
     );
@@ -1540,13 +1543,24 @@ function validateSummarizeOutput(output: unknown, childId: string): SummarizeChi
  * costs nothing.** Every terminal `record-*` step already made two D1 calls
  * - `recordRunOutcome` then the unbatched `pruneRunCandidates` - which is
  * what the **23 fixed**'s `record-success (2)` term above already counts.
- * `recordSeenAndPrune` (src/lib/d1.ts) replaces that second, unbatched call
- * with a `db.batch()` of the same prune plus the new `seen_urls` insert -
+ * `recordSeenAndPrune` (src/lib/d1.ts; renamed `recordSeenPruneAndCloseTopic`
+ * by #108, below) replaces that second, unbatched call with a `db.batch()`
+ * of the same prune plus the new `seen_urls` insert -
  * still one subrequest, so `record-success`'s term stays **2** and the
  * **23 fixed** / **49 of 50 pessimal** figures both stand exactly as
  * written. Unlike `select-topic`'s #91 recount above, there is no spare
  * traded away or bought back here: the insert rides in the batch slot the
  * prune already had, at no incremental cost.
+ *
+ * **Recounted again 2026-09-04 (#108, the topic-closing write), and this one
+ * also costs nothing.** The same function - renamed
+ * `recordSeenPruneAndCloseTopic` because it now does a third thing - adds a
+ * conditional `UPDATE topics` as a third statement in the same `db.batch()`
+ * call the paragraph above already counts as one subrequest.
+ * `record-success`'s term stays **2** and the **23 fixed** / **49 of 50
+ * pessimal** figures both stand exactly as written, for the same reason the
+ * `seen_urls` insert cost nothing: a third statement in an existing batch is
+ * free where a fourth, separate call would not be.
  */
 export async function createPublishChildren(env: Env, parentInstanceId: string, draft: Draft): Promise<string[]> {
   return createChildBatch(env.PUBLISH_WORKFLOW, [
@@ -1759,9 +1773,30 @@ async function recordOutcome(
     prUrl?: string | null;
     // The run's shortlist (spec.md req. 4, amended #100) - absent on the
     // record-no-topic path, where `shortlist` has not been computed yet.
-    // `recordSeenAndPrune` below treats a missing value the same as an
-    // empty one.
+    // `recordSeenPruneAndCloseTopic` below treats a missing value the same
+    // as an empty one.
     seen?: Candidate[];
+    // The topic's terminal state (#108) - absent exactly when `topicId` is,
+    // on the record-no-topic path, where there is no topic to close. Each
+    // call site below chooses explicitly rather than this function inferring
+    // one from `status`, so a future status added to `RunOutcome['status']`
+    // cannot silently pick a topic transition nobody decided on.
+    //
+    // **`done` for `succeeded`, `rejected` for `insufficient_sources` - not
+    // `queued`.** A run that published is finished with its topic outright.
+    // A run that found too few sources is tempting to read as "release it,
+    // the topic may be fine tomorrow" - but `queued` rows are drained oldest
+    // first (`reclaimAndClaim`'s `ORDER BY created_at ASC`), so a released
+    // topic is exactly the row the *next* run reaches first, and if the
+    // shortage is the topic itself rather than today's feeds, that run fails
+    // the same way and re-releases it: the daily version of the loop #108
+    // exists to close, not a fix for it. Closing to `rejected` instead
+    // removes it from that lookup (`WHERE status = 'queued'`) without
+    // burning the *title* - `rejected` is deliberately excluded from
+    // `reclaimAndClaim`'s covered-titles set (`src/lib/d1.ts`), so
+    // `proposeTopic` can still reintroduce the same idea later as a fresh
+    // row, the same second chance a human's explicit rejection already gets.
+    closeTopic?: 'done' | 'rejected';
   },
 ): Promise<void> {
   // INSERT ... ON CONFLICT(instance_id) DO UPDATE, keyed on the Workflow
@@ -1781,24 +1816,33 @@ async function recordOutcome(
   // req. 4, amended 2026-09-04 - #100). Every terminal path (record-no-topic,
   // record-no-sources, record-no-summaries, record-success) routes through
   // this function, so this covers all of them without a new step, and
-  // `recordSeenAndPrune` (src/lib/d1.ts) folds the insert into the prune's
-  // existing `db.batch()` call rather than spending a second subrequest -
-  // see that function's comment for the arithmetic and the idempotency
-  // argument, and `createPublishChildren`'s comment (this file) for why the
-  // parent's per-invocation subrequest bill is unchanged by this addition.
+  // `recordSeenPruneAndCloseTopic` (src/lib/d1.ts) folds both the seen-insert
+  // and the topic-close `UPDATE` into the prune's existing `db.batch()` call
+  // rather than spending a second or third subrequest - see that function's
+  // comment for the arithmetic and the idempotency argument, and
+  // `createPublishChildren`'s comment (this file) for why the parent's
+  // per-invocation subrequest bill is unchanged by either addition.
   //
   // The order matters and no test covers it: this runs *after* the outcome
-  // write, never before. Reversed, a failing insert or prune would fail the
-  // step before the row existed, and spec req. 10's "every run writes a runs
-  // row, including one that dies mid-step" would quietly become "unless this
-  // threw". Steps are not retried (tracedStep's zero-retry policy), but
-  // run() re-executes this whole function from the top on replay (spec.md
-  // fact 2) - this ordering is what makes that replay converge on the same
-  // rows rather than diverge: `recordRunOutcome`'s ON CONFLICT and this
-  // call's `INSERT OR IGNORE` both treat a row already written by an earlier
-  // attempt as a no-op rather than a conflict. Batching this call together
-  // with `recordRunOutcome` above, rather than keeping it separate, would
-  // trade that guarantee away: `db.batch()` is atomic, so a failing insert
-  // would then take the outcome row down with it.
-  await recordSeenAndPrune(env.DB, RUN_CANDIDATE_RETENTION_DAYS, outcome.seen ?? []);
+  // write, never before. Reversed, a failing insert, prune or topic-close
+  // would fail the step before the row existed, and spec req. 10's "every
+  // run writes a runs row, including one that dies mid-step" would quietly
+  // become "unless this threw". Steps are not retried (tracedStep's
+  // zero-retry policy), but run() re-executes this whole function from the
+  // top on replay (spec.md fact 2) - this ordering is what makes that replay
+  // converge on the same rows rather than diverge: `recordRunOutcome`'s ON
+  // CONFLICT and this call's `INSERT OR IGNORE` / conditional topic `UPDATE`
+  // all treat a row already written by an earlier attempt as a no-op rather
+  // than a conflict. Batching this call together with `recordRunOutcome`
+  // above, rather than keeping it separate, would trade that guarantee away:
+  // `db.batch()` is atomic, so a failing insert or topic-close would then
+  // take the outcome row down with it.
+  await recordSeenPruneAndCloseTopic(
+    env.DB,
+    RUN_CANDIDATE_RETENTION_DAYS,
+    outcome.seen ?? [],
+    outcome.topicId !== undefined && outcome.closeTopic !== undefined
+      ? { id: outcome.topicId, status: outcome.closeTopic }
+      : null,
+  );
 }
