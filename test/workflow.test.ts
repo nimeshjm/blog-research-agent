@@ -2075,4 +2075,111 @@ describe('ResearchWorkflow.run() publication in a child instance', () => {
     expect(row?.status).toBe('succeeded');
     expect(row?.pr_url).toBe(PR_URL);
   });
+
+  /**
+   * The writer this PR adds (spec.md req. 4, #100): `findSeenUrls` only ever
+   * reads `seen_urls`, and until now nothing in `src/` ever inserted into it
+   * - a real orchestration run, not a call to `recordSeenAndPrune` directly,
+   * is what proves `record-success` actually reaches that write, the way
+   * the pr_url test above proves it reaches `recordRunOutcome`. A test that
+   * merely called `recordSeenAndPrune` would pass whether or not `run()`
+   * ever threaded `shortlist` into it.
+   */
+  it('writes the run shortlist into seen_urls, not just the runs row', async () => {
+    await env.DB.prepare("INSERT INTO topics (id, title, status, origin) VALUES (1, 't', 'in_progress', 'human')").run();
+
+    await runOrchestration(
+      {
+        shortlist: [candidate({ url: 'https://example.com/one', sourceName: 'Source One' }), candidate({ url: 'https://example.com/two', sourceName: 'Source Two' })],
+      },
+      ['record-success'],
+    );
+
+    const rows = await env.DB.prepare('SELECT url, source FROM seen_urls ORDER BY url').all<{ url: string; source: string }>();
+    expect(rows.results).toEqual([
+      { url: 'https://example.com/one', source: 'Source One' },
+      { url: 'https://example.com/two', source: 'Source Two' },
+    ]);
+  });
+
+  /**
+   * `record-no-sources` fires before `synthesize` or `create-publish-children`
+   * ever run - the shortlist reached ranking but never inference. It still
+   * writes `seen_urls`, by this requirement's own "we have already
+   * considered this" definition (spec.md req. 4's amendment): the run
+   * considered these URLs even though it stopped short of reading them.
+   */
+  it('writes the shortlist into seen_urls even on the record-no-sources path, before any article is read', async () => {
+    await env.DB.prepare("INSERT INTO topics (id, title, status, origin) VALUES (1, 't', 'in_progress', 'human')").run();
+
+    await runOrchestration(
+      { shortlist: [candidate({ url: 'https://example.com/too-few' })] },
+      ['record-no-sources'],
+    );
+
+    const row = await env.DB.prepare('SELECT url FROM seen_urls WHERE url = ?')
+      .bind('https://example.com/too-few')
+      .first<{ url: string }>();
+    expect(row?.url).toBe('https://example.com/too-few');
+
+    const outcome = await env.DB.prepare('SELECT status FROM runs WHERE instance_id = ?')
+      .bind('parent-orchestration')
+      .first<{ status: string }>();
+    expect(outcome?.status).toBe('insufficient_sources');
+  });
+
+  /**
+   * `record-no-summaries` fires after every shortlisted article has been
+   * through a `SummarizeWorkflow` child, but before `synthesize` - the
+   * grounding gate (`isGrounded`, spec.md req. 5) rejected the round. Not
+   * "identical to record-no-sources" by inspection alone: this is a distinct
+   * call site behind a distinct gate, reached through the whole
+   * create/poll-summarize-children loop rather than short-circuited before
+   * it, and only a mutation run - not the shared shape of the two
+   * `recordOutcome` calls - can prove this one is not a dead site too.
+   */
+  it('writes the shortlist into seen_urls on the record-no-summaries path, after summarization fails the grounding gate', async () => {
+    await env.DB.prepare("INSERT INTO topics (id, title, status, origin) VALUES (1, 't', 'in_progress', 'human')").run();
+
+    await runOrchestration(
+      {
+        // >= MIN_SOURCES so this clears record-no-sources and actually
+        // reaches the summarize loop and the grounding gate below it.
+        shortlist: [candidate({ url: 'https://example.com/ungrounded-1' }), candidate({ url: 'https://example.com/ungrounded-2' })],
+        'await-summarize-children:0': {
+          done: true,
+          summaries: [summary({ attributablePractice: null }), summary({ attributablePractice: null })],
+          neuronsSpent: 11,
+        },
+      },
+      ['record-no-summaries'],
+    );
+
+    const rows = await env.DB.prepare('SELECT url FROM seen_urls ORDER BY url').all<{ url: string }>();
+    expect(rows.results.map((r) => r.url)).toEqual(['https://example.com/ungrounded-1', 'https://example.com/ungrounded-2']);
+
+    const outcome = await env.DB.prepare('SELECT status FROM runs WHERE instance_id = ?')
+      .bind('parent-orchestration')
+      .first<{ status: string }>();
+    expect(outcome?.status).toBe('insufficient_sources');
+  });
+
+  /**
+   * `record-no-topic` runs before `shortlist` is ever computed - `topic ===
+   * null` short-circuits `run()` ahead of that assignment. `recordOutcome`'s
+   * `seen` parameter is optional for exactly this path; this proves the
+   * absent-case default (`outcome.seen ?? []`) writes nothing, rather than
+   * something accidentally derived from a canned or stale value.
+   */
+  it('writes nothing to seen_urls on the record-no-topic path, where no shortlist exists yet', async () => {
+    await runOrchestration({ 'select-topic': null }, ['record-no-topic']);
+
+    const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM seen_urls').first<{ n: number }>();
+    expect(count?.n).toBe(0);
+
+    const outcome = await env.DB.prepare('SELECT status FROM runs WHERE instance_id = ?')
+      .bind('parent-orchestration')
+      .first<{ status: string }>();
+    expect(outcome?.status).toBe('no_topic');
+  });
 });

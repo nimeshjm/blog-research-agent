@@ -12,6 +12,7 @@ import {
   readSourceWeights,
   recordRunOutcome,
   recordRunSpend,
+  recordSeenAndPrune,
   SEEN_URLS_CHUNK_SIZE,
   startRun,
   writeRunCandidates,
@@ -522,6 +523,74 @@ describe('pruneRunCandidates()', () => {
 
     const rows = await env.DB.prepare('SELECT run_id FROM run_candidates').all<{ run_id: string }>();
     expect(rows.results.map((r) => r.run_id)).toEqual(['run-fresh']);
+  });
+});
+
+describe('recordSeenAndPrune()', () => {
+  // The actual writer this PR adds (spec.md req. 4, #100): findSeenUrls only
+  // ever reads seen_urls, and until this function existed nothing in src/
+  // ever inserted into it - only test fixtures did, by hand, which is why
+  // the dedupe filter had passing tests while being inert in production.
+  it('inserts every candidate passed as seen into seen_urls', async () => {
+    await recordSeenAndPrune(env.DB, 7, [
+      candidate({ url: 'https://example.com/a', title: 'A', sourceName: 'Source A' }),
+      candidate({ url: 'https://example.com/b', title: 'B', sourceName: 'Source B' }),
+    ]);
+
+    const rows = await env.DB.prepare('SELECT url, title, source FROM seen_urls ORDER BY url').all<{
+      url: string;
+      title: string;
+      source: string;
+    }>();
+    expect(rows.results).toEqual([
+      { url: 'https://example.com/a', title: 'A', source: 'Source A' },
+      { url: 'https://example.com/b', title: 'B', source: 'Source B' },
+    ]);
+  });
+
+  it('is idempotent under a replayed insert of the same URL (ON CONFLICT DO NOTHING)', async () => {
+    await recordSeenAndPrune(env.DB, 7, [candidate({ url: 'https://example.com/a', title: 'first' })]);
+    // A second attempt, as `run()`'s top-of-function replay (spec.md fact 2)
+    // would produce - same URL, and here a different title, to prove the
+    // original row is kept rather than overwritten or duplicated.
+    await recordSeenAndPrune(env.DB, 7, [candidate({ url: 'https://example.com/a', title: 'replayed' })]);
+
+    const rows = await env.DB.prepare('SELECT url, title FROM seen_urls WHERE url = ?')
+      .bind('https://example.com/a')
+      .all<{ url: string; title: string }>();
+    expect(rows.results).toEqual([{ url: 'https://example.com/a', title: 'first' }]);
+  });
+
+  it('writes nothing to seen_urls for an empty seen list, and still prunes', async () => {
+    await writeRunCandidates(env.DB, 'run-old', 'Source A', [candidate({ url: 'https://example.com/old' })]);
+    await env.DB.prepare(`UPDATE run_candidates SET created_at = datetime('now', '-30 days')`).run();
+
+    await recordSeenAndPrune(env.DB, 7, []);
+
+    const seen = await env.DB.prepare('SELECT COUNT(*) AS n FROM seen_urls').first<{ n: number }>();
+    expect(seen?.n).toBe(0);
+    const candidates = await env.DB.prepare('SELECT COUNT(*) AS n FROM run_candidates').first<{ n: number }>();
+    expect(candidates?.n).toBe(0);
+  });
+
+  it('costs exactly one subrequest (one db.batch() call), insert and prune together', async () => {
+    // `db.prepare()` builds a statement object without talking to D1 - the
+    // subrequest is the terminal call (`.batch()`, `.run()`, `.all()`,
+    // `.first()`), so only `batch` is counted here, not `prepare`
+    // (`createPublishChildren`'s comment, src/workflow.ts, is what this
+    // function's own doc comment says the count must not disturb).
+    let batchCount = 0;
+    const countingDb = {
+      prepare: (sql: string) => env.DB.prepare(sql),
+      batch: (statements: Parameters<D1Database['batch']>[0]) => {
+        batchCount++;
+        return env.DB.batch(statements);
+      },
+    } as D1Database;
+
+    await recordSeenAndPrune(countingDb, 7, [candidate({ url: 'https://example.com/a' })]);
+
+    expect(batchCount).toBe(1);
   });
 });
 
