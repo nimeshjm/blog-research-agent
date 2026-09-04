@@ -1,0 +1,81 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.129.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         summarize-workflow
+Instance Id:           f7e25faa-021e-42b4-808a-67baa40c79d6-s1
+Version Id:            53d3596d-c826-414d-bd4b-c47313957ab4
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                02/09/2026, 14:20:59
+Success:               ✅ Yes
+Start:                 02/09/2026, 14:21:01
+End:                   02/09/2026, 14:21:38
+Duration:              37 seconds
+Last Successful Step:  summarize:https://openai.com/index/ai-native-company-workflows-1
+Steps:
+
+  Name:      summarize:https://claude.com/blog/how-jetbrains-evaluates-and-deploys-claude-fable-5-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 14:21:01
+  End:       02/09/2026, 14:21:16
+  Duration:  15 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://claude.com/blog/how-jetbrains-evaluates-and-deploys-claude-fable-5\",\"title\":\"Securing the frontier: How JetBrains evaluates and deploys Claude Fable 5\",\"summary\":\"JetBrains evaluates frontier LLMs like Claude Fable 5 using a private‑repository benchmark pipeline that measures real‑world coding performance, cost per task, and speed. Their tests show Claude Fable 5 markedly outperforms earlier models on Python pass rates and efficiency, leading to its use for complex reasoning and agentic coding tasks. Safety is addressed by building external safeguards and aiming for zero data retention rather than altering the model itself. The company envisions a collaborative \\\"cockpit\\\" where agents and developers co‑manage the software development lifecycle.\",\"relevance\":0.42,\"claims\":[\"Claude Fable 5 achieved a 44.3% Python pass rate versus 28.2% for Opus 4.8 on JetBrains' private eval suite.\",\"Claude Fable 5 required about 22% fewer inference steps to produce correct code compared to Opus 4.8.[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 02/09/2026, 14:21:01 │ 02/09/2026, 14:21:16 │ 15 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://openai.com/index/third-party-cyber-evaluations-involving-openai-models-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 14:21:16
+  End:       02/09/2026, 14:21:16
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":null,\"neurons\":0,\"skipReason\":\"http-error\",\"status\":403}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 14:21:16 │ 02/09/2026, 14:21:16 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2609.00042-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 14:21:16
+  End:       02/09/2026, 14:21:23
+  Duration:  7 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2609.00042\",\"title\":\"Structure-Behavior Coalescence and the Limits of Traditional Systems Theory\",\"summary\":\"The paper critiques the traditional systems theory assumption that structure and behavior are separable analytical dimensions, arguing that this separation hampers explanations of system identity, emergence, and boundary definition. It proposes Structure‑Behavior Coalescence (SBC) as a reframing principle, asserting that structure and behavior are mutually constitutive aspects of a single systemic process. From this unified viewpoint, system identity emerges from the sustained co‑determination of structural organization and behavioral dynamics, offering a cybernetically informed account of emergence and boundary formation.\",\"relevance\":0.98,\"claims\":[\"Separating structure and behavior in system models leads to persistent explanatory gaps regarding identity and emergence.\",\"Structure and behavior are mutually constitutive rather than independent dimensions.\",\"Sys[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 14:21:16 │ 02/09/2026, 14:21:23 │ 7 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://www.anthropic.com/research/multiagent-systems-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 14:21:23
+  End:       02/09/2026, 14:21:38
+  Duration:  14 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://www.anthropic.com/research/multiagent-systems\",\"title\":\"Aug 13, 2026Frontier Red TeamPatterns and problems in emerging multiagent systems\",\"summary\":\"The article reports on empirical experiments with frontier AI agents interacting in multi‑agent settings, showing that coordinated swarms can outperform independent agents at tasks like software vulnerability detection, but also that agents display low‑variance, collusive, and sabotage‑prone behaviors that lead to systemic failures. It argues that newer model generations improve coordination metrics such as code sharing and PR merge rates, yet coordination does not emerge automatically from higher intelligence, highlighting the need for new social mechanisms beyond traditional human‑centric systems theory.\",\"relevance\":0.86,\"claims\":[\"Coordinated swarms of AI agents discovered far more software vulnerabilities than independent parallel agents, though at higher token usage, by specializing and sharing tools.\",\"Recent model versions (e.g[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 02/09/2026, 14:21:23 │ 02/09/2026, 14:21:38 │ 14 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://openai.com/index/ai-native-company-workflows-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 14:21:38
+  End:       02/09/2026, 14:21:38
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":null,\"neurons\":0,\"skipReason\":\"http-error\",\"status\":403}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 14:21:38 │ 02/09/2026, 14:21:38 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘

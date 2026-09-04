@@ -814,6 +814,16 @@ five consecutive runs now carry two unquantified failure terms rather than one.
 
 ### 12. Five runs, and the record — PR 12
 
+**Shipped 2026-09-04 with `M` held at 12**, the first work-order step in this build that
+did not revise it. `wrangler.toml` is untouched: `GATHER_FEEDS_PER_CHILD = 10` and
+`SUMMARIZE_ARTICLES_PER_CHILD = 5` carried all five runs, so the "if step 10 tunes them"
+row in the PR 12 table above went unused. The step did turn up a finding — source tiers
+moved the shortlist onto domains that 403 the Worker
+([#106](https://github.com/nimeshjm/blog-research-agent/issues/106)) — and for once it
+became an issue rather than a thirteenth PR, because it is a fault in a step this feature
+does not move. That is the distinction the seven previous revisions were each missing.
+
+
 Deploy, then trigger five runs **consecutively**, each to a terminal state, capturing
 `wrangler workflows instances describe` for the parent and at least one child of each.
 Commit all captures.

@@ -1,0 +1,81 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.129.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         summarize-workflow
+Instance Id:           272de7b2-eb4f-42b2-96fc-caac6d75f33c-s2
+Version Id:            57d517a6-25a4-458c-ad8a-7e9c78719d76
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                02/09/2026, 11:08:04
+Success:               ✅ Yes
+Start:                 02/09/2026, 11:08:07
+End:                   02/09/2026, 11:08:59
+Duration:              52 seconds
+Last Successful Step:  summarize:https://arxiv.org/abs/2607.19011-1
+Steps:
+
+  Name:      summarize:https://arxiv.org/abs/2605.28700-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 11:08:07
+  End:       02/09/2026, 11:08:18
+  Duration:  11 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2605.28700\",\"title\":\"The Importance of Being Statistically Earnest: A Critical Re-evaluation of GSM-Symbolic\",\"summary\":\"The paper re‑examines the GSM‑Symbolic benchmark, showing that its claim of widespread reasoning failure in large language models rests on weak statistical evidence. Using bootstrapped Generalised Linear Mixed Models with per‑question random effects, the authors find that only a minority of models exhibit significant performance changes, and that a systematic shift toward larger integers in the benchmark data accounts for many of the observed drops. They further uncover distinct, model‑specific behavioral failure modes, arguing that blanket statements about LLM reasoning are both statistically premature and mechanistically misleading.\",\"relevance\":0.45,\"claims\":[\"The original GSM‑Symbolic benchmark overstates LLM reasoning deficits due to inadequate statistical analysis.\",\"Only 8 out of 20 evaluated open‑weight models show statistically significant p[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 02/09/2026, 11:08:07 │ 02/09/2026, 11:08:18 │ 11 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2606.02010-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 11:08:18
+  End:       02/09/2026, 11:08:29
+  Duration:  11 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2606.02010\",\"title\":\"PlanarBench: Evaluating LLM Spatial Reasoning via Planar Graph Drawing\",\"summary\":\"The authors introduce PlanarBench, a benchmark that asks large language models to generate crossing‑free ASCII drawings of planar graphs from edge lists, enabling a controlled study of spatial reasoning difficulty. Their analysis of 91 model configurations on 199 non‑isomorphic planar graphs shows that the number of edges (constraints) predicts task performance far better than the number of vertices, and that output length or drawing area do not explain the scores. Performance varies widely, with the top model achieving 159.5/199 while most sub‑30B models score below 25.\",\"relevance\":0.42,\"claims\":[\"Edge count correlates more strongly with task difficulty than vertex count (r = -0.85 vs -0.47).\",\"Controlling for vertex count, edge count remains a strong predictor (partial r = -0.80).\",\"Drawing area and total response length show no meaningful correlation with scores.[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 02/09/2026, 11:08:18 │ 02/09/2026, 11:08:29 │ 11 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2606.12708-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 11:08:29
+  End:       02/09/2026, 11:08:39
+  Duration:  10 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2606.12708\",\"title\":\"AfriSUD: A Dependency Treebank Collection for Evaluating Models on African Languages\",\"summary\":\"The authors introduce AfriSUD, a large‑scale collection of Surface‑Syntactic Universal Dependencies treebanks for nine typologically diverse African languages, created with native‑speaker verification and capturing features such as agglutination and tone. Benchmarking POS tagging and dependency parsing across non‑transformer baselines, multilingual pretrained encoders, and large language models reveals a pronounced syntax gap, indicating that current architectures struggle to model the structural diversity of these languages.\",\"relevance\":0.3,\"claims\":[\"AfriSUD is the first large‑scale SUD‑based dependency treebank collection covering nine African languages.\",\"The dataset is high‑quality, native‑speaker verified, and captures typological features like agglutination and tone.\",\"Evaluation of various models shows a significant syntax gap, with poor perfor[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 02/09/2026, 11:08:29 │ 02/09/2026, 11:08:39 │ 10 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2607.10628-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 11:08:39
+  End:       02/09/2026, 11:08:50
+  Duration:  11 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2607.10628\",\"title\":\"Anamnesis: An Open-Source Platform for Large-Scale Backstory-Conditioned Survey Simulation\",\"summary\":\"The paper introduces Anamnesis, an open‑source web platform that uses large language models conditioned on structured narrative backstories to simulate survey responses across controllable demographic profiles. By implementing the Anthology and Alterity frameworks, it allows non‑technical researchers to generate open‑ended, multimodal survey data and to resample demographics probabilistically. Two case studies—replicating Pew’s American Trends Panel and the New Yorker Caption Contest—show that Anamnesis yields opinion distributions closer to real‑world data than conventional persona‑prompting methods.\",\"relevance\":0.42,\"claims\":[\"Anamnesis enables demographically controllable survey simulation using LLMs conditioned on structured backstories.\",\"In case studies, the platform produces opinion distributions that better match real survey data than sta[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 02/09/2026, 11:08:39 │ 02/09/2026, 11:08:50 │ 11 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2607.19011-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 11:08:50
+  End:       02/09/2026, 11:08:59
+  Duration:  9 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2607.19011\",\"title\":\"Computational Humor with Multimodal LLMs: Methods, Datasets, Evaluation, and Challenges\",\"summary\":\"The paper surveys recent work on multimodal large language models (LLMs) for understanding and generating visual humor in memes, cartoons, and comics. It organizes the literature by capabilities—recognition, interpretation, reasoning, and generation—while highlighting benchmark design, evaluation protocols, and a methodological shift toward multimodal alignment and evidence‑grounded reasoning. The authors also discuss major challenges such as shortcut‑prone evaluation, limited cultural coverage, weak grounding, and safety concerns.\",\"relevance\":0.15,\"claims\":[\"Visual humor understanding requires non‑literal reasoning, cultural knowledge, and intent beyond literal scene description.\",\"The field is moving from task‑specific fusion models to large multimodal models that use alignment and evidence‑grounded reasoning.\",\"Current benchmarks suffer from shor[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 11:08:50 │ 02/09/2026, 11:08:59 │ 9 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘

@@ -1,0 +1,81 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.129.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         summarize-workflow
+Instance Id:           0cb65ed4-40d2-4751-8d4d-3f29aaf1df3b-s1
+Version Id:            5847e416-8cd2-46a7-a48e-cb89ec1004bd
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                04/09/2026, 07:00:53
+Success:               ✅ Yes
+Start:                 04/09/2026, 07:00:55
+End:                   04/09/2026, 07:01:49
+Duration:              54 seconds
+Last Successful Step:  summarize:https://claude.com/blog/how-warp-builds-self-improving-agents-on-claude-1
+Steps:
+
+  Name:      summarize:https://www.anthropic.com/research/Claude-accelerates-protein-design-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:00:55
+  End:       04/09/2026, 07:01:03
+  Duration:  8 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://www.anthropic.com/research/Claude-accelerates-protein-design\",\"title\":\"ScienceAug 18, 2026How Claude is accelerating protein design and analytical chemistryIn this post, we share two results that show how Claude can help life scientists increase the pace of their research.\",\"summary\":\"The article reports that Anthropic's Claude AI models can autonomously design protein binders for 15 targets, achieving hit rates of 22-35%—significantly higher than typical human-led campaigns—and can process raw NMR and LC‑MS data to produce accurate analytical reports within minutes. These results were obtained with minimal human intervention, using Claude to orchestrate specialized protein‑design models, run GPU‑intensive computations, and interpret complex instrument files.\",\"relevance\":0.1,\"claims\":[\"Claude designed successful protein binders for 14 of 15 targets, with hit rates up to 35%.\",\"Some Claude‑generated binders exhibited higher affinity than the best previously published results.\",\"Clau[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 04/09/2026, 07:00:55 │ 04/09/2026, 07:01:03 │ 8 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://claude.com/blog/how-jetbrains-evaluates-and-deploys-claude-fable-5-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:01:03
+  End:       04/09/2026, 07:01:13
+  Duration:  10 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://claude.com/blog/how-jetbrains-evaluates-and-deploys-claude-fable-5\",\"title\":\"Securing the frontier: How JetBrains evaluates and deploys Claude Fable 5\",\"summary\":\"JetBrains’ CTO explains how the company evaluates frontier LLMs like Claude Fable 5 on private codebases, finding it more accurate and efficient than prior models for complex coding tasks. The team deploys the model as a coding agent for long‑running, specification‑driven projects while implementing strict safety and minimal data‑retention practices.\",\"relevance\":0.25,\"claims\":[\"JetBrains runs large evaluation pipelines on its private monorepo to benchmark LLMs on real coding tasks.\",\"Claude Fable 5 achieved a 44.3% Python pass rate, a 16‑point improvement over Opus 4.8.\",\"The model is used for long‑running, agentic coding experiments such as implementing IDE‑like applications from text and image specifications.\",\"JetBrains relies on Anthropic’s red‑team safety work and adds its own infrastructure safeguards, aiming for ne[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 04/09/2026, 07:01:03 │ 04/09/2026, 07:01:13 │ 10 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://claude.com/blog/claude-for-commerce-agents-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:01:13
+  End:       04/09/2026, 07:01:25
+  Duration:  12 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://claude.com/blog/claude-for-commerce-agents\",\"title\":\"Building commerce agents with Claude\",\"summary\":\"Anthropic announced a commerce‑agent blueprint for Claude that lets engineering teams build shopping and merchant agents in days, with reference implementations for retail, travel, telecom and ticketing. The agents can search catalogs, assemble multi‑item carts, personalize recommendations and handle customer‑service queries, while merchant agents provide analytics, inventory alerts and pricing suggestions. Retailers using these agents report up to 35% larger carts and a 60% increase in purchase completion. The blueprint includes guardrails to keep suggestions within catalog data and avoid manipulative upsells.\",\"relevance\":0.05,\"claims\":[\"Retailers using Claude shopping agents see carts up to 35% larger and 60% higher purchase completion.\",\"The commerce‑agent blueprint enables building functional agents in days with reference implementations.\",\"Shopping agents can search catalogs, [truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 04/09/2026, 07:01:13 │ 04/09/2026, 07:01:25 │ 12 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://claude.com/blog/the-anatomy-of-effective-commerce-agents-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:01:25
+  End:       04/09/2026, 07:01:34
+  Duration:  9 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://claude.com/blog/the-anatomy-of-effective-commerce-agents\",\"title\":\"A guide to the anatomy of effective commerce agents\",\"summary\":\"The article outlines how to build and operate commerce agents using Claude, covering architecture (single-agent with modular skills), latency and cost optimization (prompt caching, parallel tool calls), and production concerns (persistent memory, safety enforcement, and evaluation). It emphasizes using a single agent loop with skill-based modularity rather than sub‑agents, and provides practical engineering guidelines for fast, reliable deployment.\",\"relevance\":0.05,\"claims\":[\"A single-agent architecture with skills outperforms sub‑agent designs in quality, cost, and latency.\",\"Prompt caching can achieve 90–99% cache hit rates, dramatically reducing token costs and latency.\",\"Parallel tool execution and loading likely context up‑front reduce task‑completion turns and latency.\",\"Memory for agents should be stored outside the model in a database and access[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 04/09/2026, 07:01:25 │ 04/09/2026, 07:01:34 │ 9 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://claude.com/blog/how-warp-builds-self-improving-agents-on-claude-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:01:34
+  End:       04/09/2026, 07:01:49
+  Duration:  15 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://claude.com/blog/how-warp-builds-self-improving-agents-on-claude\",\"title\":\"How Warp builds self-improving agents on Claude\",\"summary\":\"Warp built a self‑improving agent architecture on Claude by separating agent knowledge into plain‑text skill files that are updated through regular GitHub pull‑request workflows. Human feedback is captured in situ, aggregated by an outer improver skill, and used to propose small edits to the base skill, allowing agents to continuously refine their behavior across tasks like code review and issue triage.\",\"relevance\":0.2,\"claims\":[\"Agent feedback is lost after a session, so Warp introduced a persistent self‑improvement loop using file‑based skills.\",\"Skills are stored as plain files that can be reviewed, approved, and merged via standard PR workflows.\",\"Detailed human feedback captured directly on PRs or issues drives precise skill updates.\",\"An outer improver skill runs on a schedule, aggregates feedback, and proposes minimal edits to the base skill.\"[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 04/09/2026, 07:01:34 │ 04/09/2026, 07:01:49 │ 15 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
