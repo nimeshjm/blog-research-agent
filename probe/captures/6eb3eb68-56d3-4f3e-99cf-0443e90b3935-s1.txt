@@ -1,0 +1,81 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.129.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         summarize-workflow
+Instance Id:           6eb3eb68-56d3-4f3e-99cf-0443e90b3935-s1
+Version Id:            5847e416-8cd2-46a7-a48e-cb89ec1004bd
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                03/09/2026, 07:01:42
+Success:               ✅ Yes
+Start:                 03/09/2026, 07:01:46
+End:                   03/09/2026, 07:02:16
+Duration:              29 seconds
+Last Successful Step:  summarize:https://claude.com/blog/the-anatomy-of-effective-commerce-agents-1
+Steps:
+
+  Name:      summarize:https://www.anthropic.com/research/Claude-accelerates-protein-design-1
+  Type:      🎯 Step
+  Start:     03/09/2026, 07:01:47
+  End:       03/09/2026, 07:01:57
+  Duration:  11 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://www.anthropic.com/research/Claude-accelerates-protein-design\",\"title\":\"ScienceAug 18, 2026How Claude is accelerating protein design and analytical chemistryIn this post, we share two results that show how Claude can help life scientists increase the pace of their research.\",\"summary\":\"The article reports that Anthropic's Claude AI models can autonomously design protein binders with hit rates of 22-35%, surpassing typical human-led campaigns, and can process raw NMR and LC‑MS data into complete analytical reports within minutes, matching lab results. These achievements were realized with minimal human intervention, leveraging Claude's ability to orchestrate specialized computational tools and access external resources.\",\"relevance\":0.1,\"claims\":[\"Claude designed successful protein binders for 14 out of 15 targets, achieving hit rates up to 35%.\",\"Claude's protein designs included high‑affinity binders and β‑sheet‑rich structures.\",\"Claude processed raw NMR and LC‑MS files into accura[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 03/09/2026, 07:01:47 │ 03/09/2026, 07:01:57 │ 11 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://claude.com/blog/how-jetbrains-evaluates-and-deploys-claude-fable-5-1
+  Type:      🎯 Step
+  Start:     03/09/2026, 07:01:57
+  End:       03/09/2026, 07:02:05
+  Duration:  8 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://claude.com/blog/how-jetbrains-evaluates-and-deploys-claude-fable-5\",\"title\":\"Securing the frontier: How JetBrains evaluates and deploys Claude Fable 5\",\"summary\":\"JetBrains evaluates frontier LLMs like Claude Fable 5 by running large test suites on its private codebases, measuring pass rates, efficiency and cost per task. Their findings show Claude Fable 5 outperforms previous models on Python and Java tasks while requiring fewer inference steps. The company deploys the model in agentic coding workflows, such as long‑running IDE‑style code generation and cross‑runtime rewrites, and emphasizes minimal data retention with safety reviews only for serious incidents.\",\"relevance\":0.2,\"claims\":[\"Claude Fable 5 achieved a 44.3% Python pass rate versus 28.2% for Opus 4.8.\",\"Claude Fable 5 required about 22% fewer inference steps than Opus 4.8 to reach a solution.\",\"JetBrains uses a private‑repository evaluation pipeline and maintains leaderboards for quality, cost, and speed when selecting [truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 03/09/2026, 07:01:57 │ 03/09/2026, 07:02:05 │ 8 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://openai.com/index/third-party-cyber-evaluations-involving-openai-models-1
+  Type:      🎯 Step
+  Start:     03/09/2026, 07:02:05
+  End:       03/09/2026, 07:02:05
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":null,\"neurons\":0,\"skipReason\":\"http-error\",\"status\":403}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 03/09/2026, 07:02:05 │ 03/09/2026, 07:02:05 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://claude.com/blog/claude-for-commerce-agents-1
+  Type:      🎯 Step
+  Start:     03/09/2026, 07:02:05
+  End:       03/09/2026, 07:02:09
+  Duration:  4 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://claude.com/blog/claude-for-commerce-agents\",\"title\":\"Building commerce agents with Claude\",\"summary\":\"Anthropic announced a blueprint for building commerce agents on Claude, providing reference implementations for shopping and merchant agents that integrate with catalogs, carts, and analytics. Early deployments by large retailers report up to 35% larger carts and a 60% increase in purchase completion, with the blueprint promising rapid development using Claude's API, Agent SDK, or Managed Agents.\",\"relevance\":0.05,\"claims\":[\"Retailers using Claude agents see carts up to 35% larger.\",\"Shoppers are 60% more likely to complete a purchase with Claude agents.\",\"The commerce blueprint enables a functional shopping or merchant agent to be built in days.\",\"Agents can perform catalog search, multi‑item planning, personalization, and in‑conversation UI while respecting guardrails.\",\"Engineering teams report getting the blueprint running locally in under an hour.\"],\"attributablePractice\":null}[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 03/09/2026, 07:02:05 │ 03/09/2026, 07:02:09 │ 4 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://claude.com/blog/the-anatomy-of-effective-commerce-agents-1
+  Type:      🎯 Step
+  Start:     03/09/2026, 07:02:09
+  End:       03/09/2026, 07:02:16
+  Duration:  7 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://claude.com/blog/the-anatomy-of-effective-commerce-agents\",\"title\":\"A guide to the anatomy of effective commerce agents\",\"summary\":\"The article outlines a reference architecture for building commerce agents with Claude, emphasizing a single-agent loop augmented by modular skills and tools rather than a hierarchy of subagents. It discusses techniques for reducing latency and cost, such as prompt caching, parallel tool calls, and model selection, and provides guidance on production concerns like persistent memory, safety enforcement, and evaluation. The authors share practical patterns and a blueprint repository to help engineering teams deploy these agents quickly.\",\"relevance\":0.05,\"claims\":[\"A single-agent with skills outperforms subagent architectures in quality, latency, and cost.\",\"Prompt caching can achieve 90–99% cache hit rates, dramatically reducing token costs.\",\"Parallel tool execution and loading context up front reduce task completion latency.\",\"Memory should be stored in[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 03/09/2026, 07:02:09 │ 03/09/2026, 07:02:16 │ 7 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘

@@ -1,0 +1,81 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.129.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         summarize-workflow
+Instance Id:           272de7b2-eb4f-42b2-96fc-caac6d75f33c-s0
+Version Id:            57d517a6-25a4-458c-ad8a-7e9c78719d76
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                02/09/2026, 11:08:04
+Success:               ✅ Yes
+Start:                 02/09/2026, 11:08:06
+End:                   02/09/2026, 11:08:59
+Duration:              53 seconds
+Last Successful Step:  summarize:https://arxiv.org/abs/2507.12674-1
+Steps:
+
+  Name:      summarize:https://arxiv.org/abs/2609.00042-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 11:08:06
+  End:       02/09/2026, 11:08:16
+  Duration:  10 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2609.00042\",\"title\":\"Structure-Behavior Coalescence and the Limits of Traditional Systems Theory\",\"summary\":\"The paper critiques the traditional systems theory assumption that structure and behavior can be analyzed separately, arguing that this separation undermines explanations of system identity, emergence, and boundary formation. It introduces Structure-Behavior Coalescence (SBC), a principle that treats structure and behavior as mutually constitutive aspects of a single systemic process, offering a unified cybernetic perspective on how systems maintain identity and generate emergent properties.\",\"relevance\":1,\"claims\":[\"Traditional systems theory mistakenly separates structure and behavior as independent analytical dimensions.\",\"The separation impedes clear explanations of system identity, emergence, and boundary specification.\",\"Structure-Behavior Coalescence (SBC) posits that structure and behavior are mutually constitutive within a single process.\",\"System ident[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 02/09/2026, 11:08:06 │ 02/09/2026, 11:08:16 │ 10 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2609.00043-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 11:08:16
+  End:       02/09/2026, 11:08:24
+  Duration:  8 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2609.00043\",\"title\":\"What Is a System? An Interaction-Based Account of Structure-Behavior Coalescence in General Systems Theory\",\"summary\":\"The paper introduces Structure-Behavior Coalescence (SBC) as an interaction‑centric definition of a system, arguing that structure and behavior are inseparable and emerge together through the interactions among constituent entities. It develops a unified representation that links structural relationships to behavioral processes, and discusses implications for system identity, boundaries, and emergence, positioning SBC as a conceptual complement to existing systems theories.\",\"relevance\":0.95,\"claims\":[\"A system’s structure and behavior coalesce through interactions, not as separate attributes.\",\"Interactions simultaneously generate structural organization and enact behavioral processes.\",\"SBC yields a unified representation that aligns system identity with its functional behavior.\",\"Traditional definitions that treat structure and [truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 11:08:16 │ 02/09/2026, 11:08:24 │ 8 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2609.00006-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 11:08:24
+  End:       02/09/2026, 11:08:34
+  Duration:  9 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2609.00006\",\"title\":\"Harness Engineering: Anatomy, Architecture, and Evolution of Coding Agents -- A Source-Code Study of Eleven Systems\",\"summary\":\"The paper defines and empirically studies \\\"harness engineering,\\\" the runtime that couples large language model (LLM) coding agents to their execution environment. By analyzing the source code of eleven production coding harnesses and a meta‑harness, the authors map seven canonical subsystems, uncover 13 cross‑cutting observations, 29 design patterns, and note a shift from ad‑hoc tools to platform‑like runtimes. A longitudinal snapshot reveals convergence of implementations and a migration of behavioral policies from prompt text to configuration files.\",\"relevance\":0.71,\"claims\":[\"Across ~4 M lines of code, no coding harness imports a general‑purpose agentic framework.\",\"No harness uses vector‑embedding based code retrieval; all rely on deterministic methods.\",\"In early 2026, coding harnesses transitioned from being mere [truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 11:08:24 │ 02/09/2026, 11:08:34 │ 9 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2505.13180-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 11:08:34
+  End:       02/09/2026, 11:08:46
+  Duration:  13 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2505.13180\",\"title\":\"ViPlan: A Benchmark for Visual Planning with Symbolic Predicates and Vision-Language Models\",\"summary\":\"The paper introduces ViPlan, an open‑source benchmark that evaluates visual planning approaches by combining Vision‑Language Models (VLMs) with symbolic planners. Experiments show VLM‑as‑grounder methods excel on a visual Blocksworld task (46% success vs 9% for direct VLM planning), whereas VLM‑as‑planner methods dominate a household robotics domain (34% vs 5%), highlighting the impact of partial observability and linguistic knowledge. The authors also find that Chain‑of‑Thought prompting does not consistently improve VLM visual reasoning.\",\"relevance\":0.62,\"claims\":[\"ViPlan is the first open‑source benchmark for comparing VLM‑grounded symbolic planning with direct VLM planning under matched conditions.\",\"VLM‑as‑grounder methods solve 46% of Blocksworld tasks, far outperforming VLM‑as‑planner methods (9%).\",\"In household robotics tasks, VLM‑as‑pl[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 02/09/2026, 11:08:34 │ 02/09/2026, 11:08:46 │ 13 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2507.12674-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 11:08:46
+  End:       02/09/2026, 11:08:56
+  Duration:  10 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2507.12674\",\"title\":\"ParaStudent: Closing the Sim2Real Gap in User Simulators for AI Tutor Evaluation\",\"summary\":\"The paper introduces ParaStudent, a fine‑tuning framework that generates simulated novice programming revisions to evaluate AI tutor feedback before deployment. Compared with prompting‑based baselines, ParaStudent’s outputs more closely resemble real student code across functional, stylistic, and semantic dimensions, achieving an AUC of 0.80 for both feedback relevance and uptake prediction, thereby supporting the use of simulated engagement for pre‑deployment triage.\",\"relevance\":0.3,\"claims\":[\"ParaStudent fine‑tunes language models to produce realistic novice code revisions.\",\"Simulated revisions align with real student code distributions better than prompted baselines.\",\"The best ParaStudent variant reaches 0.80 AUC on feedback relevance and successful uptake prediction.\",\"Prompted baselines perform near chance on successful uptake assessment.\",\"Simulate[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 02/09/2026, 11:08:46 │ 02/09/2026, 11:08:56 │ 10 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘

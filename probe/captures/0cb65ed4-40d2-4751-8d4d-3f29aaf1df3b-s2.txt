@@ -1,0 +1,81 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.129.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         summarize-workflow
+Instance Id:           0cb65ed4-40d2-4751-8d4d-3f29aaf1df3b-s2
+Version Id:            5847e416-8cd2-46a7-a48e-cb89ec1004bd
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                04/09/2026, 07:00:53
+Success:               ✅ Yes
+Start:                 04/09/2026, 07:00:57
+End:                   04/09/2026, 07:01:22
+Duration:              25 seconds
+Last Successful Step:  summarize:https://openai.com/index/playco-game-prototyping-with-astra-1
+Steps:
+
+  Name:      summarize:https://claude.com/blog/computer-use-skills-api-files-api-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:00:57
+  End:       04/09/2026, 07:01:09
+  Duration:  12 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://claude.com/blog/computer-use-skills-api-files-api\",\"title\":\"Build production agents with computer use, the Skills API, and the Files API\",\"summary\":\"Anthropic announced the general availability of Claude's computer use tool, a new browser use tool, the Skills API, and the Files API, enabling developers to build AI agents that interact with desktop and web applications via screenshots and page structure. These tools let agents execute multi‑action turns, incorporate custom expertise through versioned skill folders, and read/write files from a centralized storage service. Early users report significant speedups and cost reductions in workflows such as insurance claims processing.\",\"relevance\":0.1,\"claims\":[\"Computer use now supports multiple actions per turn, reducing the number of model calls.\",\"Browser use tool lets agents target web elements by structure instead of pixel coordinates.\",\"Skills API enables uploading and versioning of custom skill folders that run in Claude's sandbox.[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 04/09/2026, 07:00:57 │ 04/09/2026, 07:01:09 │ 12 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://claude.com/blog/how-abc-legal-turned-every-employee-into-a-builder-with-claude-managed-agents-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:01:09
+  End:       04/09/2026, 07:01:22
+  Duration:  13 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://claude.com/blog/how-abc-legal-turned-every-employee-into-a-builder-with-claude-managed-agents\",\"title\":\"How ABC Legal turned every employee into a builder with Claude Managed Agents\",\"summary\":\"ABC Legal deployed Claude Managed Agents by treating each AI agent as version‑controlled code stored in Git repositories, using pull‑request workflows for updates, deployment, and audit. This approach enabled non‑technical staff to build and maintain production agents, achieving cost reductions of up to 50% for many tasks and scaling a fleet of over 50 agents across the organization.\",\"relevance\":0.62,\"claims\":[\"AI agents are stored as structured text (prompts, configs) in Git repos, enabling version history and code review.\",\"Non‑developers can create production agents by cloning a repo, filling in templates, and using Claude Code to generate the necessary artifacts.\",\"The managed‑agent fleet reduced the cost of human‑performed tasks by roughly 50% after optimization.\",\"A feedback loop (Harv[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 04/09/2026, 07:01:09 │ 04/09/2026, 07:01:22 │ 13 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://openai.com/index/daybreak-for-frontline-defenders-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:01:22
+  End:       04/09/2026, 07:01:22
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":null,\"neurons\":0,\"skipReason\":\"http-error\",\"status\":403}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 04/09/2026, 07:01:22 │ 04/09/2026, 07:01:22 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://openai.com/index/legora-financial-statement-review-with-astra-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:01:22
+  End:       04/09/2026, 07:01:22
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":null,\"neurons\":0,\"skipReason\":\"http-error\",\"status\":403}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 04/09/2026, 07:01:22 │ 04/09/2026, 07:01:22 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://openai.com/index/playco-game-prototyping-with-astra-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:01:22
+  End:       04/09/2026, 07:01:22
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":null,\"neurons\":0,\"skipReason\":\"http-error\",\"status\":403}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 04/09/2026, 07:01:22 │ 04/09/2026, 07:01:22 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘

@@ -1,0 +1,81 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.129.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         summarize-workflow
+Instance Id:           f7e25faa-021e-42b4-808a-67baa40c79d6-s0
+Version Id:            53d3596d-c826-414d-bd4b-c47313957ab4
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                02/09/2026, 14:20:59
+Success:               ✅ Yes
+Start:                 02/09/2026, 14:21:03
+End:                   02/09/2026, 14:21:51
+Duration:              48 seconds
+Last Successful Step:  summarize:https://www.anthropic.com/research/Claude-accelerates-protein-design-1
+Steps:
+
+  Name:      summarize:https://developers.openai.com/blog/rosalind-workbench-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 14:21:04
+  End:       02/09/2026, 14:21:15
+  Duration:  11 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://developers.openai.com/blog/rosalind-workbench\",\"title\":\"Meet Rosalind Workbench: Empowering every scientist to be their own research team\",\"summary\":\"The article announces Rosalind Workbench, an AI‑driven environment that unifies data, analysis tools, and experimental records for life‑science researchers. Built on the GPT‑Rosalind model, it offers guided workflows that connect biological questions with genomics, protein structure, and other specialized tools while keeping evidence traceable. The platform aims to reduce handoff friction and improve the transparency of research decisions.\",\"relevance\":0.32,\"claims\":[\"Rosalind Workbench consolidates fragmented scientific data and tools into a single conversational interface.\",\"The system uses a dedicated life‑sciences LLM (GPT‑Rosalind) to orchestrate domain‑specific analyses.\",\"Guided workflows keep the research question, intermediate results, and supporting evidence linked throughout the study.\",\"The platform supports both explorator[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 02/09/2026, 14:21:04 │ 02/09/2026, 14:21:15 │ 11 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://www.anthropic.com/research/enabling-independent-research-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 14:21:15
+  End:       02/09/2026, 14:21:25
+  Duration:  10 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://www.anthropic.com/research/enabling-independent-research\",\"title\":\"Aug 26, 2026Societal ImpactsEnabling independent research on how people use Claude\",\"summary\":\"Anthropic piloted a program that gave three external research groups privacy‑preserving access to aggregated usage data from Claude, allowing them to independently study human‑AI collaboration, affect, and productivity. The studies revealed that users frequently delegate high‑stakes tasks to Claude, largely direct its output, and experience affective responses that align with Claude’s behavioral cues; newer Claude models also yielded notable speedups in coding tasks and provided reasonably accurate time‑estimate predictions. Anthropic reports that the pilot succeeded in protecting user privacy while highlighting challenges in scaling such external research collaborations.\",\"relevance\":0.58,\"claims\":[\"Over 50% of Claude conversations involve users delegating consequential (high‑stakes) tasks to the AI.\",\"In roughly 75% of in[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 02/09/2026, 14:21:15 │ 02/09/2026, 14:21:25 │ 10 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://openai.com/index/jalapeno-first-results-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 14:21:25
+  End:       02/09/2026, 14:21:25
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":null,\"neurons\":0,\"skipReason\":\"http-error\",\"status\":403}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 14:21:25 │ 02/09/2026, 14:21:25 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://www.anthropic.com/news/wellbeing-research-grants-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 14:21:25
+  End:       02/09/2026, 14:21:38
+  Duration:  12 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://www.anthropic.com/news/wellbeing-research-grants\",\"title\":\"Funding better evaluations of AI’s impact on wellbeing\",\"summary\":\"Anthropic announced a $5 million grant program to fund independent, open‑source research evaluating AI’s impact on user wellbeing, emphasizing multi‑turn, context‑rich assessments. The program mandates involvement of clinical experts, testing of both precautionary and harmful outcomes, and validation against real‑world expert judgments to create robust benchmarks for AI safeguards.\",\"relevance\":0.42,\"claims\":[\"Anthropic will provide $5 million in grants for independent wellbeing impact research on AI.\",\"Effective wellbeing evaluation must consider multi‑turn conversations and evolving context rather than single responses.\",\"Evaluations should be designed and validated with clinical and subject‑matter experts, testing both over‑compliance and over‑refusal risks.\",\"Grantees must publish their work as open‑source tools usable by any developer.\",\"Current safeguar[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 02/09/2026, 14:21:25 │ 02/09/2026, 14:21:38 │ 12 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://www.anthropic.com/research/Claude-accelerates-protein-design-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 14:21:38
+  End:       02/09/2026, 14:21:51
+  Duration:  14 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://www.anthropic.com/research/Claude-accelerates-protein-design\",\"title\":\"ScienceAug 18, 2026How Claude is accelerating protein design and analytical chemistryIn this post, we share two results that show how Claude can help life scientists increase the pace of their research.\",\"summary\":\"Anthropic reports that its Claude AI system autonomously designed de novo protein binders for 14 of 15 targets, achieving hit rates of 22‑35%—significantly higher than the 10‑15% typical of human‑run campaigns—and in some cases produced binders with superior affinity. The same model also processed raw NMR and LC‑MS files in under 25 minutes, delivering purity and structural assessments that matched laboratory results, demonstrating rapid, low‑expertise analytical chemistry.\",\"relevance\":0.42,\"claims\":[\"Claude designed protein binders for 14 of 15 targets with hit rates of 22‑35%, exceeding typical 10‑15% rates.\",\"Some Claude‑generated binders exhibited higher affinity than the best previously published[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 02/09/2026, 14:21:38 │ 02/09/2026, 14:21:51 │ 14 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘

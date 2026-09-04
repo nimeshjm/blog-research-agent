@@ -1,0 +1,29 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.129.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         publish-workflow
+Instance Id:           0cb65ed4-40d2-4751-8d4d-3f29aaf1df3b-p0
+Version Id:            3c78551e-596d-4f88-a3fd-c248d3040240
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                04/09/2026, 07:04:32
+Success:               ✅ Yes
+Start:                 04/09/2026, 07:04:35
+End:                   04/09/2026, 07:04:40
+Duration:              5 seconds
+Last Successful Step:  open-pull-request-1
+Steps:
+
+  Name:      open-pull-request-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:04:35
+  End:       04/09/2026, 07:04:40
+  Duration:  5 seconds
+  Success:   ✅ Yes
+  Output:    "https://github.com/nimeshjm/nimeshjm.com/pull/5"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 04/09/2026, 07:04:35 │ 04/09/2026, 07:04:40 │ 5 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘

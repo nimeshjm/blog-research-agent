@@ -254,6 +254,86 @@ what surfaced it. Corrected 2026-09-02 to count polls including the one it throw
 `SUMMARIZE_POLL_INTERVAL` raised 90 s → 180 s so three polls span further than four used
 to — which is also what keeps the narrowing live on this very run's timeline.
 
+### The five runs criterion 2 asked for, measured 2026-09-04
+
+Captures at `probe/captures/<instance>.txt`, one per parent and all nine children of each.
+The `runs` rows are the second channel and agree with them throughout.
+
+| # | instance | started (UTC) | trigger | version id | feeds | items | neurons | `pr_url` | duration |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | `e0f3bd1c` | 2026-09-02 09:18:02 | API | `1d62e41a` | 46 | 751 | 1,682 | `nimeshjm.com` #1 | 4 min |
+| 2 | `272de7b2` | 2026-09-02 10:07:32 | API | `d4ce1ad4` | 46 | 760 | 1,647 | #2 | 4 min |
+| 3 | `f7e25faa` | 2026-09-02 13:20:26 | API | `8dc7ef3c` | 46 | 759 | 1,370 | #3 | 5 min |
+| 4 | `6eb3eb68` | 2026-09-03 06:01:07 | cron | `0bc482ff` | 46 | 581 | 1,725 | #4 | 4 min |
+| 5 | `0cb65ed4` | 2026-09-04 06:00:18 | cron | `0bc482ff` | 46 | 567 | 1,759 | #5 | 5 min |
+
+Every run ended `Completed` at `record-success-1`, and **all 45 children completed** — five
+gather, three summarize and one publish per run, no `Errored` child anywhere. The run
+immediately before this sequence, `54ce776b` (2026-09-01), is `Errored`, and
+`wrangler workflows instances list` shows no instance between it and run 1, so the five are
+consecutive on the platform's own ordering and not merely the five best of a longer set.
+
+**Three things this settles that the design had left as unquantified terms.**
+
+1. **The transient-child rate is 0 of 45 children.** The risk table's own note said "one
+   occurrence is not a rate", and criterion 2's 0.6⁵ arithmetic carried it as a second
+   unquantified factor. Forty-five children across five runs is still not a rate — it is
+   an upper bound with a small denominator — but requirement 4's replacement mechanism
+   was **never invoked** across the whole sequence. It is live code that has not fired
+   since the run it was written for.
+2. **Volume chunking holds at its shipped values.** `GATHER_FEEDS_PER_CHILD = 10` and
+   `SUMMARIZE_ARTICLES_PER_CHILD = 5` are unchanged by this step; `wrangler.toml` needed no
+   tuning. The 46 feeds partition 6/10/10/10/10, the heavy chunk being the one the weights
+   pull together: `g0` carried **452 items across 6 feeds** in runs 1-3 and still completed.
+   Against run `bd33248b`, which died at 917 items across three feeds, the working ceiling
+   for one gather child sits somewhere in (452, 917] items — narrowed by this sequence, not
+   located by it.
+3. **No `fetch-threw` skip, in any of the 15 summarize children.** That is criterion 2's
+   one retained symptom clause and it is clean. `skipReason` is absent entirely in runs 1-2
+   and is `http-error` where it appears.
+
+**What the runs cost in articles, and the regression the sequence uncovered.** Fifteen
+articles are shortlisted per run. Runs 1 and 2 skipped **none**. Runs 3, 4 and 5 skipped
+**7, 4 and 4 of 15**, every one of them `skipReason: 'http-error'` with `status: 403` — so
+`runs.sources_used` reads 15, 15, 8, 11, 11.
+
+The boundary is not a coincidence and it is not intermittent. Runs 1-2 shortlisted
+**arxiv.org for 15 of 15 articles**; runs 3-5 shortlisted `claude.com`, `openai.com`,
+`www.anthropic.com` and `developers.openai.com`. That is #101 ("Rank the allowlist:
+Anthropic and OpenAI first, arXiv last"), which merged at 13:17:48 UTC on 2026-09-02 and
+deployed as version `8dc7ef3c` — **three minutes** before run 3 started. #101 did exactly
+what it set out to do, and in doing so moved the shortlist onto vendor domains that answer
+the Worker's fetch with 403 where arXiv answered 200.
+
+**So source tiers traded article availability for source quality, and nothing surfaced it**,
+because `http-error` is a non-fatal skip: the run still reaches `succeeded`, still opens a
+pull request, and the `runs` row records only the thinner `sources_used`. Run 3 published a
+draft built on 8 sources rather than 15. Criterion 2 names `fetch-threw` and not
+`http-error`, deliberately (#85), so these runs pass it — this section is where the cost is
+recorded instead of being laundered by the pass. Whether the fix is a fetch that vendor
+domains will serve, or a tier ranking that accounts for fetchability, is not decided here
+and is filed separately.
+
+**Two caveats about the sequence itself, stated rather than smoothed over.**
+
+The five runs span **four version ids**, so this is five consecutive completions of an
+evolving build rather than of one frozen deploy — runs 4 and 5 are the only pair sharing
+one (`0bc482ff`). The deploys between them were not cosmetic either: run 1 followed #94
+(the transient-child replacement and the poll-cap correction) by eight minutes, run 2
+followed #97/#98, and run 3 followed #101 as described above. The criterion as written does not
+require a single version, and this record does not pretend to one.
+
+And the trigger is mixed: runs 1-3 were API-triggered, per the work order's own "trigger
+five runs consecutively", while runs 4 and 5 arrived on the restored daily cron. The two
+cron runs are the stronger evidence, since they exercise the path that actually runs
+unattended.
+
+**The cron was restored before this criterion formally passed.** The Deferred section below
+says cron restoration is "triggered by criterion 2 passing, not by this feature merging",
+and #103 restored it on 2026-09-02 with runs 1-3 completed and the record unwritten. The
+ordering was wrong on paper and right in substance — runs 4 and 5 are cron runs, and they
+are two of the five this section reports. Recorded as a divergence rather than backdated.
+
 ## Requirements
 
 1. **No step is retried.** `step.do` is invoked with a retry policy of zero attempts
@@ -790,6 +870,18 @@ margin rather than fitted to two data points.
    sequence. It does not make the criterion easier to pass by luck, because a replacement
    that also fails still fails the run.
 
+   **Passed 2026-09-04.** Runs `e0f3bd1c`, `272de7b2`, `f7e25faa`, `6eb3eb68` and
+   `0cb65ed4` — the measured record is above, captures in `probe/captures/`. Every clause
+   was checked separately rather than inferred from the terminal state: all 46 feeds
+   gathered in each run (the children partition 6/10/10/10/10), `status = 'succeeded'` with
+   a non-null `pr_url` in all five `runs` rows, no step failing on a platform limit and no
+   `Errored` child in any of the 45, and **no `fetch-threw` skip in any of the 15 summarize
+   children**. The preceding instance `54ce776b` is `Errored` and `wrangler workflows
+   instances list` shows nothing between it and run 1, so the sequence is consecutive on
+   the platform's own ordering. The caveats — four version ids, a mixed trigger, and the
+   403 skips #101 introduced — are recorded with the facts above rather than here, because
+   none of them is a clause of this criterion.
+
    Five, not one, and consecutive, not five of seven. Feature 002's criterion 5 was a
    single real run, and fact 1 makes a single run a coin: three of five identical probe
    runs completed while the underlying problem was untouched, so that criterion would
@@ -900,7 +992,9 @@ process as rework.
   this repo cannot cite. Deferred for the same reason, and because a design that needs a
   hibernation-length sleep per feed is not a design anyone wants.
 - **Restoring the cron (#64).** Triggered by criterion 2 passing, not by this feature
-  merging.
+  merging. **Done ahead of that trigger**, #103 on 2026-09-02, with three of the five runs
+  completed and the record unwritten — see the divergence note with the five-run facts
+  above. Two of the five runs the criterion passed on are cron runs as a result.
 - **Correcting `.claude/skills/cf-free-tier/SKILL.md`'s "a chance of a fresh invocation".**
   It is **untested, not false** — boundaries do occur non-deterministically, which is what
   "a chance" claims, and no probe ran the one-feed-per-step counterfactual. See
