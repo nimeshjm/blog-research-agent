@@ -1,0 +1,81 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.129.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         summarize-workflow
+Instance Id:           6eb3eb68-56d3-4f3e-99cf-0443e90b3935-s2
+Version Id:            5847e416-8cd2-46a7-a48e-cb89ec1004bd
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                03/09/2026, 07:01:42
+Success:               ✅ Yes
+Start:                 03/09/2026, 07:01:46
+End:                   03/09/2026, 07:02:16
+Duration:              30 seconds
+Last Successful Step:  summarize:https://openai.com/index/ai-native-company-workflows-1
+Steps:
+
+  Name:      summarize:https://claude.com/blog/how-warp-builds-self-improving-agents-on-claude-1
+  Type:      🎯 Step
+  Start:     03/09/2026, 07:01:46
+  End:       03/09/2026, 07:01:59
+  Duration:  13 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://claude.com/blog/how-warp-builds-self-improving-agents-on-claude\",\"title\":\"How Warp builds self-improving agents on Claude\",\"summary\":\"Warp built a self‑improving agent architecture on the Claude Platform that separates a base skill (domain knowledge) from an outer improver skill that periodically consumes human feedback and updates the base skill via normal GitHub pull‑request workflows. By storing agent knowledge in plain files (skills) and treating updates as code changes, the system compounds improvements over time without embedding all instructions in prompts. The article provides practical guidelines for writing such skills and managing feedback loops.\",\"relevance\":0.4,\"claims\":[\"Agent feedback is lost after a session, so a persistent, file‑based store is needed for continual improvement.\",\"Encoding agent knowledge in plain skill files enables agents to read and modify their own instructions via Git PRs.\",\"A two‑skill loop—inner/base skill for task execution and outer/improver [truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 03/09/2026, 07:01:46 │ 03/09/2026, 07:01:59 │ 13 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://claude.com/blog/computer-use-skills-api-files-api-1
+  Type:      🎯 Step
+  Start:     03/09/2026, 07:01:59
+  End:       03/09/2026, 07:02:05
+  Duration:  6 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://claude.com/blog/computer-use-skills-api-files-api\",\"title\":\"Build production agents with computer use, the Skills API, and the Files API\",\"summary\":\"Anthropic announced the general availability of Claude's computer use tool, a new browser use tool, and the Skills and Files APIs, enabling agents to interact with desktop and web applications, apply custom expertise, and manage documents. The updated tools support multi‑action turns, higher rate limits, and HIPAA compliance, and early users report significant speed and cost reductions in complex workflows like insurance claims processing.\",\"relevance\":0.1,\"claims\":[\"The computer use tool now allows multiple actions per turn, cutting task duration and model calls.\",\"The browser use tool lets agents target web elements via page structure rather than pixel coordinates.\",\"The Skills API enables uploading and versioning of custom skill folders that run in Claude's sandbox.\",\"The Files API provides 1 TB of storage per organization with autom[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 03/09/2026, 07:01:59 │ 03/09/2026, 07:02:05 │ 6 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://claude.com/blog/how-abc-legal-turned-every-employee-into-a-builder-with-claude-managed-agents-1
+  Type:      🎯 Step
+  Start:     03/09/2026, 07:02:05
+  End:       03/09/2026, 07:02:16
+  Duration:  11 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://claude.com/blog/how-abc-legal-turned-every-employee-into-a-builder-with-claude-managed-agents\",\"title\":\"How ABC Legal turned every employee into a builder with Claude Managed Agents\",\"summary\":\"ABC Legal deployed Claude Managed Agents, storing each agent's prompt, configuration, and deployment scripts in git repositories and using pull‑request workflows for versioning, review, and rollout. This approach let non‑technical staff build and ship production agents, achieving over 50 agents in production and roughly 50% cost reductions on the tasks they automate.\",\"relevance\":0.92,\"claims\":[\"ABC Legal ran more than 50 managed agents in production, cutting human‑task costs by about half.\",\"Agents are stored as code in git repos, with each change requiring a pull request for audit and rollback.\",\"Non‑developers can create functional agents by filling in templates and prompts without writing software.\",\"A feedback loop (harvester‑tuner) harvests Slack reactions to automatically propose promp[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 03/09/2026, 07:02:05 │ 03/09/2026, 07:02:16 │ 11 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://openai.com/index/atv-big-air-tour-1
+  Type:      🎯 Step
+  Start:     03/09/2026, 07:02:16
+  End:       03/09/2026, 07:02:16
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":null,\"neurons\":0,\"skipReason\":\"http-error\",\"status\":403}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 03/09/2026, 07:02:16 │ 03/09/2026, 07:02:16 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://openai.com/index/ai-native-company-workflows-1
+  Type:      🎯 Step
+  Start:     03/09/2026, 07:02:16
+  End:       03/09/2026, 07:02:16
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":null,\"neurons\":0,\"skipReason\":\"http-error\",\"status\":403}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 03/09/2026, 07:02:16 │ 03/09/2026, 07:02:16 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘

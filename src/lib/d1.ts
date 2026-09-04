@@ -375,17 +375,76 @@ export async function readRunCandidates(db: D1Database, runId: string, limit: nu
 }
 
 /**
+ * Shared by the standalone `pruneRunCandidates` below and by
+ * `recordSeenAndPrune`'s batch, so the DELETE's SQL text lives in exactly
+ * one place regardless of which caller runs it.
+ */
+function pruneRunCandidatesStatement(db: D1Database, retentionDays: number): D1PreparedStatement {
+  return db
+    .prepare(`DELETE FROM run_candidates WHERE created_at < datetime('now', '-' || ? || ' days')`)
+    .bind(retentionDays);
+}
+
+/**
  * `run_candidates` is per-run scratch, not the cross-run dedupe key -
  * `seen_urls` stays that. `created_at` is compared rather than joining
  * `runs`, so a run that never wrote a `runs` row still gets its rows
  * collected. Called once per run regardless of outcome; `retentionDays` is
  * the caller's constant, not this file's.
+ *
+ * Exported and exercised standalone (test/d1.test.ts) even though the only
+ * production call site now goes through `recordSeenAndPrune` below - kept as
+ * its own function so the prune half of that batch stays independently
+ * testable without a `Candidate[]` in the way.
  */
 export async function pruneRunCandidates(db: D1Database, retentionDays: number): Promise<void> {
-  await db
-    .prepare(`DELETE FROM run_candidates WHERE created_at < datetime('now', '-' || ? || ' days')`)
-    .bind(retentionDays)
-    .run();
+  await pruneRunCandidatesStatement(db, retentionDays).run();
+}
+
+/**
+ * Marks `seen` as cross-run dedupe hits and prunes `run_candidates`, in one
+ * `db.batch()` call - one subrequest whatever `seen`'s length, the same
+ * `json_each` trick `writeRunCandidates` above uses to unpack an array
+ * inside SQLite from a single bound parameter rather than one parameter per
+ * row. `seen` is typically `shortlist`, up to `SHORTLIST_TOP_N` items
+ * (spec.md req. 4, amended 2026-09-04 - #100 - to say which URLs count as
+ * seen and why); the empty array on the `record-no-topic` path, where no
+ * shortlist has been computed yet, costs the same one call.
+ *
+ * `INSERT OR IGNORE`, not `ON CONFLICT(url) DO NOTHING`: D1's SQLite rejects
+ * an upsert clause on an `INSERT ... SELECT` (`near "DO": syntax error`,
+ * confirmed against the real binding under `cloudflare:test`, not just
+ * inferred) even though the same clause is fine on the `INSERT ... VALUES`
+ * form `recordRunOutcome` above uses. `INSERT OR IGNORE` gives the same
+ * no-op-on-conflict behaviour `startRun`'s own comment relies on, and is
+ * what makes this idempotent under replay - `run()` re-executes from the top
+ * on replay (spec.md fact 2), and every terminal `record-*` step in
+ * `src/workflow.ts` calls this via `recordOutcome`, so inserting a URL
+ * already in `seen_urls` (this run's own earlier attempt, or an unrelated
+ * run that happened to see the same article) must be a no-op rather than a
+ * primary-key violation.
+ *
+ * Batched with the prune, deliberately not with `recordRunOutcome`
+ * (src/workflow.ts's `recordOutcome`, called just before this): `db.batch()`
+ * is atomic, so folding this into the outcome write would mean a failing
+ * insert also loses the `runs` row - exactly the failure mode
+ * `recordOutcome`'s own comment says the outcome-before-prune ordering
+ * exists to avoid (spec.md req. 10, "every run writes a runs row, including
+ * one that dies mid-step"). Pairing it with the prune instead costs the same
+ * one subrequest either way and leaves requirement 10's guarantee on the one
+ * write that must never be lost.
+ */
+export async function recordSeenAndPrune(db: D1Database, retentionDays: number, seen: Candidate[]): Promise<void> {
+  const payload = JSON.stringify(seen.map((c) => ({ u: c.url, t: c.title, s: c.sourceName })));
+
+  await db.batch([
+    pruneRunCandidatesStatement(db, retentionDays),
+    db.prepare(
+      `INSERT OR IGNORE INTO seen_urls (url, title, source)
+       SELECT json_extract(value, '$.u'), json_extract(value, '$.t'), json_extract(value, '$.s')
+         FROM json_each(?)`,
+    ).bind(payload),
+  ]);
 }
 
 /**

@@ -24,7 +24,7 @@ function parsed(item: { url: string; title: string; publishedAt: string | null }
  *  - `<guid isPermaLink="false">` (arXiv, Stack Overflow) is NOT the URL and
  *    must never be used as a fallback.
  *  - `<description>`'s CDATA body (which can itself contain an
- *    "http://..." string) must never leak into the extracted url/title.
+ *    "https://..." string) must never leak into the extracted url/title.
  */
 function rssItem(opts: { title: string; url: string; guid?: string; pubDate?: string }): string {
   const guid = opts.guid ?? 'not-a-url-guid-' + Math.random().toString(36).slice(2);
@@ -33,7 +33,7 @@ function rssItem(opts: { title: string; url: string; guid?: string; pubDate?: st
 <link>${opts.url}</link>
 <guid isPermaLink="false">${guid}</guid>
 ${opts.pubDate ? `<pubDate>${opts.pubDate}</pubDate>` : ''}
-<description><![CDATA[commentary text with a decoy url http://decoy.example/should-not-leak inside]]></description>
+<description><![CDATA[commentary text with a decoy url https://decoy.example/should-not-leak inside]]></description>
 </item>`;
 }
 
@@ -57,7 +57,7 @@ ${opts.updated ? `<updated>${opts.updated}</updated>` : ''}
 
 function atomFeed(entries: string): string {
   return `<?xml version="1.0"?>
-<feed xmlns="http://www.w3.org/2005/Atom"><title>Fixture Feed</title>
+<feed xmlns="https://www.w3.org/2005/Atom"><title>Fixture Feed</title>
 ${entries}
 </feed>`;
 }

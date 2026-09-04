@@ -5,12 +5,12 @@ import {
   claimTopicById,
   findOrProposeTopic,
   findSeenUrls,
-  pruneRunCandidates,
   readRunCandidates,
   readSourceWeights,
   reclaimAndClaim,
   recordRunOutcome,
   recordRunSpend,
+  recordSeenAndPrune,
   startRun,
 } from './lib/d1';
 import { fetchFeedItems } from './lib/feed-fetch';
@@ -244,6 +244,7 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
             status: 'insufficient_sources',
             topicId: topic.id,
             neuronsSpent,
+            seen: shortlist,
           });
         },
       );
@@ -367,6 +368,7 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
             status: 'insufficient_sources',
             topicId: topic.id,
             neuronsSpent,
+            seen: shortlist,
           });
         },
       );
@@ -439,6 +441,7 @@ export class ResearchWorkflow extends WorkflowEntrypoint<Env, ResearchParams> {
           sourcesUsed: summaries.length,
           neuronsSpent,
           prUrl,
+          seen: shortlist,
         });
       },
     );
@@ -999,13 +1002,22 @@ const COMMENTARY_SIGNAL_RE = /\b(opinion|thoughts on|roundup|newsletter|weekly|d
  *
  * **Why an offset and not a sort key** (#99, and feature 001 spec.md's
  * 2026-09-02 amendment). Tier as a primary sort key would
- * empty the shortlist of everything else: nothing writes `seen_urls`, so
- * every run's unseen set is the whole gathered set, and at the 2026-09-01
- * calibration the 9 priority feeds alone supply ~103 candidates against
- * `SHORTLIST_TOP_N = 15`. The other 35 feeds and both arXiv feeds would then
- * be gathered and never summarized - and `isGrounded` would be left resting
- * on whatever those 9 published, with the allowlist's densest supply of
- * attributable findings ranked out of reach.
+ * empty the shortlist of everything else: at the time this was sized,
+ * nothing wrote `seen_urls`, so every run's unseen set was the whole
+ * gathered set, and at the 2026-09-01 calibration the 9 priority feeds alone
+ * supplied ~103 candidates against `SHORTLIST_TOP_N = 15`. The other 35
+ * feeds and both arXiv feeds would then have been gathered and never
+ * summarized - and `isGrounded` would have been left resting on whatever
+ * those 9 published, with the allowlist's densest supply of attributable
+ * findings ranked out of reach.
+ *
+ * **That premise no longer holds as stated.** `seen_urls` gained a writer
+ * 2026-09-04 (#100; feature 001 spec.md requirement 4's amendment), so the
+ * unseen set shrinks run over run instead of staying the whole gathered set,
+ * and the ~103-candidate figure above is no longer current. This weight's
+ * own value is not revisited here - #100 is a dedupe fix, not a re-tuning of
+ * `TIER_SCORE_WEIGHT` - see the spec amendment for the note that #99's sizing
+ * argument now needs re-checking against a real unseen set.
  */
 const TIER_SCORE_WEIGHT = 3;
 
@@ -1523,6 +1535,18 @@ function validateSummarizeOutput(output: unknown, childId: string): SummarizeChi
  * unaffected either way. On the typical path it spends the subrequest
  * `select-topic`'s change freed, taking the earlier ~32-of-50 typical figure
  * to about **33 of 50**.
+ *
+ * **Recounted again 2026-09-04 (#100, `seen_urls`'s writer), and this one
+ * costs nothing.** Every terminal `record-*` step already made two D1 calls
+ * - `recordRunOutcome` then the unbatched `pruneRunCandidates` - which is
+ * what the **23 fixed**'s `record-success (2)` term above already counts.
+ * `recordSeenAndPrune` (src/lib/d1.ts) replaces that second, unbatched call
+ * with a `db.batch()` of the same prune plus the new `seen_urls` insert -
+ * still one subrequest, so `record-success`'s term stays **2** and the
+ * **23 fixed** / **49 of 50 pessimal** figures both stand exactly as
+ * written. Unlike `select-topic`'s #91 recount above, there is no spare
+ * traded away or bought back here: the insert rides in the batch slot the
+ * prune already had, at no incremental cost.
  */
 export async function createPublishChildren(env: Env, parentInstanceId: string, draft: Draft): Promise<string[]> {
   return createChildBatch(env.PUBLISH_WORKFLOW, [
@@ -1733,6 +1757,11 @@ async function recordOutcome(
     sourcesUsed?: number;
     neuronsSpent: number;
     prUrl?: string | null;
+    // The run's shortlist (spec.md req. 4, amended #100) - absent on the
+    // record-no-topic path, where `shortlist` has not been computed yet.
+    // `recordSeenAndPrune` below treats a missing value the same as an
+    // empty one.
+    seen?: Candidate[];
   },
 ): Promise<void> {
   // INSERT ... ON CONFLICT(instance_id) DO UPDATE, keyed on the Workflow
@@ -1748,15 +1777,28 @@ async function recordOutcome(
   });
 
   // `run_candidates` is per-run scratch, not a second cross-run dedupe key -
-  // `seen_urls` stays the only one. Every terminal path (record-no-topic,
+  // `seen_urls` stays the only one, and this is that table's writer (spec.md
+  // req. 4, amended 2026-09-04 - #100). Every terminal path (record-no-topic,
   // record-no-sources, record-no-summaries, record-success) routes through
-  // this function, so pruning here covers all of them without a new step.
+  // this function, so this covers all of them without a new step, and
+  // `recordSeenAndPrune` (src/lib/d1.ts) folds the insert into the prune's
+  // existing `db.batch()` call rather than spending a second subrequest -
+  // see that function's comment for the arithmetic and the idempotency
+  // argument, and `createPublishChildren`'s comment (this file) for why the
+  // parent's per-invocation subrequest bill is unchanged by this addition.
   //
-  // The order matters and no test covers it: retention runs *after* the
-  // outcome write, never before. Reversed, a prune that threw would fail the
+  // The order matters and no test covers it: this runs *after* the outcome
+  // write, never before. Reversed, a failing insert or prune would fail the
   // step before the row existed, and spec req. 10's "every run writes a runs
-  // row, including one that dies mid-step" would quietly become "unless the
-  // prune threw". This way the step retries with the row already written and
-  // `recordRunOutcome`'s ON CONFLICT rewrites it identically.
-  await pruneRunCandidates(env.DB, RUN_CANDIDATE_RETENTION_DAYS);
+  // row, including one that dies mid-step" would quietly become "unless this
+  // threw". Steps are not retried (tracedStep's zero-retry policy), but
+  // run() re-executes this whole function from the top on replay (spec.md
+  // fact 2) - this ordering is what makes that replay converge on the same
+  // rows rather than diverge: `recordRunOutcome`'s ON CONFLICT and this
+  // call's `INSERT OR IGNORE` both treat a row already written by an earlier
+  // attempt as a no-op rather than a conflict. Batching this call together
+  // with `recordRunOutcome` above, rather than keeping it separate, would
+  // trade that guarantee away: `db.batch()` is atomic, so a failing insert
+  // would then take the outcome row down with it.
+  await recordSeenAndPrune(env.DB, RUN_CANDIDATE_RETENTION_DAYS, outcome.seen ?? []);
 }

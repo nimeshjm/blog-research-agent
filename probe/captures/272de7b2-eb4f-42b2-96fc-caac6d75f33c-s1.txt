@@ -1,0 +1,81 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.129.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         summarize-workflow
+Instance Id:           272de7b2-eb4f-42b2-96fc-caac6d75f33c-s1
+Version Id:            57d517a6-25a4-458c-ad8a-7e9c78719d76
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                02/09/2026, 11:08:04
+Success:               ✅ Yes
+Start:                 02/09/2026, 11:08:08
+End:                   02/09/2026, 11:08:58
+Duration:              50 seconds
+Last Successful Step:  summarize:https://arxiv.org/abs/2605.27898-1
+Steps:
+
+  Name:      summarize:https://arxiv.org/abs/2510.15144-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 11:08:08
+  End:       02/09/2026, 11:08:19
+  Duration:  10 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2510.15144\",\"title\":\"HugAgent: A Human Simulation Benchmark for Individual-Level Reasoning\",\"summary\":\"The paper introduces HugAgent, a benchmark that shifts human reasoning simulation from aggregated, consensus‑driven models to individualized, cognitively aligned ones. It collects belief states, updates, and reasoning traces via questionnaires and think‑aloud interviews across three policy domains, revealing that current language models can infer a person’s current beliefs but fail to predict how those beliefs change under new information. The authors attribute this gap to models relying on associative matching rather than identity‑consistent reasoning and release the full dataset and tools for the community.\",\"relevance\":0.71,\"claims\":[\"Large language models capture population‑level consensus but miss individual reasoning dynamics.\",\"HugAgent provides structured and semi‑structured data to evaluate models on individualized belief states and updates.\",\"Models recover [truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 02/09/2026, 11:08:08 │ 02/09/2026, 11:08:19 │ 10 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2603.29852-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 11:08:19
+  End:       02/09/2026, 11:08:27
+  Duration:  9 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2603.29852\",\"title\":\"VectorGym: A Multi-Task Benchmark for SVG Code Generation, Sketching and Editing\",\"summary\":\"The paper presents VectorGym, a new benchmark suite for Scalable Vector Graphics that covers text-to-SVG, sketch-to-SVG, multi-step SVG editing, and SVG captioning, all annotated by experts to reflect real design intent. It also introduces a multi‑task reinforcement‑learning baseline (GRPO with curriculum learning) that trains a Qwen3‑VL 8B model to achieve state‑of‑the‑art performance among open‑source models, and proposes a VLM‑as‑a‑Judge metric validated against human judgments.\",\"relevance\":0.2,\"claims\":[\"VectorGym provides four human‑annotated SVG tasks that better reflect professional design workflows than prior synthetic benchmarks.\",\"A multi‑task RL baseline using GRPO and curriculum learning trains a Qwen3‑VL 8B model that outperforms larger proprietary models on these tasks.\",\"The introduced VLM‑as‑a‑Judge metric correlates strongly with human eva[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 11:08:19 │ 02/09/2026, 11:08:27 │ 9 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2604.08524-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 11:08:27
+  End:       02/09/2026, 11:08:36
+  Duration:  9 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2604.08524\",\"title\":\"What Drives Representation Steering? A Mechanistic Case Study on Steering Refusal\",\"summary\":\"The paper introduces a multi‑token activation‑patching framework to dissect how steering vectors influence large language models, focusing on refusal behavior. It finds that steering primarily manipulates the output‑value (OV) part of the attention mechanism while largely leaving the query‑key (QK) scores untouched, and that diverse steering methods converge on interchangeable circuits at the same layer. The authors also demonstrate that attention scores can be frozen with minimal performance loss and that steering vectors can be sparsified by up to 96% without major degradation, revealing semantically interpretable concepts within the OV circuit.\",\"relevance\":0.72,\"claims\":[\"Steering vectors mainly interact with the attention OV circuit, not the QK circuit.\",\"Different steering methodologies exploit functionally interchangeable circuits at the same layer.[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 11:08:27 │ 02/09/2026, 11:08:36 │ 9 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2605.05726-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 11:08:36
+  End:       02/09/2026, 11:08:48
+  Duration:  12 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2605.05726\",\"title\":\"SkillRet: A Large-Scale Benchmark for Skill Retrieval in LLM Agents\",\"summary\":\"The paper introduces SkillRet, a large‑scale benchmark containing over 16,000 public LLM agent skills organized by a two‑level taxonomy, along with thousands of training and evaluation queries. Experiments show that existing off‑the‑shelf retrievers struggle with realistic, large skill libraries, while task‑specific fine‑tuning on SkillRet yields substantial improvements in NDCG@10, highlighting the difficulty of skill retrieval and the benefits of targeted model adaptation.\",\"relevance\":0.42,\"claims\":[\"Skill retrieval in LLM agents is a critical yet underexplored systems challenge as skill libraries grow.\",\"SkillRet provides a structured, taxonomy‑based benchmark with 16,129 skills, 63,259 training samples, and 4,392 evaluation queries.\",\"Off‑the‑shelf retrieval models perform poorly on realistic large‑scale skill libraries.\",\"Fine‑tuning on SkillRet improves NDCG@10 b[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 02/09/2026, 11:08:36 │ 02/09/2026, 11:08:48 │ 12 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2605.27898-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 11:08:48
+  End:       02/09/2026, 11:08:58
+  Duration:  10 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2605.27898\",\"title\":\"UniACE: A Unified Framework for Evaluating LLM Agentic Capabilities\",\"summary\":\"The paper introduces UniACE, a unified framework that isolates large language model (LLM) performance from harness, prompt, and environment specifics by representing each benchmark as an instruction‑tool‑environment triplet executed in a shared, task‑agnostic harness. By re‑evaluating seven existing agent benchmarks across 24 domains, the authors demonstrate substantial score shifts, ranking reversals, and sensitivity to dynamic resources, highlighting hidden efficiency and failure patterns that traditional success metrics miss. The framework also offers an offline mode and detailed trace‑based failure attribution to improve reproducibility and interpretability of cross‑benchmark comparisons.\",\"relevance\":0.45,\"claims\":[\"Current agent benchmarks conflate model performance with harness, prompts, and external resources, obscuring true model capabilities.\",\"UniACE provides[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 02/09/2026, 11:08:48 │ 02/09/2026, 11:08:58 │ 10 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘

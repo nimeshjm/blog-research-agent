@@ -1,0 +1,190 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.129.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         research-workflow
+Instance Id:           0cb65ed4-40d2-4751-8d4d-3f29aaf1df3b
+Version Id:            0bc482ff-9707-4f3b-a9a0-6824e14e810a
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                04/09/2026, 07:00:14
+Success:               ✅ Yes
+Start:                 04/09/2026, 07:00:17
+End:                   04/09/2026, 07:04:48
+Duration:              5 minutes
+Last Successful Step:  record-success-1
+Steps:
+
+  Name:      start-run-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:00:17
+  End:       04/09/2026, 07:00:18
+  Duration:  1 second
+  Success:   ✅ Yes
+  Output:    null
+┌──────────────────────┬──────────────────────┬──────────┬────────────┐
+│ Start                │ End                  │ Duration │ State      │
+├──────────────────────┼──────────────────────┼──────────┼────────────┤
+│ 04/09/2026, 07:00:17 │ 04/09/2026, 07:00:18 │ 1 second │ ✅ Success │
+└──────────────────────┴──────────────────────┴──────────┴────────────┘
+
+  Name:      select-topic-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:00:18
+  End:       04/09/2026, 07:00:18
+  Duration:  1 second
+  Success:   ✅ Yes
+  Output:    "{\"id\":1,\"title\":\"git worktrees are for agents\",\"angle\":\"git worktrees exist for coding agents, not for humans.\",\"status\":\"in_progress\",\"origin\":\"human\",\"createdAt\":\"2026-08-27 16:08:09\"}"
+┌──────────────────────┬──────────────────────┬──────────┬────────────┐
+│ Start                │ End                  │ Duration │ State      │
+├──────────────────────┼──────────────────────┼──────────┼────────────┤
+│ 04/09/2026, 07:00:18 │ 04/09/2026, 07:00:18 │ 1 second │ ✅ Success │
+└──────────────────────┴──────────────────────┴──────────┴────────────┘
+
+  Name:      load-sources-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:00:18
+  End:       04/09/2026, 07:00:18
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "[{\"name\":\"arXiv cs.SE\",\"feedUrl\":\"https://export.arxiv.org/rss/cs.SE\",\"tier\":2},{\"name\":\"arXiv cs.AI\",\"feedUrl\":\"https://export.arxiv.org/rss/cs.AI\",\"tier\":2},{\"name\":\"OpenAI\",\"feedUrl\":\"https://openai.com/blog/rss.xml\",\"tier\":0},{\"name\":\"Cloudflare\",\"feedUrl\":\"https://blog.cloudflare.com/rss/\"},{\"name\":\"GitHub\",\"feedUrl\":\"https://github.blog/feed/\"},{\"name\":\"Stack Overflow\",\"feedUrl\":\"https://stackoverflow.blog/feed/\"},{\"name\":\"Martin Fowler\",\"feedUrl\":\"https://martinfowler.com/feed.atom\"},{\"name\":\"Will Larson\",\"feedUrl\":\"https://lethain.com/feeds.xml\"},{\"name\":\"Simon Willison\",\"feedUrl\":\"https://simonwillison.net/atom/everything/\"},{\"name\":\"The Pragmatic Engineer\",\"feedUrl\":\"https://newsletter.pragmaticengineer.com/feed\"},{\"name\":\"DX\",\"feedUrl\":\"https://newsletter.getdx.com/feed\"},{\"name\":\"Honeycomb\",\"feedUrl\":\"https://www.honeycomb.io/feed\"},{\"name\":\"Anthropic News\",\"feedUrl\":\"https://raw.githubusercontent.com/Olshansk/rss-feeds/refs/heads/main/feeds/feed_anthropic_news.xml\",\"tier\":0},{\"name\":\"Anthropic Engi[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 04/09/2026, 07:00:18 │ 04/09/2026, 07:00:18 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      create-gather-children-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:00:18
+  End:       04/09/2026, 07:00:20
+  Duration:  2 seconds
+  Success:   ✅ Yes
+  Output:    "[\"0cb65ed4-40d2-4751-8d4d-3f29aaf1df3b-g0\",\"0cb65ed4-40d2-4751-8d4d-3f29aaf1df3b-g1\",\"0cb65ed4-40d2-4751-8d4d-3f29aaf1df3b-g2\",\"0cb65ed4-40d2-4751-8d4d-3f29aaf1df3b-g3\",\"0cb65ed4-40d2-4751-8d4d-3f29aaf1df3b-g4\"]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 04/09/2026, 07:00:18 │ 04/09/2026, 07:00:20 │ 2 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      await-gather-children-wait:0-1
+  Type:      💤 Sleeping
+  Start:     04/09/2026, 07:00:20
+  End:       04/09/2026, 07:00:50
+  Duration:  30 seconds
+
+  Name:      await-gather-children:0-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:00:50
+  End:       04/09/2026, 07:00:51
+  Duration:  1 second
+  Success:   ✅ Yes
+  Output:    "{\"done\":true,\"total\":567}"
+┌──────────────────────┬──────────────────────┬──────────┬────────────┐
+│ Start                │ End                  │ Duration │ State      │
+├──────────────────────┼──────────────────────┼──────────┼────────────┤
+│ 04/09/2026, 07:00:50 │ 04/09/2026, 07:00:51 │ 1 second │ ✅ Success │
+└──────────────────────┴──────────────────────┴──────────┴────────────┘
+
+  Name:      shortlist-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:00:51
+  End:       04/09/2026, 07:00:52
+  Duration:  1 second
+  Success:   ✅ Yes
+  Output:    "[{\"url\":\"https://developers.openai.com/blog/rosalind-workbench\",\"title\":\"Meet Rosalind Workbench: Empowering every scientist to be their own research team\",\"publishedAt\":\"Fri, 28 Aug 2026 00:00:00 +0000\",\"publishedMs\":1787875200000,\"sourceName\":\"OpenAI Developer\"},{\"url\":\"https://www.anthropic.com/research/enabling-independent-research\",\"title\":\"Aug 26, 2026Societal ImpactsEnabling independent research on how people use Claude\",\"publishedAt\":\"Wed, 26 Aug 2026 00:00:00 +0000\",\"publishedMs\":1787702400000,\"sourceName\":\"Anthropic Research\"},{\"url\":\"https://openai.com/index/jalapeno-first-results\",\"title\":\"Jalapeño’s first results show industry-leading speed and efficiency in AI inference\",\"publishedAt\":\"Tue, 25 Aug 2026 07:00:00 +0000\",\"publishedMs\":1787641200000,\"sourceName\":\"OpenAI Engineering\"},{\"url\":\"https://www.anthropic.com/news/wellbeing-research-grants\",\"title\":\"Funding better evaluations of AI’s impact on wellbeing\",\"publishedAt\":\"Tue, 25 Aug 2026 00:00:00 +0000\",\"publishedMs\":1787616000000,\"sourceName\"[truncated output]"
+┌──────────────────────┬──────────────────────┬──────────┬────────────┐
+│ Start                │ End                  │ Duration │ State      │
+├──────────────────────┼──────────────────────┼──────────┼────────────┤
+│ 04/09/2026, 07:00:51 │ 04/09/2026, 07:00:52 │ 1 second │ ✅ Success │
+└──────────────────────┴──────────────────────┴──────────┴────────────┘
+
+  Name:      create-summarize-children-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:00:52
+  End:       04/09/2026, 07:00:53
+  Duration:  1 second
+  Success:   ✅ Yes
+  Output:    "[\"0cb65ed4-40d2-4751-8d4d-3f29aaf1df3b-s0\",\"0cb65ed4-40d2-4751-8d4d-3f29aaf1df3b-s1\",\"0cb65ed4-40d2-4751-8d4d-3f29aaf1df3b-s2\"]"
+┌──────────────────────┬──────────────────────┬──────────┬────────────┐
+│ Start                │ End                  │ Duration │ State      │
+├──────────────────────┼──────────────────────┼──────────┼────────────┤
+│ 04/09/2026, 07:00:52 │ 04/09/2026, 07:00:53 │ 1 second │ ✅ Success │
+└──────────────────────┴──────────────────────┴──────────┴────────────┘
+
+  Name:      await-summarize-children-wait:0-1
+  Type:      💤 Sleeping
+  Start:     04/09/2026, 07:00:53
+  End:       04/09/2026, 07:03:53
+  Duration:  3 minutes
+
+  Name:      await-summarize-children:0-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:03:53
+  End:       04/09/2026, 07:03:55
+  Duration:  2 seconds
+  Success:   ✅ Yes
+  Output:    "{\"done\":true,\"summaries\":[{\"url\":\"https://developers.openai.com/blog/rosalind-workbench\",\"title\":\"Meet Rosalind Workbench: Empowering every scientist to be their own research team\",\"summary\":\"The article introduces Rosalind Workbench, an AI‑driven platform that combines the GPT‑Rosalind model with a suite of scientific tools to let researchers run end‑to‑end life‑science workflows in a single environment. It offers guided tasks for protein design, molecular docking, genomics, and more, keeping the research question, data, analysis steps, and visual evidence linked together. The workbench supports both exploratory and deep research modes and provides enterprise and government access controls.\",\"relevance\":0.1,\"claims\":[\"Rosalind Workbench provides a unified interface that integrates various scientific tools with a specialized life‑sciences LLM.\",\"The platform offers guided, multi‑step workflows for tasks such as protein design, small‑molecule docking, and RNA‑seq analysis.\",\"All steps of a research project—que[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 04/09/2026, 07:03:53 │ 04/09/2026, 07:03:55 │ 2 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      synthesize-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:03:55
+  End:       04/09/2026, 07:04:31
+  Duration:  36 seconds
+  Success:   ✅ Yes
+  Output:    "{\"draft\":{\"slug\":\"git-worktrees-are-built-for-coding-agents-not-human-developers\",\"title\":\"Git Worktrees Are Built for Coding Agents, Not Human Developers\",\"description\":\"As AI agents take over repetitive coding tasks, the tooling that supports them – like git worktrees – is mis‑aligned for human workflows but perfect for scalable agent pipelines.\",\"date\":\"2026-09-04\",\"authors\":[\"nimeshjm\"],\"tags\":[\"git\",\"ai-agents\",\"devops\",\"software-architecture\"],\"draft\":true,\"brief\":\"# Research brief: git worktrees are for agents\\n\\n**Angle:** git worktrees exist for coding agents, not for humans.\\n\\n## Sources\\n\\n- [Meet Rosalind Workbench: Empowering every scientist to be their own research team](https://developers.openai.com/blog/rosalind-workbench) — AI‑powered integrated scientific workflow orchestration\\n- [Aug 26, 2026Societal ImpactsEnabling independent research on how people use Claude](https://www.anthropic.com/research/enabling-independent-research) — Measurement of coding agents' productivity gains using Claud[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 04/09/2026, 07:03:55 │ 04/09/2026, 07:04:31 │ 36 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      create-publish-children-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:04:31
+  End:       04/09/2026, 07:04:32
+  Duration:  1 second
+  Success:   ✅ Yes
+  Output:    "[\"0cb65ed4-40d2-4751-8d4d-3f29aaf1df3b-p0\"]"
+┌──────────────────────┬──────────────────────┬──────────┬────────────┐
+│ Start                │ End                  │ Duration │ State      │
+├──────────────────────┼──────────────────────┼──────────┼────────────┤
+│ 04/09/2026, 07:04:31 │ 04/09/2026, 07:04:32 │ 1 second │ ✅ Success │
+└──────────────────────┴──────────────────────┴──────────┴────────────┘
+
+  Name:      await-publish-children-wait:0-1
+  Type:      💤 Sleeping
+  Start:     04/09/2026, 07:04:32
+  End:       04/09/2026, 07:04:47
+  Duration:  15 seconds
+
+  Name:      await-publish-children:0-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:04:47
+  End:       04/09/2026, 07:04:47
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"done\":true,\"prUrl\":\"https://github.com/nimeshjm/nimeshjm.com/pull/5\"}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 04/09/2026, 07:04:47 │ 04/09/2026, 07:04:47 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      record-success-1
+  Type:      🎯 Step
+  Start:     04/09/2026, 07:04:47
+  End:       04/09/2026, 07:04:48
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    null
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 04/09/2026, 07:04:47 │ 04/09/2026, 07:04:48 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘

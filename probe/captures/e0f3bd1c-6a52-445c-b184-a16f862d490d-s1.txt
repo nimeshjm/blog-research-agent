@@ -1,0 +1,81 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.128.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         summarize-workflow
+Instance Id:           e0f3bd1c-6a52-445c-b184-a16f862d490d-s1
+Version Id:            4cf507c5-0b3b-457a-9d88-4a7f9a8db844
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                02/09/2026, 10:18:35
+Success:               ✅ Yes
+Start:                 02/09/2026, 10:18:38
+End:                   02/09/2026, 10:19:14
+Duration:              36 seconds
+Last Successful Step:  summarize:https://arxiv.org/abs/2609.00935-1
+Steps:
+
+  Name:      summarize:https://arxiv.org/abs/2609.00070-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:18:38
+  End:       02/09/2026, 10:18:45
+  Duration:  7 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2609.00070\",\"title\":\"AutoXRD: Autonomous LLM Agents and Comprehensive Evaluation for Powder Diffraction Analysis\",\"summary\":\"The paper introduces AutoXRD, a framework that uses autonomous large language model agents to perform end-to-end powder X‑ray diffraction analysis, structuring the workflow as a stepwise refinement process with deterministic crystallographic checks. It also presents XRDBench, a two‑track benchmark suite (QA and E2E) for evaluating LLM agents on scientific reasoning and full workflow execution, reporting that current models achieve only modest scores while the best GPT‑5.6 variant reaches around 81 out of 100. Ablation studies show that each component of AutoXRD contributes positively to performance, and error analysis highlights recurring challenges such as coupled‑parameter control and evidence preservation.\",\"relevance\":0.05,\"claims\":[\"AutoXRD enables autonomous LLM agents to conduct powder XRD analysis with deterministic scientific constraints[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:18:38 │ 02/09/2026, 10:18:45 │ 7 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2609.00071-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:18:45
+  End:       02/09/2026, 10:18:48
+  Duration:  3 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2609.00071\",\"title\":\"When Prediction Error Is Not Enough: Evaluating Nuisance-Function Prediction for Causal Estimation\",\"summary\":\"The paper investigates whether prediction error of nuisance-function estimators reliably indicates the performance of causal estimators. Using Monte‑Carlo simulations of a partially linear model, it compares OLS, GAMs, XGBoost, and Double Machine Learning with XGBoost, finding that lower prediction error does not consistently correspond to lower causal bias or better confidence‑interval coverage, and that a proposed joint‑error metric is only weakly linked to causal bias.\",\"relevance\":0.05,\"claims\":[\"Prediction error of nuisance‑function estimators is not a consistent proxy for causal estimator bias.\",\"XGBoost achieved the lowest RMSE among non‑oracle methods, while DML‑XGBoost provided superior confidence‑interval coverage.\",\"The method with the best point‑estimate performance does not necessarily yield the best interval coverage.\",\"A sim[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:18:45 │ 02/09/2026, 10:18:48 │ 3 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2609.00434-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:18:48
+  End:       02/09/2026, 10:18:54
+  Duration:  6 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2609.00434\",\"title\":\"SAGE: State-Grounded, Abstention-Aware Evaluation of Task-Oriented Dialogue Agents\",\"summary\":\"The paper introduces SAGE, a state‑grounded, abstention‑aware evaluation framework for task‑oriented dialogue agents that compiles workflow specifications and per‑turn state differences into atomic, schema‑grounded criteria. SAGE routes each criterion through a cascade of symbolic and encoder/NLI verifiers that can abstain, aggregating verdicts into turn‑level decisions with evidence traces, achieving high accuracy with zero paid LLM cost (SAGE‑Core). Experiments across MultiWOZ, Schema‑Guided Dialogue, and ABCD show SAGE‑Core outperforms several LLM‑as‑judge baselines, including GPT‑4.1, while costing far less, and a human audit confirms its label fidelity.\",\"relevance\":0.04,\"claims\":[\"SAGE‑Core decides 81–91% of evaluation criteria using only symbolic rules and on‑device encoders, incurring zero paid LLM cost.\",\"Adding a focused LLM fallback (SAGE‑LLM) [truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:18:48 │ 02/09/2026, 10:18:54 │ 6 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2609.00686-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:18:54
+  End:       02/09/2026, 10:19:06
+  Duration:  13 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2609.00686\",\"title\":\"A Study of Hidden-State Optimization Order in Predictive Coding Networks\",\"summary\":\"The paper investigates how the order of hidden-state optimization affects learning in predictive coding networks (PCNs). It proposes a boundary‑first inference schedule that partitions a model into chunks, first aligning hidden states at chunk boundaries before refining interior representations. Experiments on CIFAR‑10 show that this schedule improves classification accuracy by up to 9.77% compared to standard PCN training and yields diagnostics indicative of stronger feature learning. The authors argue that chunk‑based, boundary‑first inference is a useful design principle for local‑learning frameworks.\",\"relevance\":0.05,\"claims\":[\"Standard predictive coding networks exhibit weak feature learning due to unstructured local objectives.\",\"A boundary‑first inference schedule that first optimizes hidden states at chunk boundaries improves performance.\",\"The schedule ra[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 02/09/2026, 10:18:54 │ 02/09/2026, 10:19:06 │ 13 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://arxiv.org/abs/2609.00935-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:19:06
+  End:       02/09/2026, 10:19:14
+  Duration:  8 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://arxiv.org/abs/2609.00935\",\"title\":\"DualStake: Dual-Path Confidence Calibration in Deep Research Agents\",\"summary\":\"The paper introduces DualStake, a calibration technique for deep research agents that elicits confidence after each retrieval step (Evidence Confidence) and after answer generation (Answer Confidence). It shows that Evidence Confidence is a stronger uncertainty indicator and that aligning both confidences via margin‑clipped, confidence‑dependent stake rewards improves calibration without harming answer accuracy across several LLMs and QA benchmarks.\",\"relevance\":0.2,\"claims\":[\"Evidence confidence after the final retrieval step provides a stronger uncertainty signal than answer confidence.\",\"Answer confidence is largely determined by evidence confidence.\",\"DualStake jointly aligns evidence and answer confidences with correctness using margin‑clipped, confidence‑dependent stake rewards.\",\"DualStake consistently improves confidence calibration without reducing answer accur[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:19:06 │ 02/09/2026, 10:19:14 │ 8 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
