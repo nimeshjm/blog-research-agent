@@ -1,0 +1,81 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.129.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         summarize-workflow
+Instance Id:           f7e25faa-021e-42b4-808a-67baa40c79d6-s2
+Version Id:            53d3596d-c826-414d-bd4b-c47313957ab4
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                02/09/2026, 14:20:59
+Success:               ✅ Yes
+Start:                 02/09/2026, 14:21:02
+End:                   02/09/2026, 14:21:10
+Duration:              9 seconds
+Last Successful Step:  summarize:https://openai.com/index/polimill-1
+Steps:
+
+  Name:      summarize:https://openai.com/index/path-to-astra-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 14:21:02
+  End:       02/09/2026, 14:21:02
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":null,\"neurons\":0,\"skipReason\":\"http-error\",\"status\":403}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 14:21:02 │ 02/09/2026, 14:21:02 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://openai.com/index/chatgpt-connects-health-records-and-healthcare-sources-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 14:21:02
+  End:       02/09/2026, 14:21:02
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":null,\"neurons\":0,\"skipReason\":\"http-error\",\"status\":403}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 14:21:02 │ 02/09/2026, 14:21:02 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://openai.com/index/gilbert-tobin-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 14:21:02
+  End:       02/09/2026, 14:21:02
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":null,\"neurons\":0,\"skipReason\":\"http-error\",\"status\":403}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 14:21:02 │ 02/09/2026, 14:21:02 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://www.anthropic.com/news/enterprise-frontier-safeguards-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 14:21:02
+  End:       02/09/2026, 14:21:10
+  Duration:  8 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://www.anthropic.com/news/enterprise-frontier-safeguards\",\"title\":\"Developing Enterprise Frontier Safeguards with our customers\",\"summary\":\"Anthropic announced Enterprise Frontier Safeguards (EFS), a solution that lets customers retain zero data retention privacy while enabling 30‑day data storage in their own cloud accounts for automated misuse detection across sessions. Developed with input from over 100 enterprises, EFS provides customer‑controlled encryption keys, audit logging, and fully automated safety monitoring without Anthropic human review.\",\"relevance\":0.2,\"claims\":[\"EFS combines zero‑data‑retention privacy with 30‑day data retention for cross‑session misuse detection.\",\"All activity data is stored in the customer’s own cloud infrastructure under their encryption keys and policies.\",\"Automated safety monitoring flags are sent directly to customers, eliminating Anthropic human review.\",\"The solution was co‑designed with more than 100 enterprises across regulated industries t[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 14:21:02 │ 02/09/2026, 14:21:10 │ 8 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://openai.com/index/polimill-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 14:21:10
+  End:       02/09/2026, 14:21:10
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":null,\"neurons\":0,\"skipReason\":\"http-error\",\"status\":403}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 14:21:10 │ 02/09/2026, 14:21:10 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘

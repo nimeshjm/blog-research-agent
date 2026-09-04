@@ -1,0 +1,190 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.128.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         research-workflow
+Instance Id:           e0f3bd1c-6a52-445c-b184-a16f862d490d
+Version Id:            1d62e41a-3163-45ab-8a5f-08eae892118d
+Status:                ✅ Completed
+Trigger:               🌎 API
+Queued:                02/09/2026, 10:17:59
+Success:               ✅ Yes
+Start:                 02/09/2026, 10:18:02
+End:                   02/09/2026, 10:22:26
+Duration:              4 minutes
+Last Successful Step:  record-success-1
+Steps:
+
+  Name:      start-run-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:18:02
+  End:       02/09/2026, 10:18:03
+  Duration:  1 second
+  Success:   ✅ Yes
+  Output:    null
+┌──────────────────────┬──────────────────────┬──────────┬────────────┐
+│ Start                │ End                  │ Duration │ State      │
+├──────────────────────┼──────────────────────┼──────────┼────────────┤
+│ 02/09/2026, 10:18:02 │ 02/09/2026, 10:18:03 │ 1 second │ ✅ Success │
+└──────────────────────┴──────────────────────┴──────────┴────────────┘
+
+  Name:      select-topic-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:18:03
+  End:       02/09/2026, 10:18:03
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"id\":1,\"title\":\"git worktrees are for agents\",\"angle\":\"git worktrees exist for coding agents, not for humans.\",\"status\":\"in_progress\",\"origin\":\"human\",\"createdAt\":\"2026-08-27 16:08:09\"}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:18:03 │ 02/09/2026, 10:18:03 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      load-sources-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:18:03
+  End:       02/09/2026, 10:18:03
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "[{\"name\":\"arXiv cs.SE\",\"feedUrl\":\"http://export.arxiv.org/rss/cs.SE\"},{\"name\":\"arXiv cs.AI\",\"feedUrl\":\"http://export.arxiv.org/rss/cs.AI\"},{\"name\":\"OpenAI\",\"feedUrl\":\"https://openai.com/blog/rss.xml\"},{\"name\":\"Cloudflare\",\"feedUrl\":\"https://blog.cloudflare.com/rss/\"},{\"name\":\"GitHub\",\"feedUrl\":\"https://github.blog/feed/\"},{\"name\":\"Stack Overflow\",\"feedUrl\":\"https://stackoverflow.blog/feed/\"},{\"name\":\"Martin Fowler\",\"feedUrl\":\"https://martinfowler.com/feed.atom\"},{\"name\":\"Will Larson\",\"feedUrl\":\"https://lethain.com/feeds.xml\"},{\"name\":\"Simon Willison\",\"feedUrl\":\"https://simonwillison.net/atom/everything/\"},{\"name\":\"The Pragmatic Engineer\",\"feedUrl\":\"https://newsletter.pragmaticengineer.com/feed\"},{\"name\":\"DX\",\"feedUrl\":\"https://newsletter.getdx.com/feed\"},{\"name\":\"Honeycomb\",\"feedUrl\":\"https://www.honeycomb.io/feed\"},{\"name\":\"Anthropic News\",\"feedUrl\":\"https://raw.githubusercontent.com/Olshansk/rss-feeds/refs/heads/main/feeds/feed_anthropic_news.xml\"},{\"name\":\"Anthropic Engineering\",\"feedUrl\":\"https://raw.gith[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:18:03 │ 02/09/2026, 10:18:03 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      create-gather-children-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:18:03
+  End:       02/09/2026, 10:18:04
+  Duration:  1 second
+  Success:   ✅ Yes
+  Output:    "[\"e0f3bd1c-6a52-445c-b184-a16f862d490d-g0\",\"e0f3bd1c-6a52-445c-b184-a16f862d490d-g1\",\"e0f3bd1c-6a52-445c-b184-a16f862d490d-g2\",\"e0f3bd1c-6a52-445c-b184-a16f862d490d-g3\",\"e0f3bd1c-6a52-445c-b184-a16f862d490d-g4\"]"
+┌──────────────────────┬──────────────────────┬──────────┬────────────┐
+│ Start                │ End                  │ Duration │ State      │
+├──────────────────────┼──────────────────────┼──────────┼────────────┤
+│ 02/09/2026, 10:18:03 │ 02/09/2026, 10:18:04 │ 1 second │ ✅ Success │
+└──────────────────────┴──────────────────────┴──────────┴────────────┘
+
+  Name:      await-gather-children-wait:0-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 10:18:04
+  End:       02/09/2026, 10:18:34
+  Duration:  30 seconds
+
+  Name:      await-gather-children:0-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:18:34
+  End:       02/09/2026, 10:18:34
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"done\":true,\"total\":751}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:18:34 │ 02/09/2026, 10:18:34 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      shortlist-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:18:34
+  End:       02/09/2026, 10:18:34
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "[{\"url\":\"https://arxiv.org/abs/2608.27831\",\"title\":\"RealSWE: A Compositional Evaluation of Coding Agents under Realistic User Requests\",\"publishedAt\":\"Wed, 02 Sep 2026 00:00:00 -0400\",\"publishedMs\":1788321600000,\"sourceName\":\"arXiv cs.SE\"},{\"url\":\"https://arxiv.org/abs/2608.28632\",\"title\":\"AutoScientist-Quant: Self-Evolving Coding Agents for Automatic Research in Quantitative Investment\",\"publishedAt\":\"Wed, 02 Sep 2026 00:00:00 -0400\",\"publishedMs\":1788321600000,\"sourceName\":\"arXiv cs.AI\"},{\"url\":\"https://arxiv.org/abs/2609.00006\",\"title\":\"Harness Engineering: Anatomy, Architecture, and Evolution of Coding Agents -- A Source-Code Study of Eleven Systems\",\"publishedAt\":\"Wed, 02 Sep 2026 00:00:00 -0400\",\"publishedMs\":1788321600000,\"sourceName\":\"arXiv cs.SE\"},{\"url\":\"https://arxiv.org/abs/2605.05726\",\"title\":\"SkillRet: A Large-Scale Benchmark for Skill Retrieval in LLM Agents\",\"publishedAt\":\"Wed, 02 Sep 2026 00:00:00 -0400\",\"publishedMs\":1788321600000,\"sourceName\":\"arXiv cs.AI\"},{\"url\":\"https://arxiv.org/abs/260[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:18:34 │ 02/09/2026, 10:18:34 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      create-summarize-children-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:18:34
+  End:       02/09/2026, 10:18:35
+  Duration:  1 second
+  Success:   ✅ Yes
+  Output:    "[\"e0f3bd1c-6a52-445c-b184-a16f862d490d-s0\",\"e0f3bd1c-6a52-445c-b184-a16f862d490d-s1\",\"e0f3bd1c-6a52-445c-b184-a16f862d490d-s2\"]"
+┌──────────────────────┬──────────────────────┬──────────┬────────────┐
+│ Start                │ End                  │ Duration │ State      │
+├──────────────────────┼──────────────────────┼──────────┼────────────┤
+│ 02/09/2026, 10:18:34 │ 02/09/2026, 10:18:35 │ 1 second │ ✅ Success │
+└──────────────────────┴──────────────────────┴──────────┴────────────┘
+
+  Name:      await-summarize-children-wait:0-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 10:18:35
+  End:       02/09/2026, 10:21:35
+  Duration:  3 minutes
+
+  Name:      await-summarize-children:0-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:21:35
+  End:       02/09/2026, 10:21:36
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"done\":true,\"summaries\":[{\"url\":\"https://arxiv.org/abs/2608.27831\",\"title\":\"RealSWE: A Compositional Evaluation of Coding Agents under Realistic User Requests\",\"summary\":\"The paper introduces RealSWE, a benchmark suite that derives 381 multi-variant coding tasks from existing SWE-bench problems but varies the information composition and linguistic style to match real user prompts. An analysis of real-world requests shows they are much shorter, less structured, and more informal than benchmark tasks, with 88% containing only a problem statement versus 7% in existing benchmarks. Experiments with seven LLM-based coding agents reveal that realistic inputs lower resolution rates by about 6.4 percentage points and can alter model rankings, and that explicitly providing Desired Behavior and Motivation markedly improves performance while other context adds little value. The authors argue that prompt design recommendations can boost coding agent effectiveness in practice.\",\"relevance\":0.15,\"claims\":[\"Real user prompt[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:21:35 │ 02/09/2026, 10:21:36 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      synthesize-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:21:36
+  End:       02/09/2026, 10:22:10
+  Duration:  34 seconds
+  Success:   ✅ Yes
+  Output:    "{\"draft\":{\"slug\":\"why-your-coding-agents-need-git-worktrees-not-human-centred-branches\",\"title\":\"Why Your Coding Agents Need Git Worktrees, Not Human‑Centred Branches\",\"description\":\"Leverage lightweight, isolated worktrees to let autonomous coding agents run in parallel, stay reproducible, and cut CI costs.\",\"date\":\"2026-09-02\",\"authors\":[\"nimeshjm\"],\"tags\":[\"git\",\"coding-agents\",\"infrastructure\",\"ci-cd\",\"productivity\"],\"draft\":true,\"brief\":\"# Research brief: git worktrees are for agents\\n\\n**Angle:** git worktrees exist for coding agents, not for humans.\\n\\n## Sources\\n\\n- [RealSWE: A Compositional Evaluation of Coding Agents under Realistic User Requests](https://arxiv.org/abs/2608.27831) — RealSWE benchmark for realistic coding agent evaluation and prompt design guidance\\n- [AutoScientist-Quant: Self-Evolving Coding Agents for Automatic Research in Quantitative Investment](https://arxiv.org/abs/2608.28632) — Budget‑conditioned controller for autonomous coding agents in quantitative research\\n- [Harness En[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 02/09/2026, 10:21:36 │ 02/09/2026, 10:22:10 │ 34 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      create-publish-children-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:22:10
+  End:       02/09/2026, 10:22:11
+  Duration:  1 second
+  Success:   ✅ Yes
+  Output:    "[\"e0f3bd1c-6a52-445c-b184-a16f862d490d-p0\"]"
+┌──────────────────────┬──────────────────────┬──────────┬────────────┐
+│ Start                │ End                  │ Duration │ State      │
+├──────────────────────┼──────────────────────┼──────────┼────────────┤
+│ 02/09/2026, 10:22:10 │ 02/09/2026, 10:22:11 │ 1 second │ ✅ Success │
+└──────────────────────┴──────────────────────┴──────────┴────────────┘
+
+  Name:      await-publish-children-wait:0-1
+  Type:      💤 Sleeping
+  Start:     02/09/2026, 10:22:11
+  End:       02/09/2026, 10:22:26
+  Duration:  15 seconds
+
+  Name:      await-publish-children:0-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:22:26
+  End:       02/09/2026, 10:22:26
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"done\":true,\"prUrl\":\"https://github.com/nimeshjm/nimeshjm.com/pull/1\"}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:22:26 │ 02/09/2026, 10:22:26 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      record-success-1
+  Type:      🎯 Step
+  Start:     02/09/2026, 10:22:26
+  End:       02/09/2026, 10:22:26
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    null
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 02/09/2026, 10:22:26 │ 02/09/2026, 10:22:26 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘

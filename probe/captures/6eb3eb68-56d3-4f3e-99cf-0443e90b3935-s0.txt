@@ -1,0 +1,81 @@
+
+ ⛅️ wrangler 4.125.0 (update available 4.129.0)
+───────────────────────────────────────────────
+Describing latest instance:
+Workflow Name:         summarize-workflow
+Instance Id:           6eb3eb68-56d3-4f3e-99cf-0443e90b3935-s0
+Version Id:            5847e416-8cd2-46a7-a48e-cb89ec1004bd
+Status:                ✅ Completed
+Trigger:               🔗 Binding
+Queued:                03/09/2026, 07:01:43
+Success:               ✅ Yes
+Start:                 03/09/2026, 07:01:45
+End:                   03/09/2026, 07:02:25
+Duration:              40 seconds
+Last Successful Step:  summarize:https://claude.com/blog/how-monday-com-transformed-its-platform-into-an-agent-first-product-where-humans-and-agents-collaborate-1
+Steps:
+
+  Name:      summarize:https://developers.openai.com/blog/rosalind-workbench-1
+  Type:      🎯 Step
+  Start:     03/09/2026, 07:01:45
+  End:       03/09/2026, 07:01:58
+  Duration:  13 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://developers.openai.com/blog/rosalind-workbench\",\"title\":\"Meet Rosalind Workbench: Empowering every scientist to be their own research team\",\"summary\":\"The article introduces Rosalind Workbench, an AI‑powered platform that unifies scientific tools, data, and reasoning models for life‑science researchers. It offers guided, traceable workflows for tasks such as protein design, genomics analysis, and experimental planning, leveraging the specialized GPT‑Rosalind model. The workbench aims to reduce handoff friction by keeping the research question, data, analysis, and evidence in a single, reviewable environment.\",\"relevance\":0.05,\"claims\":[\"Rosalind Workbench provides a single environment that integrates favorite scientific tools with AI models.\",\"Guided workflows keep data, analysis steps, and supporting evidence connected and traceable.\",\"The platform uses the GPT‑Rosalind model to orchestrate specialized tools across domains like medicinal chemistry and genomics.\",\"Researchers can exe[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 03/09/2026, 07:01:45 │ 03/09/2026, 07:01:58 │ 13 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://www.anthropic.com/research/enabling-independent-research-1
+  Type:      🎯 Step
+  Start:     03/09/2026, 07:01:58
+  End:       03/09/2026, 07:02:08
+  Duration:  10 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://www.anthropic.com/research/enabling-independent-research\",\"title\":\"Aug 26, 2026Societal ImpactsEnabling independent research on how people use Claude\",\"summary\":\"Anthropic piloted a program allowing external researchers to independently analyze aggregated Claude usage data through a privacy-preserving tool, Anthropic Insights. The studies revealed that users frequently delegate high‑stakes tasks to the model, that human affect aligns with Claude's behavior, and that newer Claude coding models deliver substantial productivity gains, with the model’s time estimates correlating with actual developer times. The pilot demonstrated that such external, privacy‑safe research is feasible but resource‑intensive to scale.\",\"relevance\":0.22,\"claims\":[\"External researchers can run independent, privacy‑preserving analyses on Anthropic's real‑world Claude usage data using Anthropic Insights.\",\"More than half of Claude conversations involve users delegating consequential, high‑accountability tasks,[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 03/09/2026, 07:01:58 │ 03/09/2026, 07:02:08 │ 10 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
+
+  Name:      summarize:https://openai.com/index/jalapeno-first-results-1
+  Type:      🎯 Step
+  Start:     03/09/2026, 07:02:08
+  End:       03/09/2026, 07:02:08
+  Duration:  0 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":null,\"neurons\":0,\"skipReason\":\"http-error\",\"status\":403}"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 03/09/2026, 07:02:08 │ 03/09/2026, 07:02:08 │ 0 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://www.anthropic.com/news/wellbeing-research-grants-1
+  Type:      🎯 Step
+  Start:     03/09/2026, 07:02:08
+  End:       03/09/2026, 07:02:15
+  Duration:  7 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://www.anthropic.com/news/wellbeing-research-grants\",\"title\":\"Funding better evaluations of AI’s impact on wellbeing\",\"summary\":\"Anthropic announced a $5 million grant program to fund independent research on how AI systems affect user wellbeing, offering funding, model access, and technical support for open‑source evaluations. The program emphasizes rigorous, multi‑turn conversation benchmarks designed with clinical experts and validated against real‑world scenarios. Grantees must publish their tools openly so developers can adopt them, and the initiative aims to improve industry standards for AI safeguards in emotional and mental‑health contexts.\",\"relevance\":0.05,\"claims\":[\"A $5 M grant program will fund independent, open‑source evaluations of AI impact on wellbeing.\",\"Evaluations must be designed with clinical experts, test both harms and over‑compliance, and reflect multi‑turn user interactions.\",\"Grantees will receive direct access to Anthropic’s models and technical support.\",\"Al[truncated output]"
+┌──────────────────────┬──────────────────────┬───────────┬────────────┐
+│ Start                │ End                  │ Duration  │ State      │
+├──────────────────────┼──────────────────────┼───────────┼────────────┤
+│ 03/09/2026, 07:02:08 │ 03/09/2026, 07:02:15 │ 7 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴───────────┴────────────┘
+
+  Name:      summarize:https://claude.com/blog/how-monday-com-transformed-its-platform-into-an-agent-first-product-where-humans-and-agents-collaborate-1
+  Type:      🎯 Step
+  Start:     03/09/2026, 07:02:15
+  End:       03/09/2026, 07:02:25
+  Duration:  10 seconds
+  Success:   ✅ Yes
+  Output:    "{\"summary\":{\"url\":\"https://claude.com/blog/how-monday-com-transformed-its-platform-into-an-agent-first-product-where-humans-and-agents-collaborate\",\"title\":\"How monday.com transformed its platform into an agent-first product where humans and agents collaborate\",\"summary\":\"Monday.com rebuilt its work management platform around a human‑agent collaboration model using Anthropic's Claude, embedding AI agents directly into workflows rather than as add‑on features. The redesign, launched in May 2026, has generated over five million agent interactions and introduced agents as named teammates with permissions, avatars, and trigger‑based assignments. The company shares lessons about cultural change, small cross‑functional teams, trust, infrastructure scaling, and leveraging existing product strengths when moving to an agent‑first architecture.\",\"relevance\":0.07,\"claims\":[\"Adding AI as isolated features quickly hits a usage ceiling, prompting a shift to native agent integration.\",\"Embedding agents as named teammates wi[truncated output]"
+┌──────────────────────┬──────────────────────┬────────────┬────────────┐
+│ Start                │ End                  │ Duration   │ State      │
+├──────────────────────┼──────────────────────┼────────────┼────────────┤
+│ 03/09/2026, 07:02:15 │ 03/09/2026, 07:02:25 │ 10 seconds │ ✅ Success │
+└──────────────────────┴──────────────────────┴────────────┴────────────┘
