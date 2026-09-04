@@ -152,6 +152,19 @@ name = "publish-workflow"
 binding = "PUBLISH_WORKFLOW"
 class_name = "PublishWorkflow"
 
+# feature 003, extended 2026-09-04 (#109): `selectTopic`'s propose branch's own
+# Workflow. Reached only when the queue is empty, so unlike the three above
+# this child does not run every day - but when it does, its three fetches plus
+# the topics read/insert/attach get a fresh 50-subrequest budget instead of
+# sharing the parent's `select-topic` step, which is what took the parent's
+# pessimal total over the platform's ceiling the moment the queue actually
+# drains (issue #109). No per-child-size var, same reason PUBLISH_WORKFLOW has
+# none: one run proposes at most one topic. See src/propose-workflow.ts.
+[[workflows]]
+name = "propose-workflow"
+binding = "PROPOSE_WORKFLOW"
+class_name = "ProposeWorkflow"
+
 [observability]
 enabled = true
 

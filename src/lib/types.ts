@@ -9,6 +9,8 @@ export interface Env {
   SUMMARIZE_WORKFLOW: Workflow<SummarizeParams>;
   /** feature 003, extended 2026-09-01 (#75): the child Workflow the pull request is opened from, not the parent's own steps. See src/publish-workflow.ts. */
   PUBLISH_WORKFLOW: Workflow<PublishParams>;
+  /** feature 003, extended 2026-09-04 (#109): the child Workflow `selectTopic`'s propose branch runs in, not the parent's own steps. See src/propose-workflow.ts. */
+  PROPOSE_WORKFLOW: Workflow<ProposeParams>;
 
   BLOG_REPO: string;
   BLOG_BASE_BRANCH: string;
@@ -289,6 +291,50 @@ export type PublishPollState = ChildPollState<string>;
 
 /** Outcome of one `await-publish-children` poll round (src/workflow.ts), the same union shape and for the same reason as `GatherPollResult`. */
 export type PublishPollResult = { done: true; prUrl: string } | { done: false; state: PublishPollState };
+
+/**
+ * `ProposeWorkflow`'s input (feature 003, extended 2026-09-04 (#109)):
+ * `selectTopic`'s propose branch - reached only when the queue is empty -
+ * moved into a child instance for the same reason gather, summarize and
+ * publish did. One instance per run that needs it, and only when it needs
+ * it - there is nothing to chunk, so this carries no `index`, the same as
+ * `PublishParams`.
+ */
+export interface ProposeParams {
+  /**
+   * `reclaimAndClaim`'s own read (src/lib/d1.ts, #104), already spent in the
+   * parent's `select-topic` step at no extra subrequest - passed in here
+   * rather than re-read so this child does not pay for something the parent
+   * already has.
+   */
+  coveredTopicTitles: string[];
+  /**
+   * The PARENT's Workflow instance id, deliberately not this child's own -
+   * `attachRunTopic` (called inside this child; see propose-workflow.ts)
+   * writes the *parent's* `runs` row under this id. Same shape
+   * `GatherParams.runId` and `SummarizeParams.parentInstanceId` already use.
+   */
+  parentInstanceId: string;
+}
+
+/**
+ * What a `ProposeWorkflow` child returns. An object wrapping the nullable
+ * topic, never a bare `Topic | null` - `pollChildBatch`'s
+ * `outputs[id] ?? (replacement === undefined ? undefined : ...)`
+ * (src/lib/workflow-children.ts) would otherwise treat a legitimate `null`
+ * completion ("nothing uncovered to propose") the same as `undefined` ("this
+ * child never reached a polled completion"), because `??` does not
+ * distinguish the two, and throw instead of letting `run()` fall through to
+ * `record-no-topic`.
+ */
+export interface ProposeChildOutput {
+  topic: Topic | null;
+}
+
+export type ProposePollState = ChildPollState<ProposeChildOutput>;
+
+/** Outcome of one `await-propose-children` poll round (src/workflow.ts). `topic` rather than a count or a URL, because that is what the run needs next - either a topic to research or nothing, in which case `run()` falls through to `record-no-topic` exactly as the old inline propose branch did. */
+export type ProposePollResult = { done: true; topic: Topic | null } | { done: false; state: ProposePollState };
 
 /** Recorded in the `runs` table for observability and budget tracking. */
 export interface RunOutcome {

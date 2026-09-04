@@ -791,6 +791,17 @@ fire before the platform's own subrequest error. The cap now counts polls includ
 one it throws in; the three budgets keep their values and finally mean them, and the
 pessimal total is 46 — 49 with the allowance, one spare.
 
+**Annotation, 2026-09-04 (#109) — every number in the two paragraphs above has since
+moved, and is left as written here as a stage-3 record of step 9-11's own reasoning
+rather than corrected in place.** `start-run` was never actually in the "46"/"49" running
+sum (`spec.md`'s design section carries the corrected 47/49); `SUMMARIZE_REPLACEMENT_SUBREQUEST_ALLOWANCE`
+went 3 → 2 and `SUMMARIZE_REPLACEMENT_POLL_ROUNDS` went 2 → 1, because `selectTopic`'s own
+propose-path child (added the same day) needed the two subrequests this allowance's cut
+freed. The capability this section describes still buys exactly one replacement per run
+(`floor(2 / (1 + 1)) = 1`) - only the arithmetic behind that floor, and how many rounds the
+one replacement gets, changed. `spec.md`'s requirement 4 carries the current numbers and
+the argument for why one round still catches run `54ce776b`'s measured convergence.
+
 **So step 9's `SUMMARIZE_POLL_INTERVAL` is superseded**, 90 s → 180 s, and that is what
 makes this mechanism live code rather than dead code. Three polls at 90 s span 270 s; run
 `54ce776b`'s children were created at ~18:33:23 and the transient surfaced at 18:38:34,
@@ -854,6 +865,14 @@ than a value here. Step 10 then moved
 reading a parent-side failure from here on, `shortlist` is the first term to suspect again
 - it is 13 of the parent's 23 fixed subrequests, it is the only one that follows the feed
 allowlist, and there is nothing left to move out ahead of it.
+
+**Annotation, 2026-09-04 (#109) — the "23" above was itself off by one, discovered after
+this step, and is left as written rather than corrected in place.** `start-run`'s own D1
+call was never actually in that running sum; the true fixed total was 24, and `spec.md`'s
+design section carries the corrected figure and the dated finding behind it. This is a
+stage-3 record of what was believed true when step 10 landed, not a live figure, so the
+number above stands as it was reasoned about at the time - `spec.md` is where the current,
+corrected arithmetic lives.
 
 ## Reuse
 

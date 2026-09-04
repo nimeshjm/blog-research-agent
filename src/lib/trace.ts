@@ -90,6 +90,16 @@ export const ATTR_SUMMARIZE_CHILD_INDEX = 'agent.summarize.child_index';
  */
 export const ATTR_PUBLISH_CHILDREN = 'agent.publish.children';
 /**
+ * Number of ProposeWorkflow children, on the parent's `create-propose-children`
+ * / `await-propose-children` spans (feature 003, extended 2026-09-04 (#109)).
+ * Always 1 on the runs that carry it at all - only `selectTopic`'s propose
+ * branch creates this child, never the queue-draining or named-topic paths -
+ * and carried for the same reason `ATTR_PUBLISH_CHILDREN` above is: a poll
+ * round's subrequest cost is readable off its own span the way every other
+ * loop's is.
+ */
+export const ATTR_PROPOSE_CHILDREN = 'agent.propose.children';
+/**
  * How many SummarizeWorkflow children this run has replaced after a
  * recognised transient platform failure, on the parent's
  * `await-summarize-children` spans (spec.md requirement 4's narrowing,
