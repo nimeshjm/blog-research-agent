@@ -12,7 +12,7 @@ import {
   readSourceWeights,
   recordRunOutcome,
   recordRunSpend,
-  recordSeenAndPrune,
+  recordSeenPruneAndCloseTopic,
   SEEN_URLS_CHUNK_SIZE,
   startRun,
   TOPIC_DEDUPE_TITLE_LIMIT,
@@ -527,16 +527,21 @@ describe('pruneRunCandidates()', () => {
   });
 });
 
-describe('recordSeenAndPrune()', () => {
+describe('recordSeenPruneAndCloseTopic()', () => {
   // The actual writer this PR adds (spec.md req. 4, #100): findSeenUrls only
   // ever reads seen_urls, and until this function existed nothing in src/
   // ever inserted into it - only test fixtures did, by hand, which is why
   // the dedupe filter had passing tests while being inert in production.
   it('inserts every candidate passed as seen into seen_urls', async () => {
-    await recordSeenAndPrune(env.DB, 7, [
-      candidate({ url: 'https://example.com/a', title: 'A', sourceName: 'Source A' }),
-      candidate({ url: 'https://example.com/b', title: 'B', sourceName: 'Source B' }),
-    ]);
+    await recordSeenPruneAndCloseTopic(
+      env.DB,
+      7,
+      [
+        candidate({ url: 'https://example.com/a', title: 'A', sourceName: 'Source A' }),
+        candidate({ url: 'https://example.com/b', title: 'B', sourceName: 'Source B' }),
+      ],
+      null,
+    );
 
     const rows = await env.DB.prepare('SELECT url, title, source FROM seen_urls ORDER BY url').all<{
       url: string;
@@ -550,11 +555,11 @@ describe('recordSeenAndPrune()', () => {
   });
 
   it('is idempotent under a replayed insert of the same URL (ON CONFLICT DO NOTHING)', async () => {
-    await recordSeenAndPrune(env.DB, 7, [candidate({ url: 'https://example.com/a', title: 'first' })]);
+    await recordSeenPruneAndCloseTopic(env.DB, 7, [candidate({ url: 'https://example.com/a', title: 'first' })], null);
     // A second attempt, as `run()`'s top-of-function replay (spec.md fact 2)
     // would produce - same URL, and here a different title, to prove the
     // original row is kept rather than overwritten or duplicated.
-    await recordSeenAndPrune(env.DB, 7, [candidate({ url: 'https://example.com/a', title: 'replayed' })]);
+    await recordSeenPruneAndCloseTopic(env.DB, 7, [candidate({ url: 'https://example.com/a', title: 'replayed' })], null);
 
     const rows = await env.DB.prepare('SELECT url, title FROM seen_urls WHERE url = ?')
       .bind('https://example.com/a')
@@ -566,7 +571,7 @@ describe('recordSeenAndPrune()', () => {
     await writeRunCandidates(env.DB, 'run-old', 'Source A', [candidate({ url: 'https://example.com/old' })]);
     await env.DB.prepare(`UPDATE run_candidates SET created_at = datetime('now', '-30 days')`).run();
 
-    await recordSeenAndPrune(env.DB, 7, []);
+    await recordSeenPruneAndCloseTopic(env.DB, 7, [], null);
 
     const seen = await env.DB.prepare('SELECT COUNT(*) AS n FROM seen_urls').first<{ n: number }>();
     expect(seen?.n).toBe(0);
@@ -574,7 +579,7 @@ describe('recordSeenAndPrune()', () => {
     expect(candidates?.n).toBe(0);
   });
 
-  it('costs exactly one subrequest (one db.batch() call), insert and prune together', async () => {
+  it('costs exactly one subrequest (one db.batch() call), whether or not a topic is closed', async () => {
     // `db.prepare()` builds a statement object without talking to D1 - the
     // subrequest is the terminal call (`.batch()`, `.run()`, `.all()`,
     // `.first()`), so only `batch` is counted here, not `prepare`
@@ -589,9 +594,124 @@ describe('recordSeenAndPrune()', () => {
       },
     } as D1Database;
 
-    await recordSeenAndPrune(countingDb, 7, [candidate({ url: 'https://example.com/a' })]);
+    await recordSeenPruneAndCloseTopic(countingDb, 7, [candidate({ url: 'https://example.com/a' })], null);
+    // #108: the third statement (the topic-close UPDATE) must still ride the
+    // same batch, not spend a second subrequest - this is the arithmetic
+    // `createPublishChildren`'s comment (src/workflow.ts) depends on staying
+    // true.
+    await recordSeenPruneAndCloseTopic(countingDb, 7, [candidate({ url: 'https://example.com/b' })], {
+      id: 1,
+      status: 'done',
+    });
 
-    expect(batchCount).toBe(1);
+    expect(batchCount).toBe(2);
+  });
+
+  // #108: nothing ever closed a topic, so a run that succeeded left it
+  // `in_progress` forever - indistinguishable from a run that died mid-step,
+  // and reclaimed by the TTL sweep exactly as if it had.
+  describe('closing a topic', () => {
+    async function insertTopic(status: string, claimedAt: string | null = "datetime('now')"): Promise<number> {
+      const claimedAtSql = claimedAt === null ? 'NULL' : claimedAt;
+      const row = await env.DB.prepare(
+        `INSERT INTO topics (title, angle, status, origin, claimed_at) VALUES ('t', NULL, ?, 'human', ${claimedAtSql}) RETURNING id`,
+      )
+        .bind(status)
+        .first<{ id: number }>();
+      return row?.id as number;
+    }
+
+    it('closes an in_progress topic to done', async () => {
+      const id = await insertTopic('in_progress');
+
+      await recordSeenPruneAndCloseTopic(env.DB, 7, [], { id, status: 'done' });
+
+      const row = await env.DB.prepare('SELECT status, claimed_at FROM topics WHERE id = ?').bind(id).first<{
+        status: string;
+        claimed_at: string | null;
+      }>();
+      expect(row?.status).toBe('done');
+      expect(row?.claimed_at).toBeNull();
+    });
+
+    it('closes an in_progress topic to rejected', async () => {
+      const id = await insertTopic('in_progress');
+
+      await recordSeenPruneAndCloseTopic(env.DB, 7, [], { id, status: 'rejected' });
+
+      const row = await env.DB.prepare('SELECT status FROM topics WHERE id = ?').bind(id).first<{ status: string }>();
+      expect(row?.status).toBe('rejected');
+    });
+
+    it('leaves the topic alone when topicClose is null', async () => {
+      const id = await insertTopic('in_progress');
+
+      await recordSeenPruneAndCloseTopic(env.DB, 7, [], null);
+
+      const row = await env.DB.prepare('SELECT status FROM topics WHERE id = ?').bind(id).first<{ status: string }>();
+      expect(row?.status).toBe('in_progress');
+    });
+
+    // The replay case (spec.md fact 2: `run()` re-executes from the top).
+    // The guard is `AND status = 'in_progress'`, the same conditional-update
+    // pattern `claimRow` uses - a second call finds the row already `done`
+    // and changes nothing, rather than erroring or reverting a status a
+    // later, unrelated process may have since moved on from.
+    it('is a no-op on a replayed close (idempotent under AND status = in_progress)', async () => {
+      const id = await insertTopic('in_progress');
+
+      await recordSeenPruneAndCloseTopic(env.DB, 7, [], { id, status: 'done' });
+      await recordSeenPruneAndCloseTopic(env.DB, 7, [], { id, status: 'done' });
+
+      const row = await env.DB.prepare('SELECT status FROM topics WHERE id = ?').bind(id).first<{ status: string }>();
+      expect(row?.status).toBe('done');
+    });
+
+    // A topic already `queued` (never claimed) or already `rejected`/`done`
+    // by something else must not be silently overwritten by this call - the
+    // `AND status = 'in_progress'` guard is what stops that, not merely what
+    // makes replay idempotent.
+    it('does not close a topic that is not in_progress', async () => {
+      const id = await insertTopic('queued', null);
+
+      await recordSeenPruneAndCloseTopic(env.DB, 7, [], { id, status: 'done' });
+
+      const row = await env.DB.prepare('SELECT status FROM topics WHERE id = ?').bind(id).first<{ status: string }>();
+      expect(row?.status).toBe('queued');
+    });
+
+    // The actual bug (#108): a topic left `in_progress` by a successful run
+    // is indistinguishable from one stranded by a dead instance, so the TTL
+    // reclaim sweep picks it up again forever. This proves the fix closes
+    // that loop, not merely that a status column changed.
+    it('a topic closed to done is never picked up by the TTL reclaim sweep, even past the TTL', async () => {
+      const id = await insertTopic('in_progress', "datetime('now', '-100 hours')");
+
+      await recordSeenPruneAndCloseTopic(env.DB, 7, [], { id, status: 'done' });
+
+      // ttlHours: 1 - the claim is 100 hours stale, so an in_progress row
+      // would certainly be reclaimed; a closed one must not be.
+      const { row, reclaimedTopics } = await reclaimAndClaim(env.DB, 1, 'some-other-run');
+
+      expect(reclaimedTopics).toBe(0);
+      expect(row).toBeNull();
+      const persisted = await env.DB.prepare('SELECT status FROM topics WHERE id = ?').bind(id).first<{
+        status: string;
+      }>();
+      expect(persisted?.status).toBe('done');
+    });
+
+    // Same proof for the rejected path (record-no-sources / record-no-summaries).
+    it('a topic closed to rejected is never picked up by the TTL reclaim sweep', async () => {
+      const id = await insertTopic('in_progress', "datetime('now', '-100 hours')");
+
+      await recordSeenPruneAndCloseTopic(env.DB, 7, [], { id, status: 'rejected' });
+
+      const { row, reclaimedTopics } = await reclaimAndClaim(env.DB, 1, 'some-other-run');
+
+      expect(reclaimedTopics).toBe(0);
+      expect(row).toBeNull();
+    });
   });
 });
 
@@ -854,6 +974,61 @@ describe('reclaimAndClaim()', () => {
       const result = await reclaimAndClaim(env.DB, 6, 'an-instance-with-no-topic-linked');
 
       expect(result.coveredTopicTitles).toContain('some title');
+    });
+  });
+
+  // #111: the daily neuron guard's own read - the fifth statement in the
+  // same db.batch() call the tests above already exercise.
+  describe('dailyNeuronsSpent (#111)', () => {
+    it('is 0 when no runs have started today', async () => {
+      const result = await reclaimAndClaim(env.DB, 6, 'test-instance');
+      expect(result.dailyNeuronsSpent).toBe(0);
+    });
+
+    it("sums today's runs.neurons_spent across every status, not just succeeded", async () => {
+      for (const [instanceId, status, neurons] of [
+        ['run-succeeded', 'succeeded', 1600],
+        ['run-failed', 'failed', 900],
+        ['run-insufficient', 'insufficient_sources', 400],
+        ['run-no-topic', 'no_topic', 0],
+      ] as const) {
+        await env.DB
+          .prepare(`INSERT INTO runs (instance_id, status, neurons_spent) VALUES (?, ?, ?)`)
+          .bind(instanceId, status, neurons)
+          .run();
+      }
+
+      const result = await reclaimAndClaim(env.DB, 6, 'test-instance');
+
+      expect(result.dailyNeuronsSpent).toBe(1600 + 900 + 400 + 0);
+    });
+
+    it('excludes a run started before today (UTC), not just before 24h ago', async () => {
+      // A run started yesterday but well within the last 24h (23h ago) must
+      // not count - the boundary is the UTC calendar day
+      // (`started_at >= date('now')`), not a rolling window. Anchoring the
+      // fixture with a real 23h offset, rather than asserting against
+      // `date('now')` a second time, is what actually exercises the
+      // calendar-day boundary instead of restating it.
+      await env.DB
+        .prepare(
+          `INSERT INTO runs (instance_id, status, neurons_spent, started_at)
+           VALUES ('run-yesterday', 'succeeded', 5000, datetime('now', '-1 day', 'start of day', '+23 hours'))`,
+        )
+        .run();
+
+      const result = await reclaimAndClaim(env.DB, 6, 'test-instance');
+
+      expect(result.dailyNeuronsSpent).toBe(0);
+    });
+
+    it("includes the calling run's own row, contributing 0 since start-run always writes it at 0", async () => {
+      await startRun(env.DB, 'run-self-spend');
+      await env.DB.prepare(`INSERT INTO runs (instance_id, status, neurons_spent) VALUES ('run-other', 'succeeded', 750)`).run();
+
+      const result = await reclaimAndClaim(env.DB, 6, 'run-self-spend');
+
+      expect(result.dailyNeuronsSpent).toBe(750);
     });
   });
 });

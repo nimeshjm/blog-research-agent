@@ -15,12 +15,34 @@ and stops; a human merges.
 
 ## Requirements
 
-1. The pipeline runs on a schedule without human involvement, daily
-   (`0 6 * * *`). Amended 2026-09-02 (#64) from every two days (`0 6 */2 * *`),
-   which is what this ran at before the cron was paused: one run per daily
-   neuron allowance is the binding constraint, and every gap being exactly 24 h
-   removes the day-of-month arithmetic requirement 8 used to have to argue
-   around.
+1. The pipeline runs on a schedule without human involvement. **Amended
+   2026-09-04 (#111) to every three hours (`0 */3 * * *`)**, from the once-daily
+   `0 6 * * *` #64 set on 2026-09-02 (itself amended from every two days,
+   `0 6 */2 * *`). `topics` held 9 `queued` rows when #111 was written, and at
+   one scheduled run a day a queue that size takes nine days to drain
+   regardless of how much of the daily neuron allowance goes unspent -
+   requirement 1 controls *how often a run can start*, not how many of the
+   day's neurons a run is allowed to spend, and only the latter was ever the
+   real constraint.
+
+   **The binding constraint moved from this requirement to acceptance
+   criterion 8.** #64's version of this requirement said "one run per daily
+   neuron allowance is the binding constraint" because exactly one scheduled
+   slot existed to spend it; that stopped being true the moment a second slot
+   was added, which is why #111 could not raise this cadence on its own
+   (see criterion 8's own amendment for the guard that had to land first).
+   With the guard in place, this requirement only has to offer at least as
+   many slots as the guard will let through in a day, with a little margin
+   for a missed or overlapping slot - not exactly one. Every gap here is
+   still a fixed 3 h, evenly dividing 24 h, so the day-of-month arithmetic
+   requirement 8 used to have to argue around does not reappear.
+
+   **This cadence is a backlog-draining setting, not necessarily the
+   permanent one.** Once the queue is empty, every slot takes the propose
+   branch (requirement 2's "only when empty"), which is
+   [#109](https://github.com/nimeshjm/blog-research-agent/issues/109)'s
+   subrequest concern to solve, not this requirement's. See wrangler.toml's
+   own comment on the `crons` var for the reversion condition.
 2. When the topic queue has a `queued` row, the run uses the oldest one. Only when the
    queue is empty does the agent propose its own topic.
 3. A proposed topic must not duplicate anything already **published, drafted, or
@@ -96,7 +118,8 @@ and stops; a human merges.
    already seen this": a candidate gathered but never shortlisted keeps its one chance:
    it is not burned by this rule, only by the recency window it was already subject to.
    The write is idempotent under `run()`'s top-of-function replay
-   (`INSERT OR IGNORE`, `recordSeenAndPrune`, src/lib/d1.ts - not `ON CONFLICT(url) DO
+   (`INSERT OR IGNORE`, `recordSeenPruneAndCloseTopic` - renamed by #108, feature 002
+   `spec.md` requirement 8's amendment - src/lib/d1.ts - not `ON CONFLICT(url) DO
    NOTHING`, which D1's SQLite rejects on an `INSERT ... SELECT`, confirmed against the
    real binding) and costs no additional subrequest on the parent's per-invocation
    budget: it is folded into the same `db.batch()` call `record-*`'s existing
@@ -616,7 +639,7 @@ research brief; the committed file is the draft.
 | 1,024 steps per instance | 46 feeds + 15 articles + 6 fixed = ~67 steps, 7% of the cap |
 | D1: 100 bound params/query, 50 queries/invocation | The 30-day window in `gather` takes 4,742 raw items to 678 candidates (7 chunked queries, measured); `shortlist`'s 4,000 ceiling bounds the pathological case at 40 |
 | Cron 15 min wall-clock | Cron only creates the instance; steps have no wall-clock cap |
-| 10,000 neurons/day | ~3,567 per run (measured, #18 and step 5), hard-stopped at `NEURON_BUDGET_PER_RUN` |
+| 10,000 neurons/day | Per-run: measured min 1,353 / max 1,759 / mean 1,589 (six successful runs in `runs`), hard-stopped at `NEURON_BUDGET_PER_RUN`. Daily aggregate: `reclaimAndClaim`'s `sum(neurons_spent)` read, gated against `NEURON_DAILY_RESERVE` (#111, acceptance criterion 8) |
 | Steps are retried | Every step body must be idempotent (enforced by `REVIEW.md` pass 3) |
 | 5 cron triggers | One used |
 | No paid search | Feeds only |
@@ -638,11 +661,66 @@ research brief; the committed file is the draft.
    several articles were summarized.
 7. `runs.neurons_spent` is populated for every run, is checked between steps, and
    exceeds `NEURON_BUDGET_PER_RUN` by no more than the cost of a single article call.
-8. Each run stays inside a single day's free allocation. At the daily cadence (#64)
-   this holds by construction rather than by arithmetic: exactly one scheduled run per
-   allowance, and one run costs ~3,567 of 10,000 (measured, #18 and step 5). What the
-   two-day cadence had and this does not is slack for a second run in the same day - a
-   hand-triggered recovery run shares the scheduled run's allowance.
+   This is the **per-run** ceiling. It is not a substitute for criterion 8's
+   **daily aggregate** one, and #111 did not change this one when it added
+   that second mechanism: a run can stay entirely under
+   `NEURON_BUDGET_PER_RUN` and still be the run that pushes the day over its
+   allocation, which is exactly what criterion 8 exists to catch before that
+   run is even allowed to start.
+8. The aggregate of a single day's runs stays inside the free allocation.
+   **Amended 2026-09-04 (#111): this now holds by arithmetic, not by
+   construction.** Requirement 1's cadence used to guarantee it for free -
+   "exactly one scheduled run per allowance" - because exactly one scheduled
+   slot existed; raising that cadence to drain the topic queue faster removed
+   the guarantee, so a second mechanism replaces it. Before claiming a queued
+   topic, `selectTopic`'s scheduled path (`src/workflow.ts`) reads
+   `sum(runs.neurons_spent)` for the current UTC calendar day -
+   `reclaimAndClaim`'s fifth `db.batch()` statement (`src/lib/d1.ts`), added
+   at no extra subrequest, the same trick #104's fourth statement already
+   used - and skips claiming (and, on an empty queue, proposing) once that
+   sum plus `NEURON_DAILY_RESERVE` (wrangler.toml, currently 2,000) would
+   exceed the 10,000-neuron daily allocation. A skipped run never calls
+   `claimRow`, so it strands no topic and needs no TTL wait to recover it -
+   the next cron slot sees exactly the queue this one did, and is recorded
+   with its own `runs.status`, `budget_skipped`, rather than being folded
+   into `no_topic`.
+
+   The per-run figure this criterion used to cite is corrected here too:
+   ~3,567 was a pre-launch *projection* (#18 and step 5's map/reduce
+   breakdown, below). Measured spend across the six successful runs now in
+   `runs` is **min 1,353, max 1,759, mean 1,589** - roughly half the
+   projection, and the reason four or five runs fit inside a day rather than
+   the two the projection would have suggested.
+
+   **What happens when the arithmetic is wrong.** The guard is sized against
+   *measured typical* spend, not `NEURON_BUDGET_PER_RUN`'s worst case - a
+   worst-case reserve (spend + 6,000 > 10,000) would permit exactly one run a
+   day, no better than requirement 1 before #111. The accepted trade is that
+   a run which overshoots its own share can still fail mid-inference: every
+   `record-*` path writes a `runs` row with whatever it actually spent
+   regardless (#102), so the next scheduled slot's guard check sees the real,
+   higher total and skips accordingly rather than compounding the overshoot.
+   `NEURON_DAILY_RESERVE` is sized to absorb one such overshoot even at the
+   highest run cost measured so far (see its own comment in wrangler.toml); a
+   second overshoot landing in the same day is the residual risk this trade
+   accepts.
+
+   **A hand-triggered run (`ResearchParams.topicId` set) is exempt from this
+   guard, deliberately.** `selectTopic`'s manually-targeted path never calls
+   `reclaimAndClaim` and so never computes or checks the daily sum - the same
+   scoping the TTL topic reclaim and the stranded-run sweep already have on
+   that path (`selectTopic`'s own comment, `src/workflow.ts`; #91), for the
+   same reason: a human naming a topic has already
+   decided this run should happen, most likely to run the exact recovery this
+   criterion's own text has always anticipated ("a hand-triggered recovery
+   run shares the scheduled run's allowance"). Subjecting it to the aggregate
+   check instead was considered and rejected: it would make recovery
+   unavailable on precisely the days it is most likely to be needed - a day
+   already close to its allocation because of the runs it exists to recover
+   from. The risk this exemption accepts is bounded, not open-ended: an
+   exempt run can push the day over its allocation by at most that one run's
+   own spend, and criterion 7's per-run gate plus #102's failed-run recording
+   are what keep even that run's own damage bounded.
 9. Every feed in the allowlist returns 200 and parses. `gather` emits no *dated* item
    published more than 30 days ago, and no more than 20 *undated* items from any one
    feed; it does not truncate a feed's dated items, so a full arXiv day survives intact.

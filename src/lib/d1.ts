@@ -376,8 +376,8 @@ export async function readRunCandidates(db: D1Database, runId: string, limit: nu
 
 /**
  * Shared by the standalone `pruneRunCandidates` below and by
- * `recordSeenAndPrune`'s batch, so the DELETE's SQL text lives in exactly
- * one place regardless of which caller runs it.
+ * `recordSeenPruneAndCloseTopic`'s batch, so the DELETE's SQL text lives in
+ * exactly one place regardless of which caller runs it.
  */
 function pruneRunCandidatesStatement(db: D1Database, retentionDays: number): D1PreparedStatement {
   return db
@@ -393,23 +393,25 @@ function pruneRunCandidatesStatement(db: D1Database, retentionDays: number): D1P
  * the caller's constant, not this file's.
  *
  * Exported and exercised standalone (test/d1.test.ts) even though the only
- * production call site now goes through `recordSeenAndPrune` below - kept as
- * its own function so the prune half of that batch stays independently
- * testable without a `Candidate[]` in the way.
+ * production call site now goes through `recordSeenPruneAndCloseTopic`
+ * below - kept as its own function so the prune half of that batch stays
+ * independently testable without a `Candidate[]` in the way.
  */
 export async function pruneRunCandidates(db: D1Database, retentionDays: number): Promise<void> {
   await pruneRunCandidatesStatement(db, retentionDays).run();
 }
 
 /**
- * Marks `seen` as cross-run dedupe hits and prunes `run_candidates`, in one
- * `db.batch()` call - one subrequest whatever `seen`'s length, the same
- * `json_each` trick `writeRunCandidates` above uses to unpack an array
- * inside SQLite from a single bound parameter rather than one parameter per
- * row. `seen` is typically `shortlist`, up to `SHORTLIST_TOP_N` items
- * (spec.md req. 4, amended 2026-09-04 - #100 - to say which URLs count as
- * seen and why); the empty array on the `record-no-topic` path, where no
- * shortlist has been computed yet, costs the same one call.
+ * Marks `seen` as cross-run dedupe hits, prunes `run_candidates`, and - new
+ * here, #108 - closes `topicClose`'s topic, all in one `db.batch()` call: one
+ * subrequest whatever the statement count, the same `json_each` trick
+ * `writeRunCandidates` above uses to unpack an array inside SQLite from a
+ * single bound parameter rather than one parameter per row. `seen` is
+ * typically `shortlist`, up to `SHORTLIST_TOP_N` items (spec.md req. 4,
+ * amended 2026-09-04 - #100 - to say which URLs count as seen and why); the
+ * empty array on the `record-no-topic` path, where no shortlist has been
+ * computed yet, costs the same one call. Renamed from `recordSeenAndPrune`
+ * because closing the topic is no longer a side effect this name would hide.
  *
  * `INSERT OR IGNORE`, not `ON CONFLICT(url) DO NOTHING`: D1's SQLite rejects
  * an upsert clause on an `INSERT ... SELECT` (`near "DO": syntax error`,
@@ -424,27 +426,77 @@ export async function pruneRunCandidates(db: D1Database, retentionDays: number):
  * run that happened to see the same article) must be a no-op rather than a
  * primary-key violation.
  *
+ * **The topic-close `UPDATE` (#108) follows `claimRow`'s own pattern**: it is
+ * conditional on the row's *current* status (`AND status = 'in_progress'`),
+ * not a blind write, which is what makes a replay a no-op instead of a
+ * state-machine violation - a run that already closed its topic to `done` on
+ * an earlier attempt finds 0 rows matching `in_progress` on the next one and
+ * changes nothing. `topicClose` is `null` on the `record-no-topic` path, where
+ * there is no topic to close, and on any other path where a caller has
+ * nothing to close (there is none today, but the parameter is not implicitly
+ * "always present" the way `seen` is - see `recordOutcome`, src/workflow.ts).
+ * `claimed_at` is cleared alongside the status for the same reason
+ * `reclaimAndClaim`'s own reclaim `UPDATE` clears it: the column is only ever
+ * read by that TTL sweep, which already requires `status = 'in_progress'`, so
+ * a closed topic has no live claim to record.
+ *
+ * **Which status a caller passes is `recordOutcome`'s decision, not this
+ * function's** - see that function's comment for the `done`/`rejected` split
+ * and why an `insufficient_sources` run closes to `rejected` rather than
+ * releasing the topic back to `queued`.
+ *
  * Batched with the prune, deliberately not with `recordRunOutcome`
- * (src/workflow.ts's `recordOutcome`, called just before this): `db.batch()`
- * is atomic, so folding this into the outcome write would mean a failing
- * insert also loses the `runs` row - exactly the failure mode
- * `recordOutcome`'s own comment says the outcome-before-prune ordering
- * exists to avoid (spec.md req. 10, "every run writes a runs row, including
- * one that dies mid-step"). Pairing it with the prune instead costs the same
- * one subrequest either way and leaves requirement 10's guarantee on the one
- * write that must never be lost.
+ * (src/workflow.ts's `recordOutcome`, called just before this, as its own,
+ * separate D1 call - not folded in here): `db.batch()` is atomic, so folding
+ * any of this into the outcome write would mean a failing statement also
+ * loses the `runs` row - exactly the failure mode `recordOutcome`'s own
+ * comment says the outcome-before-this ordering exists to avoid (spec.md
+ * req. 10, "every run writes a runs row, including one that dies mid-step").
+ * Because that write already happened and already committed by the time
+ * this function runs, req. 10 cannot be violated by anything below this
+ * point, whatever fails here.
+ *
+ * Pairing the topic close with the prune and the seen-insert instead accepts
+ * a narrower version of the same trade: a failing topic `UPDATE` (there is
+ * no reason one should fail - it is a single-row write by primary key with
+ * no foreign constraint to violate) would also roll back this call's prune
+ * and seen-insert. The cost of that, concretely: the run's `runs` row still
+ * has its correct terminal status (already committed, above), but the topic
+ * stays `in_progress` - exactly the pre-#108 behaviour for that one run, not
+ * a regression, and it self-heals the same way it always did: the TTL sweep
+ * (`reclaimAndClaim`) reclaims it after `TOPIC_CLAIM_TTL_HOURS`, at the cost
+ * of one wasted cycle rather than the permanent loop #108 was filed about.
+ * That is the same atomicity risk this batch already carried for the prune
+ * and the insert, extended to a third statement rather than a new one - see
+ * `createPublishChildren`'s comment (src/workflow.ts) for why a fourth,
+ * separate call is not available at this subrequest budget.
  */
-export async function recordSeenAndPrune(db: D1Database, retentionDays: number, seen: Candidate[]): Promise<void> {
+export async function recordSeenPruneAndCloseTopic(
+  db: D1Database,
+  retentionDays: number,
+  seen: Candidate[],
+  topicClose: { id: number; status: 'done' | 'rejected' } | null,
+): Promise<void> {
   const payload = JSON.stringify(seen.map((c) => ({ u: c.url, t: c.title, s: c.sourceName })));
 
-  await db.batch([
+  const statements = [
     pruneRunCandidatesStatement(db, retentionDays),
     db.prepare(
       `INSERT OR IGNORE INTO seen_urls (url, title, source)
        SELECT json_extract(value, '$.u'), json_extract(value, '$.t'), json_extract(value, '$.s')
          FROM json_each(?)`,
     ).bind(payload),
-  ]);
+  ];
+
+  if (topicClose !== null) {
+    statements.push(
+      db
+        .prepare(`UPDATE topics SET status = ?, claimed_at = NULL WHERE id = ? AND status = 'in_progress'`)
+        .bind(topicClose.status, topicClose.id),
+    );
+  }
+
+  await db.batch(statements);
 }
 
 /**
@@ -505,21 +557,65 @@ export interface ReclaimAndClaimResult {
    * against the agent's own past proposals without a second read.
    */
   coveredTopicTitles: string[];
+  /**
+   * Sum of `runs.neurons_spent` over every row started today, UTC
+   * (`started_at >= date('now')`) - D1's `date('now')` is UTC, and so is the
+   * Workers AI free allocation's 00:00 reset, which is what makes this the
+   * right boundary rather than a rolling 24h window (#111). `coalesce(...,
+   * 0)` is there because SQLite's `sum()` returns NULL over zero matching
+   * rows, not because `neurons_spent` itself can be NULL - the column is
+   * `NOT NULL DEFAULT 0`. Every status lands in this sum (`succeeded`,
+   * `failed`, `insufficient_sources`, `no_topic`, `budget_skipped`): a
+   * `failed` run can have spent real neurons before dying (#102), and the
+   * others always contribute 0, so summing without a status filter costs
+   * nothing extra and loses nothing by including them.
+   *
+   * Includes the *calling* run's own row - `start-run` (src/lib/d1.ts) has
+   * already inserted it, `neurons_spent = 0`, by the time `select-topic`
+   * calls this - so it always adds zero for the caller's own instance. That
+   * is why this field needs no `currentInstanceId` self-exclusion the way
+   * `coveredTopicTitles` above does: a sum tolerates counting a zero-valued
+   * row that an exact title match could not.
+   *
+   * A fifth, fixed-shape statement in the same `db.batch()` call as the
+   * other four - no data dependency on any of them, so it costs the caller
+   * nothing beyond what `reclaimAndClaim` already spent: one subrequest
+   * whatever the statement count (`writeRunCandidates`'s comment is the
+   * precedent this repeats). `selectTopic` (src/workflow.ts) is the only
+   * reader, and only on the scheduled path - the guard this backs does not
+   * run on the manually-targeted path, which never calls this function.
+   */
+  dailyNeuronsSpent: number;
+}
+
+interface DailySpendRow {
+  total: number;
 }
 
 /**
  * Consolidates the scheduled path's reclaim sweep, the new stale-run sweep
- * (#91), the oldest-queued lookup, and (#104) a read of `topics`'s own
- * covered titles into one `db.batch()` - one subrequest, four statements,
- * run in order inside one transaction. This is the same trick
- * `writeRunCandidates` above uses for its `DELETE`+`INSERT` pair: `db.batch()`
- * is one subrequest whatever the statement count, so folding a fourth
- * statement in is free where a fifth standalone call would not be. The
- * fourth statement has no data dependency on the other three - it is a
- * fixed-shape read, like the oldest-queued lookup - so it fits the same
- * "bound before any of them run" rule the third statement already does; see
- * this function's own comment on `claimRow` below for the one statement here
- * that does *not* fit it.
+ * (#91), the oldest-queued lookup, a read of `topics`'s own covered titles
+ * (#104), and (#111) a read of today's aggregate neuron spend into one
+ * `db.batch()` - one subrequest, five statements, run in order inside one
+ * transaction. This is the same trick `writeRunCandidates` above uses for
+ * its `DELETE`+`INSERT` pair: `db.batch()` is one subrequest whatever the
+ * statement count, so folding a fourth or fifth statement in is free where a
+ * standalone call would not be. Neither the fourth nor the fifth statement
+ * has a data dependency on the other three - both are fixed-shape reads,
+ * like the oldest-queued lookup - so both fit the same "bound before any of
+ * them run" rule the third statement already does; see this function's own
+ * comment on `claimRow` below for the one statement here that does *not* fit
+ * it.
+ *
+ * **Why the daily-spend read belongs here and not in a standalone call
+ * (#111).** `selectTopic`'s scheduled path needs to know today's aggregate
+ * `runs.neurons_spent` before deciding whether to claim the row this same
+ * batch's `SELECT` just found - a guard that ran after `claimRow` would have
+ * already transitioned the topic to `in_progress` for nothing. Reading it
+ * here, alongside the lookup it gates, means the guard costs the parent
+ * nothing it was not already spending; see `ReclaimAndClaimResult.dailyNeuronsSpent`'s
+ * own comment for the UTC boundary and why every run status is summed
+ * without a filter.
  *
  * **Why the fourth statement excludes `currentInstanceId`'s own topic.**
  * `findOrProposeTopic` recovers a retried `select-topic` step's earlier
@@ -625,17 +721,26 @@ export async function reclaimAndClaim(
           ORDER BY created_at DESC, id DESC LIMIT ?`,
       )
       .bind(currentInstanceId, TOPIC_DEDUPE_TITLE_LIMIT),
+    db.prepare(`SELECT coalesce(sum(neurons_spent), 0) AS total FROM runs WHERE started_at >= date('now')`),
   ]);
 
   // Indexed with `?.` rather than destructured-and-cast: `db.batch()`
-  // guarantees four results back in the order the four statements went in,
+  // guarantees five results back in the order the five statements went in,
   // but `noUncheckedIndexedAccess` cannot see that from the array's static
   // type, and the `?? 0` / `?? null` / `?? []` fallbacks below are what this
-  // needs to be total anyway - no cast required to get there.
+  // needs to be total anyway - no cast required to get there, for the first
+  // four statements. `db.batch()` has one type parameter for every statement
+  // in the call (there is no per-statement row type), so the fifth
+  // statement's actual `{ total }` shape is not what the batch's own
+  // `TopicRow` type parameter says it is; the `unknown` round-trip on
+  // `results[4]` is what tells TypeScript to trust the SQL over the type
+  // parameter for that one result, in the one place a genuinely different
+  // row shape needs it.
   return {
     row: results[2]?.results[0] ?? null,
     reclaimedTopics: results[0]?.meta?.changes ?? 0,
     strandedRuns: results[1]?.meta?.changes ?? 0,
     coveredTopicTitles: (results[3]?.results ?? []).map((r) => r.title),
+    dailyNeuronsSpent: (results[4]?.results[0] as unknown as DailySpendRow | undefined)?.total ?? 0,
   };
 }

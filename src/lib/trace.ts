@@ -123,6 +123,17 @@ export const ATTR_SUMMARIZE_REPLACEMENTS = 'agent.summarize.replacements';
  * `instance_id`s: a set of ids is unbounded, a count is not.
  */
 export const ATTR_RUNS_STRANDED_CLOSED = 'agent.runs.stranded_closed';
+/**
+ * Today's aggregate `runs.neurons_spent` (UTC), read by `reclaimAndClaim`'s
+ * fifth statement (`src/lib/d1.ts`) and set on the `select-topic` span
+ * whenever the scheduled path computes it (#111) - absent, and therefore
+ * unset, on the manually-targeted path, which never reads it. This is what
+ * the daily neuron guard compared against `NEURON_DAILY_RESERVE` to decide
+ * whether to skip claiming, carried here so a run's proximity to the day's
+ * 10,000-neuron allocation is visible without cross-referencing `runs`
+ * itself.
+ */
+export const ATTR_NEURONS_DAILY_SPENT = 'agent.neurons.daily_spent';
 
 // --- gen_ai.* ---------------------------------------------------------------
 // Matches AI Gateway's own exporter conventions, so the two line up if that

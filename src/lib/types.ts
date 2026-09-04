@@ -18,6 +18,8 @@ export interface Env {
   LLM_MODEL: string;
   AI_GATEWAY: string;
   NEURON_BUDGET_PER_RUN: string;
+  /** Neurons the daily guard keeps unspent before it will claim another topic (#111). See its own comment in wrangler.toml for the number and `selectTopic` (src/workflow.ts) for the read. */
+  NEURON_DAILY_RESERVE: string;
   /** Base URL for the GitHub REST client (src/lib/github.ts). Keeps that file free of a URL literal. */
   GITHUB_API_BASE: string;
   /** How many feeds one GatherWorkflow child parses. See its own comment in src/workflow.ts for the subrequest arithmetic this is sized against. */
@@ -341,5 +343,5 @@ export interface RunOutcome {
   neuronsSpent: number;
   sourcesUsed: number;
   prUrl: string | null;
-  status: 'succeeded' | 'no_topic' | 'insufficient_sources' | 'failed';
+  status: 'succeeded' | 'no_topic' | 'insufficient_sources' | 'failed' | 'budget_skipped';
 }

@@ -1,7 +1,7 @@
 import type { WorkflowEvent, WorkflowStep } from 'cloudflare:workers';
 import { env as testEnv } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SEEN_URLS_CHUNK_SIZE, startRun, writeRunCandidates } from '../src/lib/d1';
+import { reclaimAndClaim, SEEN_URLS_CHUNK_SIZE, startRun, writeRunCandidates } from '../src/lib/d1';
 import { loadFeeds, SOURCE_TIER_PRIORITY, tierOf } from '../src/lib/feeds';
 import type {
   ArticleSummary,
@@ -30,11 +30,13 @@ import {
   createSummarizeChildren,
   DEFAULT_SOURCE_WEIGHT,
   isGrounded,
+  NEURON_DAILY_BUDGET,
   pollGatherChildren,
   pollPublishChildren,
   pollSummarizeChildren,
   ResearchWorkflow,
   selectTopic,
+  type SelectTopicResult,
   SHORTLIST_MAX_CANDIDATES,
   SHORTLIST_TOP_N,
   shortlistCandidates,
@@ -110,6 +112,24 @@ function topic(overrides: Partial<Topic> = {}): Topic {
     status: 'in_progress',
     origin: 'human',
     createdAt: '2026-08-27T00:00:00Z',
+    ...overrides,
+  };
+}
+
+/**
+ * `orchestrationStep`'s canned `select-topic` output has to be the whole
+ * `SelectTopicResult` (#111), not a bare `Topic | null`, since that is what
+ * the step body itself now returns (`run()`'s `select-topic` step) - a
+ * cached step result surviving replay is the only thing `run()` can rebuild
+ * `budgetExhausted` from. Defaults to a normal, budget-untouched success so
+ * only the tests that care about the guard need to override any of these.
+ */
+function selectTopicResult(overrides: Partial<SelectTopicResult> = {}): SelectTopicResult {
+  return {
+    topic: topic(),
+    strandedRuns: 0,
+    budgetExhausted: false,
+    dailyNeuronsSpent: 0,
     ...overrides,
   };
 }
@@ -1810,6 +1830,89 @@ describe('selectTopic()', () => {
     }>();
     expect(strandedRow?.status).toBe('in_progress'); // untouched - reclaim did not run on this path
   });
+
+  // -------------------------------------------------------------------------
+  // #111: the daily neuron guard. `NEURON_DAILY_RESERVE` comes from
+  // wrangler.toml via `env`, the same way `NEURON_BUDGET_PER_RUN` already
+  // does elsewhere in this file - not hardcoded here, so a future change to
+  // the var's value does not silently stop these from exercising the
+  // boundary they claim to.
+  // -------------------------------------------------------------------------
+  describe('the daily neuron guard (#111)', () => {
+    async function seedTodaysSpend(neurons: number): Promise<void> {
+      await env.DB
+        .prepare(`INSERT INTO runs (instance_id, status, neurons_spent) VALUES ('run-prior-spend', 'succeeded', ?)`)
+        .bind(neurons)
+        .run();
+    }
+
+    it('skips claiming - leaving the topic queued, not stranded - once spent + NEURON_DAILY_RESERVE would exceed the daily budget', async () => {
+      const reserve = Number(env.NEURON_DAILY_RESERVE);
+      const spend = NEURON_DAILY_BUDGET - reserve + 1; // one neuron over the line
+      await seedTodaysSpend(spend);
+      const inserted = await env.DB
+        .prepare(`INSERT INTO topics (title, angle, status, origin) VALUES ('queued one', NULL, 'queued', 'human') RETURNING id`)
+        .first<{ id: number }>();
+
+      const result = await selectTopic(env, 'run-over-budget', undefined);
+
+      expect(result.topic).toBeNull();
+      expect(result.budgetExhausted).toBe(true);
+      expect(result.dailyNeuronsSpent).toBe(spend);
+
+      // The whole point: claimRow never ran, so the topic is exactly as it
+      // was - selectable again at the very next call, no TTL wait needed.
+      const row = await env.DB.prepare('SELECT status, claimed_at FROM topics WHERE id = ?').bind(inserted?.id).first<{
+        status: string;
+        claimed_at: string | null;
+      }>();
+      expect(row?.status).toBe('queued');
+      expect(row?.claimed_at).toBeNull();
+    });
+
+    it('does not propose either, once the guard trips on an empty queue', async () => {
+      const reserve = Number(env.NEURON_DAILY_RESERVE);
+      await seedTodaysSpend(NEURON_DAILY_BUDGET - reserve + 1);
+      const fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+
+      const result = await selectTopic(env, 'run-over-budget-empty-queue', undefined);
+
+      expect(result.topic).toBeNull();
+      expect(result.budgetExhausted).toBe(true);
+      // proposeTopic's own reads (BLOG_FEED_URL, the blog repo, the seed
+      // feed) all go through fetch - none of them ran.
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('still claims normally when spent + NEURON_DAILY_RESERVE is within the daily budget', async () => {
+      const reserve = Number(env.NEURON_DAILY_RESERVE);
+      const spend = NEURON_DAILY_BUDGET - reserve - 1; // one neuron under the line
+      await seedTodaysSpend(spend);
+      await env.DB.prepare(`INSERT INTO topics (title, angle, status, origin) VALUES ('queued one', NULL, 'queued', 'human')`).run();
+
+      const result = await selectTopic(env, 'run-under-budget', undefined);
+
+      expect(result.topic?.title).toBe('queued one');
+      expect(result.budgetExhausted).toBe(false);
+      expect(result.dailyNeuronsSpent).toBe(spend);
+    });
+
+    it('does not run on the manually-targeted path, even when today\'s spend already exceeds the threshold', async () => {
+      const reserve = Number(env.NEURON_DAILY_RESERVE);
+      await seedTodaysSpend(NEURON_DAILY_BUDGET - reserve + 1);
+      const named = await env.DB.prepare(
+        `INSERT INTO topics (title, angle, status, origin) VALUES ('named', NULL, 'queued', 'human') RETURNING id`,
+      ).first<{ id: number }>();
+
+      const result = await selectTopic(env, 'run-named-over-budget', named?.id as number);
+
+      expect(result.topic?.id).toBe(named?.id);
+      expect(result.topic?.status).toBe('in_progress'); // claimed normally
+      expect(result.budgetExhausted).toBe(false);
+      expect(result.dailyNeuronsSpent).toBeNull(); // never computed on this path
+    });
+  });
 });
 
 // proposeTopic()'s own tests moved to test/propose-workflow.test.ts (#109),
@@ -1978,7 +2081,7 @@ function orchestrationStep(outputs: Record<string, unknown>, liveNames: string[]
 async function runOrchestration(overrides: Record<string, unknown> = {}, liveNames: string[] = []): Promise<string[]> {
   const outputs: Record<string, unknown> = {
     'start-run': null,
-    'select-topic': { topic: topic(), strandedRuns: 0 },
+    'select-topic': selectTopicResult(),
     'load-sources': [] as Source[],
     'create-gather-children': ['child-g0', 'child-g1'],
     'await-gather-children:0': { done: true, total: 7 },
@@ -2114,13 +2217,52 @@ describe('ResearchWorkflow.run() publication in a child instance', () => {
   });
 
   /**
+   * The actual fix (#108): before this, nothing ever moved a topic off
+   * `in_progress` on success, so the row was indistinguishable from one
+   * stranded by a dead run and got reclaimed by the TTL sweep forever - five
+   * production runs came from two topic rows. `record-success` runs for
+   * real here, the same way the pr_url test above does, so this proves the
+   * write is reached by `run()`, not just callable in isolation.
+   */
+  it('closes the topic to done on record-success, and the TTL reclaim never picks it up again', async () => {
+    await env.DB.prepare(
+      "INSERT INTO topics (id, title, status, origin, claimed_at) VALUES (1, 't', 'in_progress', 'human', datetime('now', '-100 hours'))",
+    ).run();
+
+    await runOrchestration({}, ['record-success']);
+
+    const row = await env.DB.prepare('SELECT status FROM topics WHERE id = 1').first<{ status: string }>();
+    expect(row?.status).toBe('done');
+
+    // ttlHours: 1 against a 100-hour-old claim - an in_progress row would
+    // certainly be reclaimed here; a closed one must not be.
+    const { row: reclaimed, reclaimedTopics } = await reclaimAndClaim(env.DB, 1, 'some-other-run');
+    expect(reclaimedTopics).toBe(0);
+    expect(reclaimed).toBeNull();
+  });
+
+  // Replay: run() re-executes from the top (spec.md fact 2). A second
+  // record-success for the same run must not error or move the topic off
+  // `done` - `AND status = 'in_progress'` in the topic-close UPDATE is what
+  // makes that a no-op rather than a state-machine violation.
+  it('a replayed record-success leaves an already-closed topic at done', async () => {
+    await env.DB.prepare("INSERT INTO topics (id, title, status, origin) VALUES (1, 't', 'in_progress', 'human')").run();
+
+    await runOrchestration({}, ['record-success']);
+    await runOrchestration({}, ['record-success']);
+
+    const row = await env.DB.prepare('SELECT status FROM topics WHERE id = 1').first<{ status: string }>();
+    expect(row?.status).toBe('done');
+  });
+
+  /**
    * The writer this PR adds (spec.md req. 4, #100): `findSeenUrls` only ever
    * reads `seen_urls`, and until now nothing in `src/` ever inserted into it
-   * - a real orchestration run, not a call to `recordSeenAndPrune` directly,
-   * is what proves `record-success` actually reaches that write, the way
-   * the pr_url test above proves it reaches `recordRunOutcome`. A test that
-   * merely called `recordSeenAndPrune` would pass whether or not `run()`
-   * ever threaded `shortlist` into it.
+   * - a real orchestration run, not a call to `recordSeenPruneAndCloseTopic`
+   * directly, is what proves `record-success` actually reaches that write,
+   * the way the pr_url test above proves it reaches `recordRunOutcome`. A
+   * test that merely called `recordSeenPruneAndCloseTopic` would pass
+   * whether or not `run()` ever threaded `shortlist` into it.
    */
   it('writes the run shortlist into seen_urls, not just the runs row', async () => {
     await env.DB.prepare("INSERT INTO topics (id, title, status, origin) VALUES (1, 't', 'in_progress', 'human')").run();
@@ -2163,6 +2305,14 @@ describe('ResearchWorkflow.run() publication in a child instance', () => {
       .bind('parent-orchestration')
       .first<{ status: string }>();
     expect(outcome?.status).toBe('insufficient_sources');
+
+    // #108: closed to `rejected`, not released back to `queued` - a release
+    // would just be picked up first again next run (oldest-queued ordering)
+    // and likely fail the same way, the daily version of the loop this fix
+    // exists to close. `rejected` is excluded from `reclaimAndClaim`'s
+    // covered-titles set, so the title stays free to be proposed again.
+    const topicRow = await env.DB.prepare('SELECT status FROM topics WHERE id = 1').first<{ status: string }>();
+    expect(topicRow?.status).toBe('rejected');
   });
 
   /**
@@ -2199,6 +2349,11 @@ describe('ResearchWorkflow.run() publication in a child instance', () => {
       .bind('parent-orchestration')
       .first<{ status: string }>();
     expect(outcome?.status).toBe('insufficient_sources');
+
+    // #108, same as record-no-sources above: closed to rejected, not
+    // released back to queued.
+    const topicRow = await env.DB.prepare('SELECT status FROM topics WHERE id = 1').first<{ status: string }>();
+    expect(topicRow?.status).toBe('rejected');
   });
 
   /**
@@ -2212,7 +2367,7 @@ describe('ResearchWorkflow.run() publication in a child instance', () => {
     // proposalInput absent, the same as the named-topic and queue-draining
     // paths - so the propose-child loop below is skipped and this reaches
     // record-no-topic directly, the same as before #109.
-    await runOrchestration({ 'select-topic': { topic: null, strandedRuns: 0 } }, ['record-no-topic']);
+    await runOrchestration({ 'select-topic': selectTopicResult({ topic: null }) }, ['record-no-topic']);
 
     const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM seen_urls').first<{ n: number }>();
     expect(count?.n).toBe(0);
@@ -2221,6 +2376,31 @@ describe('ResearchWorkflow.run() publication in a child instance', () => {
       .bind('parent-orchestration')
       .first<{ status: string }>();
     expect(outcome?.status).toBe('no_topic');
+  });
+
+  /**
+   * #111: when `selectTopic`'s result says the guard tripped, `run()` must
+   * route to `record-budget-skipped` (a distinct `runs.status`) rather than
+   * `record-no-topic` - the two are not the same reason for producing no
+   * draft, and conflating them would make `runs` lie about which one
+   * happened (and would pollute `dailyNeuronsSpent`'s own sum, harmlessly,
+   * since a skipped run always spends 0 - but the row count would still
+   * mislead).
+   */
+  it('routes to record-budget-skipped, not record-no-topic, when selectTopic reports the guard tripped', async () => {
+    const calls = await runOrchestration(
+      { 'select-topic': selectTopicResult({ topic: null, budgetExhausted: true, dailyNeuronsSpent: 8500 }) },
+      ['record-budget-skipped'],
+    );
+
+    expect(calls).toContain('record-budget-skipped');
+    expect(calls).not.toContain('record-no-topic');
+
+    const outcome = await env.DB.prepare('SELECT status, neurons_spent FROM runs WHERE instance_id = ?')
+      .bind('parent-orchestration')
+      .first<{ status: string; neurons_spent: number }>();
+    expect(outcome?.status).toBe('budget_skipped');
+    expect(outcome?.neurons_spent).toBe(0); // this run itself spent nothing - it never reached inference
   });
 });
 
