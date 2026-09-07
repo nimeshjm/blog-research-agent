@@ -53,9 +53,14 @@ and stops; a human merges.
    [#108](https://github.com/nimeshjm/blog-research-agent/issues/108) gave
    `record-success` the `done` write (`recordSeenPruneAndCloseTopic`, `src/lib/d1.ts`),
    because nothing marked a topic finished and the oldest row was being republished
-   daily — five drafts from two topic rows. The row is therefore already `done` before
-   the pull request exists to be merged, and a merge signal would write a state the row
-   is already in.
+   daily — five drafts from two topic rows. `record-success` is the last step in the run,
+   after the publish child has returned its `pr_url`, so the row is already `done` by the
+   time a human can act on the pull request at all — a merge signal would write a state
+   the row is already in.
+
+   #108's own "Relationship to #8" note was right that a question remained on top of it
+   ("#8's question is still open on top of this"). The residual turned out not to be the
+   merge case, which that `done` write had already absorbed, but the decline case below.
 
    **So neither a webhook receiver nor a second scheduled poll is built, and neither is
    wanted.** Both add a moving part to a pipeline whose whole point is that a human holds
