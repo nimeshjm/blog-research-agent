@@ -56,9 +56,13 @@ Queue first, else propose.
   `https://nimeshjm.com/rss.xml` for what has already been covered and the source feeds
   for what is new. A proposed topic is marked as agent-originated so it is obvious in
   review which runs were self-directed.
-- Merging a draft closes its topic row. The human merge is the signal that the topic is
-  spent, so the queue follows it automatically rather than needing a second manual step.
-  The merge gate stays with the human either way; only the bookkeeping is automatic.
+- A run closes its own topic row. The bookkeeping is automatic and needs no second
+  manual step, which is what this bullet has always asked for — but the signal is the run
+  completing, not the human merging. Stage 2 settled that (`spec.md` requirement 2, #8):
+  by the time the question was answered, #108 had already had to give `record-success`
+  the `done` write, because a topic nothing ever marked finished was republished daily.
+  The merge gate stays with the human, and a draft the human *declines* is the one case
+  the queue does not follow on its own — corrected by hand, per that requirement.
 
 ## Non-goals
 
@@ -81,8 +85,13 @@ Queue first, else propose.
   wrangler secret — which is where the Worker reads it from, and the only place it may
   live. The pull-request step is unblocked.
 - ~~Should merging a draft automatically close the corresponding row in the topic
-  queue, or should that stay a manual step?~~ **Resolved:** automatic. Recorded under
-  Topic selection above.
+  queue, or should that stay a manual step?~~ **Resolved:** automatic, but on run
+  completion rather than on merge — the merge case had stopped existing by the time #8
+  was answered. Recorded under Topic selection above and in full in `spec.md`
+  requirement 2. This entry read "automatic" from the bootstrap commit onward while
+  `spec.md` deferred it and #8 still called it open — three artifacts disagreeing about a
+  decision that had already been made. #8 is what reconciles them; the bookkeeping was
+  never in doubt, only where the signal comes from.
 - ~~Should discovery use a real search API?~~ **Resolved:** yes, in the next iteration,
   not this one. A search API (for example Brave's free tier, 2,000 queries/month) widens
   discovery well beyond a feed allowlist. Adopting it relaxes two constraints above — it
