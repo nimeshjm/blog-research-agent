@@ -45,6 +45,47 @@ and stops; a human merges.
    own comment on the `crons` var for the reversion condition.
 2. When the topic queue has a `queued` row, the run uses the oldest one. Only when the
    queue is empty does the agent propose its own topic.
+
+   **Amended 2026-09-07 ([#8](https://github.com/nimeshjm/blog-research-agent/issues/8)):
+   a topic closes when its run completes, not when a human merges the draft.** #8 asked
+   whether merging a draft pull request should move the row to `done` automatically. By
+   the time it was answered there was nothing left for a merge to move:
+   [#108](https://github.com/nimeshjm/blog-research-agent/issues/108) gave
+   `record-success` the `done` write (`recordSeenPruneAndCloseTopic`, `src/lib/d1.ts`),
+   because nothing marked a topic finished and the oldest row was being republished
+   daily — five drafts from two topic rows. `record-success` is the last step in the run,
+   after the publish child has returned its `pr_url`, so the row is already `done` by the
+   time a human can act on the pull request at all — a merge signal would write a state
+   the row is already in.
+
+   #108's own "Relationship to #8" note was right that a question remained on top of it
+   ("#8's question is still open on top of this"). The residual turned out not to be the
+   merge case, which that `done` write had already absorbed, but the decline case below.
+
+   **So neither a webhook receiver nor a second scheduled poll is built, and neither is
+   wanted.** Both add a moving part to a pipeline whose whole point is that a human holds
+   the merge gate, and the parent Workflow has no subrequest to spend on a pull-request
+   read in any case: the ledger in `createProposeChildren` (`src/workflow.ts`) stands at
+   49 of 50 on the queue-draining path and 50 of 50 on the propose path, so a poll would
+   need its own child instance or its own cron trigger rather than a parent step.
+
+   **What closing on run completion does not distinguish is a draft a human declines.**
+   A closed-unmerged pull request leaves its topic `done`; requirement 3 counts `done` as
+   covered and deliberately excludes `rejected`, which only an `insufficient_sources` run
+   ever writes. A declined draft therefore burns its topic — the human said *not this* and
+   the queue recorded *done with this*. That stays a manual correction, the same act as
+   the decline itself:
+
+   ```bash
+   npx wrangler d1 execute blog_research --remote \
+     --command "UPDATE topics SET status = 'rejected' WHERE id = <id>"
+   ```
+
+   Manual by decision rather than by omission, and already the working practice — the two
+   `rejected` rows #108 measured in production were both set by hand. Automating it is
+   [#116](https://github.com/nimeshjm/blog-research-agent/issues/116), which needs the
+   pull-request-state read the merge case turned out not to need; the trigger to revisit
+   is declined drafts burning topics faster than the queue drains.
 3. A proposed topic must not duplicate anything already **published, drafted, or
    previously proposed by this agent**. The published set comes from `BLOG_FEED_URL`.
    The second set comes from every post directory under `src/content/blog/` at the
@@ -745,6 +786,7 @@ research brief; the committed file is the draft.
 | A merged draft publishes accidentally | `draft: true` on every generated post, independent of the merge gate. |
 | Proposing a topic already drafted but unpublished | Dedupe reads repo drafts as well as the feed (requirement 3). |
 | Proposing a near-duplicate of the agent's own unmerged draft | Dedupe also reads this repo's own `topics` table, which the blog-repo reads above cannot see while a PR is open (requirement 3, #104). |
+| A declined draft burns its topic, because nothing reads pull-request state | Accepted, with the manual `UPDATE ... status = 'rejected'` in requirement 2 as the correction. Automating it needs a subrequest the parent does not have (#116). |
 
 ## Deferred
 
@@ -759,8 +801,15 @@ research brief; the committed file is the draft.
 - **Continuous evals** (playbook stage 4) — needs real drafts to evaluate first.
 - **`bands.yaml` control-band monitoring** (playbook stage 6) — needs production traffic
   to band.
-- **Auto-closing a topic row on merge** — open question in `intent.md`; needs a webhook
-  or a second scheduled check.
+- ~~**Auto-closing a topic row on merge.**~~ Resolved 2026-09-07
+  ([#8](https://github.com/nimeshjm/blog-research-agent/issues/8)) the same way the
+  cadence entry below was: by the answer arriving after the problem had moved. #108's
+  `done` write closes the topic when the run completes, so there is no merge signal left
+  to wire up and neither the webhook receiver nor the second scheduled check this entry
+  proposed is built. Recorded as an amendment to requirement 2, with the one case that
+  decision leaves manual — a declined draft — and
+  [#116](https://github.com/nimeshjm/blog-research-agent/issues/116) as its deferred
+  automation.
 - ~~**An exact 48-hour cadence.**~~ Resolved 2026-09-02 (#64) by removing the problem
   rather than solving it: requirement 1 is now `0 6 * * *`, so every gap is exactly 24
   hours and the uneven-gap arithmetic this entry existed to work around is gone. The
