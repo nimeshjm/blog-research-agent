@@ -30,9 +30,11 @@ in `review-checks.mjs` is there because no off-the-shelf tool can express it: cr
 aggregation (`step-names-unique`), positive-presence assertions
 (`budget-read-from-env`), callee resolution through a `tracerFor(...)` binding
 (`step-names-static`), an allowlist read dynamically out of `src/lib/trace.ts` so it
-cannot drift (`span-attributes-allowlisted`), git index and history state, and TOML
-key-name policy. Those keep the sentinel minimums (>= 11 step names, >= 8 attribute
-sites) that make a matcher which stops matching fail rather than pass vacuously.
+cannot drift (`span-attributes-allowlisted`), git index and history state, TOML
+key-name policy, and cross-key TOML *value* consistency
+(`review-sweep-cron-matches-trigger`). Those keep the sentinel minimums (>= 11 step names,
+>= 8 attribute sites) that make a matcher which stops matching fail rather than pass
+vacuously.
 
 A marker naming an id does not mean the bullet is *fully* covered. The LLM pass still
 runs in full; the mechanical checks only narrow what it has to spend judgement on.
@@ -101,6 +103,13 @@ The failure mode this repo is most exposed to. Reject on:
 - The agent still writes to branches only and never to `BLOG_BASE_BRANCH`. (mechanical:
   `base-branch-not-a-write-target` — forward-looking: today's step bodies are all
   `notImplemented()`, so this guards the build rather than today's tree)
+- #116's decline sweep's cron var and its trigger entry stay identical: `REVIEW_SWEEP_CRON`
+  (`wrangler.toml`, `[vars]`) must equal one of the `crons` entries (`[triggers]`) and must
+  not equal the first one, which is requirement 1's research schedule. Let the two drift
+  and every cron slot — the sweep's own included — starts a research run instead: an extra
+  run a day, absorbed quietly by acceptance criterion 8's daily neuron guard as a
+  `budget_skipped` row, while the sweep never runs again and acceptance criterion 10 cannot
+  hold. (mechanical: `review-sweep-cron-matches-trigger`)
 
 ## Pass 5 — Simplification and reuse (Nit)
 

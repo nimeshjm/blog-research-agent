@@ -9,7 +9,9 @@ import {
   pruneRunCandidates,
   reclaimAndClaim,
   readRunCandidates,
+  readReviewableDrafts,
   readSourceWeights,
+  recordDraftReview,
   recordRunOutcome,
   recordRunSpend,
   recordSeenPruneAndCloseTopic,
@@ -18,7 +20,7 @@ import {
   TOPIC_DEDUPE_TITLE_LIMIT,
   writeRunCandidates,
 } from '../src/lib/d1';
-import type { Candidate, Env } from '../src/lib/types';
+import type { Candidate, DraftState, Env } from '../src/lib/types';
 import { applySchema } from './schema';
 
 // `cloudflare:test`'s `env` types as the global (project-unaware) `Cloudflare.Env`
@@ -1066,5 +1068,248 @@ describe('recordRunSpend()', () => {
       neurons_spent: number;
     }>();
     expect(row?.neurons_spent).toBe(4200);
+  });
+});
+
+/**
+ * #116's sweep work list. Each case below is built to fail only the one
+ * clause it names - the rest of the row stays reviewable - so a clause that
+ * stops matching (or a query that drops it) fails the case naming it, not
+ * some other one.
+ */
+describe('readReviewableDrafts()', () => {
+  /**
+   * Inserts one topic + run pair, reviewable by default (`pr_url` set,
+   * `status: 'succeeded'`, topic `'done'`, no `drafts` row) - every override
+   * breaks exactly one query clause, and `draftState`, when given, also
+   * inserts a `drafts` row.
+   */
+  async function insertCandidate(
+    runId: string,
+    overrides: {
+      topicStatus?: string;
+      runStatus?: string;
+      prUrl?: string | null;
+      finishedAt?: string;
+      draftState?: DraftState;
+    } = {},
+  ): Promise<number> {
+    const {
+      topicStatus = 'done',
+      runStatus = 'succeeded',
+      prUrl = 'https://github.com/nimeshjm/nimeshjm.com/pull/1',
+      finishedAt = '2026-09-01T00:00:00Z',
+      draftState,
+    } = overrides;
+
+    const topic = await env.DB.prepare(
+      `INSERT INTO topics (title, angle, status, origin) VALUES (?, NULL, ?, 'human') RETURNING id`,
+    )
+      .bind(`topic for ${runId}`, topicStatus)
+      .first<{ id: number }>();
+    const topicId = topic?.id as number;
+
+    await env.DB.prepare(`INSERT INTO runs (instance_id, topic_id, status, pr_url, finished_at) VALUES (?, ?, ?, ?, ?)`)
+      .bind(runId, topicId, runStatus, prUrl, finishedAt)
+      .run();
+
+    if (draftState !== undefined) {
+      await env.DB.prepare(`INSERT INTO drafts (run_id, slug, title, pr_url, state) VALUES (?, 'slug', 'title', ?, ?)`)
+        .bind(runId, prUrl, draftState)
+        .run();
+    }
+
+    return topicId;
+  }
+
+  it('excludes a run with pr_url IS NULL', async () => {
+    await insertCandidate('run-null-pr', { prUrl: null });
+
+    const result = await readReviewableDrafts(env.DB, 10);
+
+    expect(result.map((r) => r.runId)).not.toContain('run-null-pr');
+  });
+
+  it('excludes a run whose status is not succeeded', async () => {
+    await insertCandidate('run-not-succeeded', { runStatus: 'failed' });
+
+    const result = await readReviewableDrafts(env.DB, 10);
+
+    expect(result.map((r) => r.runId)).not.toContain('run-not-succeeded');
+  });
+
+  it('excludes a topic at queued, in_progress, or rejected, and includes one at done', async () => {
+    await insertCandidate('run-queued', { topicStatus: 'queued' });
+    await insertCandidate('run-in-progress', { topicStatus: 'in_progress' });
+    await insertCandidate('run-rejected', { topicStatus: 'rejected' });
+    await insertCandidate('run-done', { topicStatus: 'done' });
+
+    const ids = (await readReviewableDrafts(env.DB, 10)).map((r) => r.runId);
+
+    expect(ids).not.toContain('run-queued');
+    expect(ids).not.toContain('run-in-progress');
+    expect(ids).not.toContain('run-rejected');
+    expect(ids).toContain('run-done');
+  });
+
+  it('excludes a draft already merged, declined, or unavailable; includes one open, and a run with no drafts row at all', async () => {
+    await insertCandidate('run-merged', { draftState: 'merged' });
+    await insertCandidate('run-declined', { draftState: 'declined' });
+    await insertCandidate('run-unavailable', { draftState: 'unavailable' });
+    await insertCandidate('run-open', { draftState: 'open' });
+    await insertCandidate('run-no-draft');
+
+    const ids = (await readReviewableDrafts(env.DB, 10)).map((r) => r.runId);
+
+    expect(ids).not.toContain('run-merged');
+    expect(ids).not.toContain('run-declined');
+    expect(ids).not.toContain('run-unavailable');
+    expect(ids).toContain('run-open');
+    expect(ids).toContain('run-no-draft');
+  });
+
+  it('orders oldest first by finished_at', async () => {
+    await insertCandidate('run-newest', { finishedAt: '2026-09-03T00:00:00Z' });
+    await insertCandidate('run-oldest', { finishedAt: '2026-09-01T00:00:00Z' });
+    await insertCandidate('run-middle', { finishedAt: '2026-09-02T00:00:00Z' });
+
+    const ids = (await readReviewableDrafts(env.DB, 10)).map((r) => r.runId);
+
+    expect(ids).toEqual(['run-oldest', 'run-middle', 'run-newest']);
+  });
+
+  it('LIMIT truncates to the requested count, keeping the oldest rather than an arbitrary subset', async () => {
+    await insertCandidate('run-a', { finishedAt: '2026-09-01T00:00:00Z' });
+    await insertCandidate('run-b', { finishedAt: '2026-09-02T00:00:00Z' });
+    await insertCandidate('run-c', { finishedAt: '2026-09-03T00:00:00Z' });
+
+    const ids = (await readReviewableDrafts(env.DB, 2)).map((r) => r.runId);
+
+    expect(ids).toEqual(['run-a', 'run-b']);
+  });
+});
+
+describe('recordDraftReview()', () => {
+  const PR_URL = 'https://github.com/nimeshjm/nimeshjm.com/pull/1';
+
+  /** A run attached to a topic at the given status, ready for recordDraftReview to write against. */
+  async function insertRunWithTopic(topicStatus: string, runId: string): Promise<number> {
+    const topic = await env.DB.prepare(`INSERT INTO topics (title, angle, status, origin) VALUES ('t', NULL, ?, 'human') RETURNING id`)
+      .bind(topicStatus)
+      .first<{ id: number }>();
+    const topicId = topic?.id as number;
+    await startRun(env.DB, runId);
+    await attachRunTopic(env.DB, runId, topicId);
+    return topicId;
+  }
+
+  it('inserts a row for a run that has none', async () => {
+    await insertRunWithTopic('done', 'run-1');
+
+    await recordDraftReview(env.DB, { runId: 'run-1', prUrl: PR_URL, slug: 'my-slug', title: 'My Title', state: 'open', topicReject: null });
+
+    const row = await env.DB.prepare('SELECT slug, title, pr_url, state FROM drafts WHERE run_id = ?').bind('run-1').first<{
+      slug: string;
+      title: string;
+      pr_url: string;
+      state: string;
+    }>();
+    expect(row?.slug).toBe('my-slug');
+    expect(row?.title).toBe('My Title');
+    expect(row?.pr_url).toBe(PR_URL);
+    expect(row?.state).toBe('open');
+  });
+
+  // The `ON CONFLICT(run_id)` path migration 0003 exists for: a sweep
+  // re-reads a still-`'open'` draft on every later cron, and `run()`
+  // re-executes on replay, so this write must converge on one row per run
+  // rather than accumulate.
+  it("converges rather than duplicating when called twice for the same runId - the second call's state wins", async () => {
+    await insertRunWithTopic('done', 'run-1');
+
+    await recordDraftReview(env.DB, { runId: 'run-1', prUrl: PR_URL, slug: 'slug-a', title: 'title-a', state: 'open', topicReject: null });
+    await recordDraftReview(env.DB, { runId: 'run-1', prUrl: PR_URL, slug: 'slug-b', title: 'title-b', state: 'merged', topicReject: null });
+
+    const rows = await env.DB.prepare('SELECT slug, state FROM drafts WHERE run_id = ?').bind('run-1').all<{
+      slug: string;
+      state: string;
+    }>();
+    expect(rows.results).toHaveLength(1);
+    expect(rows.results[0]?.state).toBe('merged');
+    expect(rows.results[0]?.slug).toBe('slug-b');
+  });
+
+  it('with topicReject set, moves the topic from done to rejected and nulls claimed_at', async () => {
+    const topicId = await insertRunWithTopic('done', 'run-1');
+    // Stamped so the UPDATE's own `claimed_at = NULL` is observable - a
+    // 'done' topic normally has no live claim, but the guard clears the
+    // column unconditionally once it fires.
+    await env.DB.prepare(`UPDATE topics SET claimed_at = datetime('now') WHERE id = ?`).bind(topicId).run();
+
+    await recordDraftReview(env.DB, { runId: 'run-1', prUrl: PR_URL, slug: 'slug', title: 'title', state: 'declined', topicReject: topicId });
+
+    const row = await env.DB.prepare('SELECT status, claimed_at FROM topics WHERE id = ?').bind(topicId).first<{
+      status: string;
+      claimed_at: string | null;
+    }>();
+    expect(row?.status).toBe('rejected');
+    expect(row?.claimed_at).toBeNull();
+  });
+
+  // The guarded-transition case: a topic already claimed by a concurrent run
+  // (in_progress) must not be clobbered by a stale sweep's decision.
+  it('with topicReject set on an in_progress topic, leaves that topic untouched', async () => {
+    const topicId = await insertRunWithTopic('in_progress', 'run-1');
+
+    await recordDraftReview(env.DB, { runId: 'run-1', prUrl: PR_URL, slug: 'slug', title: 'title', state: 'declined', topicReject: topicId });
+
+    const row = await env.DB.prepare('SELECT status FROM topics WHERE id = ?').bind(topicId).first<{ status: string }>();
+    expect(row?.status).toBe('in_progress');
+  });
+
+  // A second case of the same guard, on a topic already 'rejected' -
+  // claimed_at is the discriminator here (status alone would not tell an
+  // unguarded write from a no-op, since both leave it 'rejected').
+  it('with topicReject set on an already-rejected topic, leaves it untouched (claimed_at unchanged)', async () => {
+    const topicId = await insertRunWithTopic('rejected', 'run-1');
+    await env.DB.prepare(`UPDATE topics SET claimed_at = datetime('now') WHERE id = ?`).bind(topicId).run();
+    const before = await env.DB.prepare('SELECT claimed_at FROM topics WHERE id = ?').bind(topicId).first<{ claimed_at: string | null }>();
+
+    await recordDraftReview(env.DB, { runId: 'run-1', prUrl: PR_URL, slug: 'slug', title: 'title', state: 'declined', topicReject: topicId });
+
+    const after = await env.DB.prepare('SELECT status, claimed_at FROM topics WHERE id = ?').bind(topicId).first<{
+      status: string;
+      claimed_at: string | null;
+    }>();
+    expect(after?.status).toBe('rejected');
+    expect(after?.claimed_at).toBe(before?.claimed_at);
+  });
+
+  it('with topicReject: null, writes the draft row and leaves the topic done', async () => {
+    const topicId = await insertRunWithTopic('done', 'run-1');
+
+    await recordDraftReview(env.DB, { runId: 'run-1', prUrl: PR_URL, slug: 'slug', title: 'title', state: 'open', topicReject: null });
+
+    const row = await env.DB.prepare('SELECT status FROM topics WHERE id = ?').bind(topicId).first<{ status: string }>();
+    expect(row?.status).toBe('done');
+  });
+
+  // Atomicity is asserted by construction rather than by an injected
+  // failure: both statements ride one `db.batch()` call (recordDraftReview's
+  // own comment names this as the mechanism), and the public API - a real
+  // D1Database binding - gives no seam to fail one statement of a batch
+  // without faking the binding itself, which would test the fake rather
+  // than the function. This proves both writes land together; it does not
+  // prove a failed second statement rolls back the first, which nothing
+  // here can force.
+  it('the declined pair is atomic: both the drafts row and the topic reopen are visible together', async () => {
+    const topicId = await insertRunWithTopic('done', 'run-1');
+
+    await recordDraftReview(env.DB, { runId: 'run-1', prUrl: PR_URL, slug: 'slug', title: 'title', state: 'declined', topicReject: topicId });
+
+    const draftRow = await env.DB.prepare('SELECT state FROM drafts WHERE run_id = ?').bind('run-1').first<{ state: string }>();
+    const topicRow = await env.DB.prepare('SELECT status FROM topics WHERE id = ?').bind(topicId).first<{ status: string }>();
+    expect(draftRow?.state).toBe('declined');
+    expect(topicRow?.status).toBe('rejected');
   });
 });
