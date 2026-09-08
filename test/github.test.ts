@@ -153,7 +153,7 @@ describe('putFile()', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await putFile(config, {
-      path: 'src/content/blog/x/index.mdx',
+      path: 'src/content/draft/2026-08-27-x/index.mdx',
       content: '---\ntitle: x\n---\n',
       message: 'add draft',
       branch: 'research/2026-08-27-x',
@@ -172,7 +172,7 @@ describe('putFile()', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await putFile(config, {
-      path: 'src/content/blog/x/index.mdx',
+      path: 'src/content/draft/2026-08-27-x/index.mdx',
       content: 'x',
       message: 'add draft',
       branch: 'research/2026-08-27-x',

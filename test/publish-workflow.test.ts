@@ -183,6 +183,26 @@ describe('openPullRequest()', () => {
   });
 
   /**
+   * #119: the committed file is a dated directory under
+   * `src/content/draft/`, which no loader glob in the blog's
+   * `src/content.config.ts` covers - so nothing the agent commits enters
+   * the blog collection until a human moves the directory. Asserted on the
+   * recorded PUT path rather than on `draftPostPath`, which mdx.test.ts
+   * already covers: what this pins is that the publish step passes the
+   * draft's own date through, so path and branch cannot disagree.
+   */
+  it('commits to src/content/draft/<date>-<slug>/index.mdx, not into the blog collection', async () => {
+    const fake = fakeGithub(REAL_CONTENT_CONFIG);
+    vi.stubGlobal('fetch', fake.fetchMock);
+
+    await openPullRequest(env, draft());
+
+    expect([...fake.files.keys()]).toEqual([
+      `${DRAFT_BRANCH}:src/content/draft/2026-08-27-agentic-code-review/index.mdx`,
+    ]);
+  });
+
+  /**
    * The case run `0357f119` (2026-09-01) actually left behind: it pushed
    * `research/2026-09-01-modular-silent-trials-...` and committed the file,
    * then died before the pull request. The branch is still in the blog repo,

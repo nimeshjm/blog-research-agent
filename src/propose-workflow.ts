@@ -137,9 +137,12 @@ export const DUPLICATE_TOKEN_THRESHOLD = 2;
  *     repo's default branch (one fetch, `listBlogPostSlugs` - github.ts).
  *     This catches a *hand-written* draft with `draft: true` committed
  *     straight to the default branch - it does not catch the agent's own
- *     drafts, because the agent never commits there. CLAUDE.md: "The agent
- *     writes to branches only" - `research/<yyyy-mm-dd>-<slug>`, reaching
- *     `main` only once a human merges the pull request it opens.
+ *     drafts, for two reasons now. The agent never commits to the default
+ *     branch at all (CLAUDE.md: "The agent writes to branches only" -
+ *     `research/<yyyy-mm-dd>-<slug>`, reaching `main` only once a human
+ *     merges the pull request it opens); and since #119 its file lands under
+ *     src/content/draft/, so even a merged draft is not in what this lists.
+ *     Item 3 is what covers those.
  *  3. The agent's own "previously claimed" set: `coveredTopicTitles`, read by
  *     the parent's `select-topic` step (`reclaimAndClaim`, src/lib/d1.ts,
  *     #104) and passed in as a param at no extra subrequest to this child -

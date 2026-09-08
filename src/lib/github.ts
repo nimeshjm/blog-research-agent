@@ -170,11 +170,18 @@ export async function putFile(config: GithubConfig, params: PutFileParams): Prom
  * Lists post slugs under `src/content/blog/` at the repo's default branch -
  * used only for the propose-topic dedupe (spec.md req. 3: a proposal must
  * not duplicate a `draft: true` post, which is absent from BLOG_FEED_URL).
- * The directory name *is* the slug (`Draft.slug`, `blogPostPath()` in
- * mdx.ts), so this needs no per-post file read: spec.md's own measured fact
+ * Under `src/content/blog/` the directory name *is* the slug, so this needs
+ * no per-post file read: spec.md's own measured fact
  * ("the repo holds 33 posts and the feed 30 - the 3 missing are all
  * unpublished drafts") means repo slugs minus feed slugs already *is* the
  * drafted set, without ever reading an `index.mdx`'s frontmatter.
+ *
+ * Still `src/content/blog/` after #119 moved the *agent's* drafts to
+ * `src/content/draft/<yyyy-mm-dd>-<slug>/`: what this read exists to catch
+ * is a **hand-written** `draft: true` post, and a human still commits those
+ * where the posts are. The agent's own drafts were never this read's job
+ * (see `proposeTopic`'s item 2) and are covered by `coveredTopicTitles`,
+ * which keeps a topic in the covered set once it is `done`.
  *
  * `ref` is deliberately omitted - GitHub's Contents API defaults to the
  * repo's default branch when it is - rather than passed `BLOG_BASE_BRANCH`.

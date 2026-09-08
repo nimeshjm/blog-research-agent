@@ -139,7 +139,10 @@ and stops; a human merges.
 3. A proposed topic must not duplicate anything already **published, drafted, or
    previously proposed by this agent**. The published set comes from `BLOG_FEED_URL`.
    The second set comes from every post directory under `src/content/blog/` at the
-   blog repo's default branch (`listBlogPostSlugs`) — that read returns every post,
+   blog repo's default branch (`listBlogPostSlugs`) — still that path after #119 moved
+   the agent's own drafts to `src/content/draft/`, because what this read exists to
+   catch is a hand-written draft and a human still commits those where the posts are;
+   the agent's own are covered by the third set. That read returns every post,
    not only drafts, but posts with `draft: true` are absent from the feed, so the
    subset the feed doesn't already cover is exactly the hand-written drafts. At the
    time of writing the repo holds 33 posts and the feed 30 — the 3 missing are all
@@ -267,8 +270,9 @@ and stops; a human merges.
    the ceiling the run stops summarizing and proceeds with what it has, or records a
    partial outcome.
 7. The pull request body contains the research brief with a link to every source used.
-   The committed file is `src/content/blog/<slug>/index.mdx` and its frontmatter
-   validates against `src/content.config.ts` (see below).
+   The committed file is `src/content/draft/<yyyy-mm-dd>-<slug>/index.mdx` — beside the
+   blog collection, not in it (#119) — and its frontmatter validates against
+   `src/content.config.ts` (see below).
 10. Every generated post sets `draft: true`, and omits `image`.
 8. The agent never pushes to `BLOG_BASE_BRANCH` and never merges.
 9. Every run writes exactly one row to `runs`, whatever the outcome.
@@ -671,6 +675,23 @@ coding-agent vendors, and the evaluation labs.
 `nimeshjm/nimeshjm.com` — private, Astro, default branch `main`. Posts live at
 `src/content/blog/<slug>/index.mdx` with images co-located in the same directory.
 
+**The agent does not commit there.** Its drafts go to
+`src/content/draft/<yyyy-mm-dd>-<slug>/index.mdx` (#119). Every `loader` in the blog's
+`src/content.config.ts` is a `glob` with an explicit `base`, so Astro takes the whole
+config as content-layer and never walks `src/content/` for undeclared folders — the
+directory is ignored outright rather than auto-generated into an orphan collection. Two
+things follow: a reviewer tells a generated draft from a hand-written post by its path
+rather than by reading frontmatter for `draft: true`, and nothing the agent commits is
+parsed or schema-checked by a build of its branch. The date prefix is `Draft.date`, not
+the clock, which keeps the path a pure function of the draft — `putFile`'s idempotency
+is a sha read at that exact path, under a `run()` that re-executes on replay — and in
+step with the branch the same run creates, `research/<yyyy-mm-dd>-<slug>`. `index.mdx`
+stays the filename so promotion is a `git mv` of the directory into `src/content/blog/`.
+
+The schema check therefore becomes a promotion-readiness gate rather than a build guard:
+it still fails the run rather than opening a pull request whose frontmatter no longer
+matches upstream, which is what requirement 7 asks of it.
+
 The collection schema, from `src/content.config.ts`:
 
 ```ts
@@ -742,9 +763,12 @@ research brief; the committed file is the draft.
 1. `npx wrangler deploy --dry-run` resolves every binding.
 2. A manually triggered run with a queued topic opens a pull request against
    `BLOG_REPO` on a `research/*` branch, and `BLOG_BASE_BRANCH` is unchanged.
-3. The PR's file is at `src/content/blog/<slug>/index.mdx`, parses as valid MDX, has
-   `draft: true`, has no `image` key, and validates against `src/content.config.ts`.
-   Checking out the branch and running the blog's own build succeeds.
+3. The PR's file is at `src/content/draft/<yyyy-mm-dd>-<slug>/index.mdx`, parses as
+   valid MDX, has `draft: true`, has no `image` key, and validates against
+   `src/content.config.ts`. Checking out the branch and running the blog's own build
+   succeeds — and does not read the file, which is outside every collection glob, so
+   `git mv`-ing the directory into `src/content/blog/` and building again is what
+   actually exercises the MDX.
 4. A second run on the same day re-reads no article present in `seen_urls`.
 5. With an empty queue, a run proposes a topic that duplicates neither the published
    feed, nor any `draft: true` post in the repo, nor a title already recorded in

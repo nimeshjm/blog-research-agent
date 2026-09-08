@@ -80,6 +80,8 @@ Queue first, else propose.
 - ~~The blog repo name is unknown.~~ **Resolved:** `nimeshjm/nimeshjm.com` — private,
   Astro, default branch `main`, posts at `src/content/blog/<slug>/index.mdx`. The
   content-collection schema is in `src/content.config.ts` and is recorded in `spec.md`.
+  The agent's own drafts land beside that collection rather than in it, at
+  `src/content/draft/<yyyy-mm-dd>-<slug>/index.mdx` (#119).
 - ~~`GITHUB_TOKEN` is not yet issued.~~ **Resolved:** issued, with `contents: write`
   and `pull_requests: write` scoped to `nimeshjm/nimeshjm.com` alone, and set as a
   wrangler secret — which is where the Worker reads it from, and the only place it may

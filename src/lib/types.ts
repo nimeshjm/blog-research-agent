@@ -116,10 +116,15 @@ export interface ArticleSummary {
  * Maps onto the blog's content-collection schema (src/content.config.ts).
  * `draft` is always true and `image` is deliberately absent - the Astro
  * `image()` helper resolves to a real file, so emitting one without committing
- * it breaks the site build. See .claude/skills/blog-voice/SKILL.md.
+ * it breaks the site build once the draft is promoted into
+ * `src/content/blog/`. See .claude/skills/blog-voice/SKILL.md.
  */
 export interface Draft {
-  /** kebab-case, no spaces. Becomes src/content/blog/<slug>/index.mdx. */
+  /**
+   * kebab-case, no spaces. With `date`, becomes
+   * src/content/draft/<yyyy-mm-dd>-<slug>/index.mdx (`draftPostPath` in
+   * lib/mdx.ts).
+   */
   slug: string;
   title: string;
   description: string;
