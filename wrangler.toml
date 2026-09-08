@@ -34,6 +34,18 @@ compatibility_flags = ["nodejs_compat"]
 # `crons = []` and keep the [triggers] block - an absent section leaves an
 # already-deployed schedule running, and every merge to main deploys.
 #
+# **`crons = []` now pauses both triggers, not just research.** Since #116
+# there are two entries and `scheduled()` routes a slot by matching
+# `controller.cron` against REVIEW_SWEEP_CRON below, so pausing one of them
+# is a different edit: drop that entry's own string and leave the other. Drop
+# the research entry and REVIEW_SWEEP_CRON still matches, so the sweep keeps
+# running alone; drop the sweep entry and every remaining slot falls through
+# to the research branch, which is the pre-#116 behaviour - but leave
+# REVIEW_SWEEP_CRON pointing at a string that is no longer in this array and
+# `review-sweep-cron-matches-trigger` (scripts/review-checks.mjs) fails the
+# pull request, deliberately: a sweep var with no trigger behind it is the
+# drift that check exists to catch.
+#
 # The second entry, `45 7 * * *`, is #116's decline sweep - once a day, at
 # minute 45 past an hour requirement 1 never uses at minute 0, so the sweep
 # never contends with a research run's own slot for the invocation's shared
