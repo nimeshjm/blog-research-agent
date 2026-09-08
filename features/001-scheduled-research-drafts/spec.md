@@ -62,30 +62,80 @@ and stops; a human merges.
    ("#8's question is still open on top of this"). The residual turned out not to be the
    merge case, which that `done` write had already absorbed, but the decline case below.
 
-   **So neither a webhook receiver nor a second scheduled poll is built, and neither is
-   wanted.** Both add a moving part to a pipeline whose whole point is that a human holds
-   the merge gate, and the parent Workflow has no subrequest to spend on a pull-request
-   read in any case: the ledger in `createProposeChildren` (`src/workflow.ts`) stands at
-   49 of 50 on the queue-draining path and 50 of 50 on the propose path, so a poll would
-   need its own child instance or its own cron trigger rather than a parent step.
+   **A webhook receiver is still not built and still not wanted; a second scheduled poll
+   now is.** A receiver means a public endpoint, a shared secret and a delivery
+   configured outside this repo — three moving parts around a gate whose whole point is
+   that a human holds it. A poll needs none of that, and the ledger decides where it
+   runs rather than whether: `createProposeChildren` (`src/workflow.ts`) stands at 49 of
+   50 subrequests on the queue-draining path and 50 of 50 on the propose path, so the
+   read cannot be a parent step. **Amended 2026-09-08
+   ([#116](https://github.com/nimeshjm/blog-research-agent/issues/116)) to take the
+   second of the two options that sentence already named** — its own cron trigger, and
+   `ReviewSweepWorkflow` (`src/review-sweep-workflow.ts`) rather than a child of a
+   research run, because it is not part of one: it reads drafts from runs that finished
+   hours or days earlier. Requirement 1's schedule is untouched.
 
    **What closing on run completion does not distinguish is a draft a human declines.**
-   A closed-unmerged pull request leaves its topic `done`; requirement 3 counts `done` as
-   covered and deliberately excludes `rejected`, which only an `insufficient_sources` run
-   ever writes. A declined draft therefore burns its topic — the human said *not this* and
-   the queue recorded *done with this*. That stays a manual correction, the same act as
-   the decline itself:
+   A closed-unmerged pull request left its topic `done`; requirement 3 counts `done` as
+   covered and deliberately excludes `rejected`, which until now only an
+   `insufficient_sources` run ever wrote. A declined draft therefore burned its topic —
+   the human said *not this* and the queue recorded *done with this*, which is the wrong
+   side of exactly the distinction requirement 3 draws.
+
+   The sweep closes that gap and nothing else. One cron slot a day (`45 7 * * *`, chosen
+   to land on no multiple-of-three hour requirement 1 uses) reads at most
+   `REVIEW_SWEEP_MAX_DRAFTS` drafts, oldest first, one pull request per step:
+
+   | pull request | `drafts.state` | `topics.status` |
+   |---|---|---|
+   | still open | `open` | unchanged (`done`) — re-read next sweep |
+   | `closed` and `merged` | `merged` | unchanged (`done`) |
+   | `closed` and not `merged` | `declined` | **`rejected`** |
+   | 404 | `unavailable` | unchanged (`done`) |
+
+   `merged` and `declined` and `unavailable` are terminal, which is what retires a row
+   from the work list — `readReviewableDrafts` (`src/lib/d1.ts`) selects only drafts with
+   no `drafts` row or an `open` one, so a merged draft is read once rather than every
+   day for the life of the database. `drafts` finally has its writer: the table has been
+   in `migrations/0001_init.sql` since the stage-2 gate with nothing filling it, and
+   `state` was always the intended home for pull-request outcome. `migrations/0003` adds
+   the unique index on `run_id` the idempotent upsert needs, and can be applied without
+   risk precisely because nothing had ever written a row.
+
+   Three deliberate narrownesses, each stated so a reader knows it was chosen:
+
+   - **`unavailable` leaves the topic `done`.** A 404 means the sweep cannot know the
+     outcome, and guessing `rejected` would re-queue a topic whose draft may well have
+     been merged. It is terminal anyway, so it drains rather than occupying the bounded
+     work list forever.
+   - **The topic write is conditional on `status = 'done'`.** The same
+     conditional-transition argument `claimRow` makes: a blind `UPDATE` would clobber a
+     `rejected` a human had already set by hand, or a row a research run had just
+     claimed to `in_progress`.
+   - **`REVIEW_SWEEP_MAX_DRAFTS` is a CPU bound, not a subrequest one, and it is
+     unmeasured.** The sweep's subrequest bill is 1 + 2 per draft (one
+     `readReviewableDrafts`, then one GitHub read and one `db.batch()` each) — 11 of 50
+     at five drafts, nowhere near the ceiling. What is not derived is the CPU: five pull
+     request JSON parses could pack into one invocation against the 10 ms budget, the
+     same failure class as run `bd33248b`. One draft per step buys the chance of a fresh
+     invocation, which is the only lever there is (CLAUDE.md's "Platform rules"), and 5
+     is chosen low rather than derived. Raise it against a measurement, not a hope.
+
+   **The manual correction still works and is still correct**, for a draft declined
+   before this landed or one the sweep records `unavailable`:
 
    ```bash
    npx wrangler d1 execute blog_research --remote \
      --command "UPDATE topics SET status = 'rejected' WHERE id = <id>"
    ```
 
-   Manual by decision rather than by omission, and already the working practice — the two
-   `rejected` rows #108 measured in production were both set by hand. Automating it is
-   [#116](https://github.com/nimeshjm/blog-research-agent/issues/116), which needs the
-   pull-request-state read the merge case turned out not to need; the trigger to revisit
-   is declined drafts burning topics faster than the queue drains.
+   It was the working practice up to this point — the two `rejected` rows #108 measured
+   in production were both set by hand. **#116's own revisit trigger ("more than one
+   topic per week reaching `done` on a PR the author closed unmerged") was not met when
+   this was built**; the issue was deferred and the build overrides that deferral
+   deliberately, on the argument that the cheap shape it had already costed does not get
+   cheaper by waiting for the queue to burn topics first. Recorded here rather than left
+   for a reader to infer from a closed `deferred` issue.
 3. A proposed topic must not duplicate anything already **published, drafted, or
    previously proposed by this agent**. The published set comes from `BLOG_FEED_URL`.
    The second set comes from every post directory under `src/content/blog/` at the
@@ -343,7 +393,9 @@ rather than once per candidate: D1 allows 50 queries per invocation and 100 boun
 parameters per query, and a single feed can carry many times more items than either. The
 batch is therefore chunked at 100 URLs per query, and the 30-day window in `gather` is
 what keeps the chunk count in single figures — 7 rather than 49. `runs.neurons_spent` is what makes requirement 6 auditable after
-the fact.
+the fact. `drafts` was the one table here with no writer at all until #116 gave it one: `state` holds the pull request's
+outcome, written by the decline sweep in requirement 2, and `migrations/0003` adds the unique
+index on `run_id` that sweep's idempotent upsert needs.
 
 ### Source allowlist
 
@@ -682,7 +734,7 @@ research brief; the committed file is the draft.
 | Cron 15 min wall-clock | Cron only creates the instance; steps have no wall-clock cap |
 | 10,000 neurons/day | Per-run: measured min 1,353 / max 1,759 / mean 1,589 (six successful runs in `runs`), hard-stopped at `NEURON_BUDGET_PER_RUN`. Daily aggregate: `reclaimAndClaim`'s `sum(neurons_spent)` read, gated against `NEURON_DAILY_RESERVE` (#111, acceptance criterion 8) |
 | Steps are retried | Every step body must be idempotent (enforced by `REVIEW.md` pass 3) |
-| 5 cron triggers | One used |
+| 5 cron triggers | Two used: requirement 1's `0 */3 * * *`, and requirement 2's decline sweep at `45 7 * * *` (#116) |
 | No paid search | Feeds only |
 
 ## Acceptance criteria
@@ -767,6 +819,12 @@ research brief; the committed file is the draft.
    feed; it does not truncate a feed's dated items, so a full arXiv day survives intact.
    `shortlist` takes at most 4,000 candidates and its chunked `seen_urls` batch stays
    under 50 D1 queries.
+10. A draft whose pull request a human closes **unmerged** leaves its `topics` row
+    `rejected`, not `done`, by the next decline sweep (#116) — so requirement 3 stops
+    counting it as covered and the topic becomes proposable again. A **merged** draft's
+    row stays `done`, is recorded in `drafts` as `merged`, and is never re-read. Both
+    outcomes are checked by reading `drafts.state` and `topics.status` after a sweep
+    whose work list `readReviewableDrafts` returned non-empty.
 
 ## Risks and mitigations
 

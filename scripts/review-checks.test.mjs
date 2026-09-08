@@ -323,10 +323,11 @@ const rows = [
     },
     mutate(dir) {
       // Strips every corrected "per invocation" assertion this file carries
-      // (4 of the 11 the sentinel counts) without touching the stale-phrase
-      // detector's input at all - proves the sentinel fires on its own when
-      // the tree simply stops asserting the corrected premise, rather than
-      // riding along on the rows above.
+      // (4 of the 17 the sentinel counts as of #116's re-measurement, see
+      // CPU_PREMISE_CORRECT_MIN's own comment) without touching the
+      // stale-phrase detector's input at all - proves the sentinel fires on
+      // its own when the tree simply stops asserting the corrected premise,
+      // rather than riding along on the rows above.
       const rel = 'features/001-scheduled-research-drafts/spec.md';
       const text = readFile(dir, rel);
       const stripped = text.replace(/per[-\s]invocation/gi, 'per unit of work');
@@ -620,14 +621,17 @@ const rows = [
     // scenario the sentinel minimum exists to catch.
     name: 'rename the tracerFor seam function (matcher stops resolving step-name calls)',
     expectFail: ['step-names-unique', 'step-names-static'],
-    // Verified 2026-09-04 (#109) after extending this row to a fifth file:
+    // Verified 2026-09-08 (#116) after extending this row to a sixth file:
     // `span-attributes-allowlisted` counts every `span.setAttribute(...)`
     // call regardless of callee (unaffected by the rename) plus any attrs
     // object literal reached through `traced`/`tracedStep`/a tracerFor-bound
-    // identifier - with all five files renamed that resolves 30 sites, not
-    // the "12" this comment previously stated (stale since before this file
-    // had a `propose-workflow.ts` to count at all). Still >= 8.
-    expectPassStillGreen: ['span-attributes-allowlisted'], // 30 sites remain, still >= 8
+    // identifier - with all six files renamed the tracerFor-bound path
+    // resolves nothing (empty tracerBoundNames), leaving only the
+    // callee-independent `setAttribute` sites and the handful of bare
+    // `traced(...)` attrs literals, which measures 34 sites, not the "30"
+    // this comment previously stated (stale since before this file had a
+    // `review-sweep-workflow.ts` to count at all). Still >= 8.
+    expectPassStillGreen: ['span-attributes-allowlisted'], // 34 sites remain, still >= 8
     // The rename doesn't create a duplicate or a bad template - it makes the
     // matcher stop resolving step-name calls at all (0 calls found), which
     // would otherwise mean an *empty* finding set and a false PASS. The FAIL
@@ -690,6 +694,57 @@ const rows = [
         "import { tracerForRenamed } from './lib/trace'",
       );
       mustReplace(dir, 'src/propose-workflow.ts', 'tracerFor(step, event)', 'tracerForRenamed(step, event)');
+      // Extended 2026-09-08 (#116): ReviewSweepWorkflow is the sixth. Same
+      // failure mode, sixth occurrence - one file left calling the real
+      // `tracerFor` keeps `traceStep` in the global `tracerBoundNames` set,
+      // every renamed file's calls carry on resolving through it, the
+      // sentinel never fires, and the row passes while proving nothing. That
+      // is exactly what it did from #116 landing until this pair was added.
+      mustReplace(
+        dir,
+        'src/review-sweep-workflow.ts',
+        "ATTR_DRAFTS_REVIEWABLE, ATTR_DRAFT_STATE, ATTR_TOPIC_ID, tracerFor } from './lib/trace'",
+        "ATTR_DRAFTS_REVIEWABLE, ATTR_DRAFT_STATE, ATTR_TOPIC_ID, tracerForRenamed } from './lib/trace'",
+      );
+      mustReplace(dir, 'src/review-sweep-workflow.ts', 'tracerFor(step, event)', 'tracerForRenamed(step, event)');
+    },
+  },
+  // -------------------------------------------------------------------------
+  // `review-sweep-cron-matches-trigger` (#116) - proves the three assertions
+  // described in that check's comment in review-checks.mjs: the sentinel
+  // fires when either literal can't be located, a `REVIEW_SWEEP_CRON` that
+  // matches no `crons` entry fails, and a `REVIEW_SWEEP_CRON` that matches
+  // the *first* entry (requirement 1's research schedule) fails too, even
+  // though it's technically "one of the crons entries".
+  // -------------------------------------------------------------------------
+  {
+    name: 'REVIEW_SWEEP_CRON set to a cron expression absent from crons entirely',
+    expectFail: ['review-sweep-cron-matches-trigger'],
+    mutate(dir) {
+      mustReplace(dir, 'wrangler.toml', 'REVIEW_SWEEP_CRON = "45 7 * * *"', 'REVIEW_SWEEP_CRON = "15 9 * * *"');
+    },
+  },
+  {
+    name: "REVIEW_SWEEP_CRON set to the first crons entry (every research slot would route to the sweep instead)",
+    expectFail: ['review-sweep-cron-matches-trigger'],
+    mutate(dir) {
+      mustReplace(dir, 'wrangler.toml', 'REVIEW_SWEEP_CRON = "45 7 * * *"', 'REVIEW_SWEEP_CRON = "0 */3 * * *"');
+    },
+  },
+  {
+    // The REVIEW_SWEEP_CRON line is deleted outright rather than just its
+    // value blanked - proves the sentinel branch specifically, not the
+    // "value doesn't match" branch, which is what the two rows above already
+    // cover. Same reasoning as the tracerFor-rename row's own sentinel
+    // assertion above: the FAIL here must be the matcher-stopped-matching
+    // message, not some coincidental other finding.
+    name: 'REVIEW_SWEEP_CRON var deleted entirely (sentinel must fire, not a value mismatch)',
+    expectFail: ['review-sweep-cron-matches-trigger'],
+    expectFindingMatch: {
+      'review-sweep-cron-matches-trigger': /sentinel: no `REVIEW_SWEEP_CRON` var found/,
+    },
+    mutate(dir) {
+      mustReplace(dir, 'wrangler.toml', 'REVIEW_SWEEP_CRON = "45 7 * * *"\n', '');
     },
   },
   // -------------------------------------------------------------------------

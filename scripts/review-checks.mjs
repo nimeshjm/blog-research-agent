@@ -237,6 +237,14 @@ function stepNamePrefix(text) {
 // (#109): `selectTopic`'s propose branch's own poll loop, the same
 // round-interpolates-deterministically argument as the other three pairs -
 // round N is always the Nth iteration of `run()`'s propose loop.
+//
+// `review-draft` added 2026-09-08 (#116): ReviewSweepWorkflow's per-draft
+// step, `` `review-draft:${draft.runId}` ``. `runs.instance_id` is a primary
+// key, so these names are unique within one sweep (step-names-unique) and
+// stable across a replay (step-names-static) - a run id never changes once
+// assigned. `tracedStep` strips everything after the first `:` before it
+// ever reaches `agent.step`, so the id itself never lands in a span
+// attribute either.
 const DYNAMIC_STEP_PREFIXES = new Set([
   'gather',
   'summarize',
@@ -248,6 +256,7 @@ const DYNAMIC_STEP_PREFIXES = new Set([
   'await-publish-children-wait',
   'await-propose-children',
   'await-propose-children-wait',
+  'review-draft',
 ]);
 const INFERENCE_STEP_PREFIXES = new Set(['summarize', 'synthesize']);
 
@@ -409,7 +418,14 @@ const CPU_PREMISE_EXCLUDE_PREFIXES = [
 // PR 2: `src/index.ts` now asserts the corrected premise where it asserted the
 // retired one, and the count was re-measured after the 003 exclude above
 // rather than assumed.
-const CPU_PREMISE_CORRECT_MIN = 13;
+//
+// Raised from 13 to 17 on 2026-09-08 (#116), re-measured rather than assumed:
+// the tree gained correct per-invocation assertions after #75's PR 2 last
+// calibrated this (`src/review-sweep-workflow.ts`'s own CPU comment among
+// them), and at 13 the mutation test's "strip feature 001 spec.md" row left
+// the count at exactly 13 - `13 < 13` is false, so that row passed with its
+// guard effectively removed.
+const CPU_PREMISE_CORRECT_MIN = 17;
 
 checks.push({
   id: 'cpu-premise-is-per-invocation',
@@ -835,6 +851,98 @@ checks.push({
       })(sf);
     }
     return findings;
+  },
+});
+
+// #116: `wrangler.toml` carries the same fact twice - the second `crons`
+// entry under `[triggers]` (the sweep's own schedule slot) and
+// `REVIEW_SWEEP_CRON` under `[vars]` (what `scheduled()`, src/index.ts,
+// compares `controller.cron` against to decide which Workflow a slot
+// starts) - and nothing but a human keeps them equal. Let them drift and
+// `controller.cron === env.REVIEW_SWEEP_CRON` is false on every slot,
+// including the sweep's intended one: every slot starts ResearchWorkflow
+// instead. That reads as an extra research run a day, quietly absorbed by
+// acceptance criterion 8's daily neuron guard as a `budget_skipped` row
+// rather than a visible failure, while ReviewSweepWorkflow never runs again
+// - so acceptance criterion 10 (feature 001, spec.md) cannot hold and
+// nothing says so. A cross-key TOML *value* consistency assertion like this
+// has no off-the-shelf tool to express it, the same category
+// `wrangler-vars-are-not-secrets` above already covers for TOML *key-name*
+// policy - so it lands here.
+//
+// Same TOML-reading approach as `wrangler-vars-are-not-secrets`: read the
+// whole file through `ctx.readTextFile` and scan it line by line with plain
+// regexes, rather than pulling in a TOML parser for two values.
+const CRONS_LINE_RE = /^crons\s*=\s*\[(.*)\]\s*$/;
+const TOML_STRING_RE = /"((?:[^"\\]|\\.)*)"/g;
+const REVIEW_SWEEP_CRON_LINE_RE = /^REVIEW_SWEEP_CRON\s*=\s*"((?:[^"\\]|\\.)*)"\s*$/;
+
+checks.push({
+  id: 'review-sweep-cron-matches-trigger',
+  pass: 4,
+  severity: 'Important',
+  run(ctx) {
+    const rel = 'wrangler.toml';
+    const text = ctx.readTextFile(rel);
+    if (text === null) return [{ file: rel, line: 0, message: `${rel} not found - nothing to check` }];
+
+    const lines = text.split('\n');
+    let cronsEntries = null;
+    let sweepCronValue = null;
+    let sweepCronLine = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      if (cronsEntries === null) {
+        const m = CRONS_LINE_RE.exec(trimmed);
+        if (m) cronsEntries = [...m[1].matchAll(TOML_STRING_RE)].map((mm) => mm[1]);
+      }
+      if (sweepCronValue === null) {
+        const m = REVIEW_SWEEP_CRON_LINE_RE.exec(trimmed);
+        if (m) {
+          sweepCronValue = m[1];
+          sweepCronLine = i + 1;
+        }
+      }
+    }
+
+    // Sentinel first, same reasoning as step-names-unique's own: a matcher
+    // that silently finds neither key must fail rather than pass vacuously
+    // on an empty comparison.
+    const findings = [];
+    if (cronsEntries === null) {
+      findings.push({
+        file: rel,
+        line: 0,
+        message: 'sentinel: no `crons = [...]` array found in wrangler.toml - the matcher likely stopped matching',
+      });
+    }
+    if (sweepCronValue === null) {
+      findings.push({
+        file: rel,
+        line: 0,
+        message: 'sentinel: no `REVIEW_SWEEP_CRON` var found in wrangler.toml - the matcher likely stopped matching',
+      });
+    }
+    if (findings.length > 0) return findings;
+
+    if (!cronsEntries.includes(sweepCronValue)) {
+      return [{
+        file: rel,
+        line: sweepCronLine,
+        message: `REVIEW_SWEEP_CRON (${JSON.stringify(sweepCronValue)}) is not one of the crons entries (${JSON.stringify(cronsEntries)}) - every slot would take the research branch and the sweep would never run`,
+      }];
+    }
+
+    if (cronsEntries[0] === sweepCronValue) {
+      return [{
+        file: rel,
+        line: sweepCronLine,
+        message: `REVIEW_SWEEP_CRON equals the first crons entry (${JSON.stringify(sweepCronValue)}) - that slot is requirement 1's research schedule, so every research run would be routed to the sweep instead`,
+      }];
+    }
+
+    return [];
   },
 });
 

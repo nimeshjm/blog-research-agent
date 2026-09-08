@@ -1,4 +1,4 @@
-import type { Candidate, ParsedItem, RunOutcome, Topic, TopicStatus } from './types';
+import type { Candidate, DraftState, ParsedItem, ReviewableDraft, RunOutcome, Topic, TopicStatus } from './types';
 
 /**
  * Every query against the tables in migrations/0001_init.sql and
@@ -743,4 +743,126 @@ export async function reclaimAndClaim(
     coveredTopicTitles: (results[3]?.results ?? []).map((r) => r.title),
     dailyNeuronsSpent: (results[4]?.results[0] as unknown as DailySpendRow | undefined)?.total ?? 0,
   };
+}
+
+interface ReviewableDraftRow {
+  run_id: string;
+  pr_url: string;
+  topic_id: number;
+  topic_title: string;
+}
+
+/**
+ * The #116 sweep's work list: runs that opened a pull request whose topic is
+ * still `'done'` and whose `drafts` row (if any) has not yet reached a
+ * terminal state. Every clause here is load-bearing:
+ *
+ *  - `r.pr_url IS NOT NULL` - a run that never opened a pull request has no
+ *    state to read.
+ *  - `t.status = 'done'` - the only status this sweep may transition away
+ *    from. It is also what makes the sweep defer to a human who already set
+ *    the row by hand (`'rejected'` set manually is the working practice
+ *    #116 records), and what keeps the sweep away from a live claim
+ *    (`'in_progress'`).
+ *  - `(d.state IS NULL OR d.state = 'open')` - the drain. Without it a
+ *    **merged** draft, whose topic legitimately stays `'done'` forever,
+ *    would be re-fetched by every sweep for the life of the database;
+ *    `DraftState`'s terminal values are what retire a row from this list.
+ *  - `ORDER BY r.finished_at ASC` - oldest first, so a backlog drains in the
+ *    order it accumulated rather than starving its own tail behind the
+ *    newest drafts.
+ *  - `LIMIT ?` - a CPU bound, not a subrequest one; see
+ *    `REVIEW_SWEEP_MAX_DRAFTS`'s own comment in wrangler.toml.
+ */
+export async function readReviewableDrafts(db: D1Database, limit: number): Promise<ReviewableDraft[]> {
+  const result = await db
+    .prepare(
+      `SELECT r.instance_id AS run_id, r.pr_url AS pr_url, t.id AS topic_id, t.title AS topic_title
+         FROM runs r
+         JOIN topics t ON t.id = r.topic_id
+         LEFT JOIN drafts d ON d.run_id = r.instance_id
+        WHERE r.pr_url IS NOT NULL
+          AND r.status = 'succeeded'
+          AND t.status = 'done'
+          AND (d.state IS NULL OR d.state = 'open')
+        ORDER BY r.finished_at ASC
+        LIMIT ?`,
+    )
+    .bind(limit)
+    .all<ReviewableDraftRow>();
+
+  return result.results.map((row) => ({
+    runId: row.run_id,
+    prUrl: row.pr_url,
+    topicId: row.topic_id,
+    topicTitle: row.topic_title,
+  }));
+}
+
+/** What `recordDraftReview` below writes for one reviewed draft. */
+export interface DraftReview {
+  runId: string;
+  prUrl: string;
+  slug: string;
+  title: string;
+  state: DraftState;
+  /** The topic to move off `done`, set only when `state` is `'declined'`; `null` otherwise. */
+  topicReject: number | null;
+}
+
+/**
+ * Records one draft's reviewed state, and, when it was declined, reopens its
+ * topic - one `db.batch()` of one or two statements.
+ *
+ * **`ON CONFLICT(run_id)`, not a plain `INSERT`**: `run()` re-executes on
+ * replay (feature 003 `spec.md` fact 2) and a sweep re-reads a still-`'open'`
+ * draft on every later cron, so this write must converge on one row per run.
+ * `migrations/0003_drafts_run_id_unique.sql` supplies the conflict target.
+ *
+ * **The topic `UPDATE` is guarded on `status = 'done'`**, the same
+ * conditional-transition argument `claimRow` makes above. A blind write
+ * would clobber a hand-set `'rejected'` or, worse, a row a concurrent
+ * research run has just claimed to `'in_progress'`.
+ *
+ * **`claimed_at = NULL`** matches what `recordSeenPruneAndCloseTopic` does
+ * when it closes a topic: a topic off `in_progress` - `'done'` here - has no
+ * live claim to record.
+ *
+ * **Batched, deliberately, unlike `recordRunOutcome` and
+ * `recordSeenPruneAndCloseTopic`'s opposite choice to keep those two calls
+ * separate.** There, the `runs` row had to commit first because spec req. 10
+ * demands a row for every run whatever else fails, so folding the topic
+ * close into that same call would have put that guarantee at risk. Here
+ * neither write is required independently of the other - the two
+ * writes are one fact (this draft was declined, and its topic is therefore
+ * retryable) - so atomicity is free, and `db.batch()`'s atomicity is what
+ * makes it impossible for a `drafts` row saying `'declined'` to outlive a
+ * topic that stayed `'done'`.
+ *
+ * **Subrequest cost**: two D1 statements in one `db.batch()` is **one**
+ * Workers subrequest (CLAUDE.md: any D1 binding call counts). One read
+ * (`readReviewableDrafts`) plus one write per draft is what the sweep's own
+ * ledger rests on - see `runReviewSweep` (src/review-sweep-workflow.ts).
+ */
+export async function recordDraftReview(db: D1Database, review: DraftReview): Promise<void> {
+  const statements = [
+    db
+      .prepare(
+        `INSERT INTO drafts (run_id, slug, title, pr_url, state)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(run_id) DO UPDATE SET
+           slug = excluded.slug, title = excluded.title, pr_url = excluded.pr_url, state = excluded.state`,
+      )
+      .bind(review.runId, review.slug, review.title, review.prUrl, review.state),
+  ];
+
+  if (review.topicReject !== null) {
+    statements.push(
+      db
+        .prepare(`UPDATE topics SET status = 'rejected', claimed_at = NULL WHERE id = ? AND status = 'done'`)
+        .bind(review.topicReject),
+    );
+  }
+
+  await db.batch(statements);
 }

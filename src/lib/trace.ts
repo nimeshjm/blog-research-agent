@@ -134,6 +134,21 @@ export const ATTR_RUNS_STRANDED_CLOSED = 'agent.runs.stranded_closed';
  * itself.
  */
 export const ATTR_NEURONS_DAILY_SPENT = 'agent.neurons.daily_spent';
+/**
+ * How many drafts this sweep's work list held, on the `load-reviewable-drafts`
+ * span (#116). A count, not the run ids or pull-request URLs themselves -
+ * bounded by `REVIEW_SWEEP_MAX_DRAFTS`, the same reason `ATTR_GATHER_CHILDREN`
+ * and `ATTR_SUMMARIZE_CHILDREN` above carry a count rather than the list.
+ */
+export const ATTR_DRAFTS_REVIEWABLE = 'agent.drafts.reviewable';
+/**
+ * The `DraftState` a `review-draft:*` step wrote (#116) - the same
+ * low-cardinality-enum channel `ATTR_SUMMARIZE_SKIP_REASON` above uses. The
+ * pull request URL itself must never reach a span attribute (CLAUDE.md's
+ * attribute rule) and does not: it rides the step's own output and the
+ * `drafts` row, not this attribute.
+ */
+export const ATTR_DRAFT_STATE = 'agent.draft.state';
 
 // --- gen_ai.* ---------------------------------------------------------------
 // Matches AI Gateway's own exporter conventions, so the two line up if that

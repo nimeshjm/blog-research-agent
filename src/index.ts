@@ -1,4 +1,4 @@
-import type { Env, ResearchParams } from './lib/types';
+import type { Env, ResearchParams, ReviewSweepParams } from './lib/types';
 import { ATTR_INSTANCE_ID, traced } from './lib/trace';
 
 export { ResearchWorkflow } from './workflow';
@@ -6,6 +6,7 @@ export { GatherWorkflow } from './gather-workflow';
 export { SummarizeWorkflow } from './summarize-workflow';
 export { PublishWorkflow } from './publish-workflow';
 export { ProposeWorkflow } from './propose-workflow';
+export { ReviewSweepWorkflow } from './review-sweep-workflow';
 
 /**
  * Cron only starts a Workflow instance; all orchestration lives in the
@@ -22,6 +23,32 @@ export { ProposeWorkflow } from './propose-workflow';
  */
 export default {
   async scheduled(controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+    // The only decision this handler makes: which instance to start. #116's
+    // sweep gets its own cron slot rather than a loop over a cron-to-binding
+    // map, because `scheduled-stays-thin` forbids a loop (or a fetch, a D1
+    // call, an env.AI.run, or a step.do) inside this function - an `if` is
+    // the only shape a second trigger can take here.
+    if (controller.cron === env.REVIEW_SWEEP_CRON) {
+      const sweepParams: ReviewSweepParams = {
+        triggeredAt: new Date(controller.scheduledTime).toISOString(),
+      };
+      await traced('review-sweep-workflow-create', {}, async (span) => {
+        const instance = await env.REVIEW_SWEEP_WORKFLOW.create({ params: sweepParams });
+        span.setAttribute(ATTR_INSTANCE_ID, instance.id);
+        console.log(`review-sweep-workflow started: ${instance.id}`);
+      });
+      return;
+    }
+
+    // `env.REVIEW_SWEEP_CRON` must equal the second entry of `crons` in
+    // wrangler.toml verbatim - both literals live in that one file, adjacent,
+    // so drift is visible in one place. If they ever diverge, every slot
+    // takes this research branch instead: an extra research run a day, which
+    // acceptance criterion 8's daily neuron guard absorbs as a
+    // `budget_skipped` row, and the sweep silently never runs. That is the
+    // failure this pairing is chosen to make cheap to notice rather than
+    // impossible - `review-sweep-cron-matches-trigger`
+    // (scripts/review-checks.mjs) is what notices it.
     const params: ResearchParams = {
       triggeredAt: new Date(controller.scheduledTime).toISOString(),
     };

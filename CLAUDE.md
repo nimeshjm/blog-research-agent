@@ -64,10 +64,20 @@ separate invocation with its own 50 (measured, run `6f75e460`). The parent keeps
 which are bounded; `record-success` runs last, because the `pr_url` it writes comes back
 from the publish child.
 
-`src/index.ts` is a thin `scheduled()` handler. Parent orchestration lives in
-`src/workflow.ts`; each child is its own file (`src/gather-workflow.ts`,
-`src/summarize-workflow.ts`, `src/publish-workflow.ts`) with its own class, binding and
-`[[workflows]]` block. All inference goes through `src/lib/llm.ts`.
+**A second cron trigger runs the decline sweep** (`45 7 * * *` → `ReviewSweepWorkflow`,
+`src/review-sweep-workflow.ts`; feature 001 `spec.md` requirement 2, #116). It reads each
+open draft's pull-request state — one pull request per step — writes `drafts.state`, and
+moves a topic from `done` to `rejected` when its pull request was closed unmerged, so a
+declined draft stops counting as covered by requirement 3. It is **top-level, not a
+child**: it is not part of a research run, and the parent has no subrequest to spend on
+the read. It runs no inference and costs no neurons.
+
+`src/index.ts` is a thin `scheduled()` handler; the only decision it makes is which of
+the two Workflows a slot starts, by comparing `controller.cron` against
+`REVIEW_SWEEP_CRON`. Parent orchestration lives in `src/workflow.ts`; each child is its
+own file (`src/gather-workflow.ts`, `src/summarize-workflow.ts`,
+`src/publish-workflow.ts`, `src/propose-workflow.ts`) with its own class, binding and
+`[[workflows]]` block, as is the sweep. All inference goes through `src/lib/llm.ts`.
 
 ## Platform rules (free tier — these are the ones that bite)
 

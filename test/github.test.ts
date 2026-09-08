@@ -1,5 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createBranch, GithubError, listBlogPostSlugs, openPullRequest, putFile, readBaseRefSha, readRepoFile, refExists } from '../src/lib/github';
+import {
+  createBranch,
+  GithubError,
+  listBlogPostSlugs,
+  openPullRequest,
+  pullRequestNumberFromUrl,
+  putFile,
+  readBaseRefSha,
+  readPullRequestState,
+  readRepoFile,
+  refExists,
+  researchRefSlug,
+} from '../src/lib/github';
 import type { GithubConfig } from '../src/lib/github';
 
 const config: GithubConfig = {
@@ -339,5 +351,191 @@ describe('openPullRequest()', () => {
     });
 
     expect(url).toBe('https://github.com/nimeshjm/nimeshjm.com/pull/9');
+  });
+});
+
+/**
+ * #116: extracts the PR number from `runs.pr_url` (an `html_url`, path
+ * `/<owner>/<repo>/pull/<number>`) so the sweep can call
+ * `readPullRequestState` without ever having stored the number itself.
+ */
+describe('pullRequestNumberFromUrl()', () => {
+  it('parses the trailing number off a normal html_url', () => {
+    expect(pullRequestNumberFromUrl('https://github.com/nimeshjm/nimeshjm.com/pull/42')).toBe(42);
+  });
+
+  it('throws on a non-numeric last segment, with no URL in the message (REVIEW.md pass 2)', () => {
+    let message = '';
+    try {
+      pullRequestNumberFromUrl('https://github.com/nimeshjm/nimeshjm.com/pull/abc');
+      throw new Error('expected pullRequestNumberFromUrl to throw');
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toMatch(/could not parse a pull request number/);
+    expect(message).not.toContain('github.com');
+    expect(message).not.toContain('nimeshjm');
+  });
+
+  it('throws on a trailing slash (the last path segment is empty)', () => {
+    let message = '';
+    try {
+      pullRequestNumberFromUrl('https://github.com/nimeshjm/nimeshjm.com/pull/42/');
+      throw new Error('expected pullRequestNumberFromUrl to throw');
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toMatch(/could not parse a pull request number/);
+    expect(message).not.toContain('github.com');
+  });
+
+  it('throws on a zero segment', () => {
+    let message = '';
+    try {
+      pullRequestNumberFromUrl('https://github.com/nimeshjm/nimeshjm.com/pull/0');
+      throw new Error('expected pullRequestNumberFromUrl to throw');
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toMatch(/could not parse a pull request number/);
+    expect(message).not.toContain('github.com');
+  });
+
+  it('throws on a negative segment', () => {
+    let message = '';
+    try {
+      pullRequestNumberFromUrl('https://github.com/nimeshjm/nimeshjm.com/pull/-3');
+      throw new Error('expected pullRequestNumberFromUrl to throw');
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toMatch(/could not parse a pull request number/);
+    expect(message).not.toContain('github.com');
+  });
+});
+
+/**
+ * #116: the inverse of the branch name `openPullRequest` builds
+ * (`research/${draft.date}-${draft.slug}`). The date-anchored regex is what
+ * lets a hyphenated slug survive - a naive split on `-` would stop at the
+ * slug's own first hyphen.
+ */
+describe('researchRefSlug()', () => {
+  it('returns the slug from a well-formed research/<yyyy-mm-dd>-<slug> ref', () => {
+    expect(researchRefSlug('research/2026-09-01-agentic-code-review')).toBe('agentic-code-review');
+  });
+
+  it('a slug containing hyphens survives intact rather than being truncated at the first one', () => {
+    expect(researchRefSlug('research/2026-09-01-some-hyphenated-slug')).toBe('some-hyphenated-slug');
+  });
+
+  it('returns null for a ref with no date', () => {
+    expect(researchRefSlug('research/some-slug-with-no-date')).toBeNull();
+  });
+
+  it('returns null for a ref on another prefix', () => {
+    expect(researchRefSlug('feature/2026-09-01-some-slug')).toBeNull();
+  });
+
+  it('returns null for an empty slug', () => {
+    expect(researchRefSlug('research/2026-09-01-')).toBeNull();
+  });
+});
+
+/**
+ * #116: `merged` is authoritative and `state` alone is not - GitHub reports
+ * both a merged and a declined pull request as `state: 'closed'`.
+ */
+describe('readPullRequestState()', () => {
+  function pullPath(prNumber: number): string {
+    return `/repos/nimeshjm/nimeshjm.com/pulls/${prNumber}`;
+  }
+
+  it('reads an open pull request', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(new URL(String(input)).pathname).toBe(pullPath(5));
+      expect(String((init?.headers as Record<string, string>)?.['Authorization'] ?? '')).toBe('Bearer test-token');
+      return jsonResponse(200, { state: 'open', merged: false, head: { ref: 'research/2026-09-01-x' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await readPullRequestState(config, 5);
+
+    expect(result).toEqual({ state: 'open', merged: false, headRef: 'research/2026-09-01-x' });
+  });
+
+  it('reads a closed and merged pull request', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse(200, { state: 'closed', merged: true, head: { ref: 'research/2026-09-01-x' } })),
+    );
+
+    const result = await readPullRequestState(config, 6);
+
+    expect(result).toEqual({ state: 'closed', merged: true, headRef: 'research/2026-09-01-x' });
+  });
+
+  it('reads a closed and declined (not merged) pull request', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse(200, { state: 'closed', merged: false, head: { ref: 'research/2026-09-01-x' } })),
+    );
+
+    const result = await readPullRequestState(config, 7);
+
+    expect(result).toEqual({ state: 'closed', merged: false, headRef: 'research/2026-09-01-x' });
+  });
+
+  it('returns null on a 404', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+
+    expect(await readPullRequestState(config, 8)).toBeNull();
+  });
+
+  it('throws GithubError naming this operation on a non-404 error status', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
+
+    await expect(readPullRequestState(config, 9)).rejects.toThrow(GithubError);
+    try {
+      await readPullRequestState(config, 9);
+      throw new Error('expected readPullRequestState to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(GithubError);
+      expect((err as InstanceType<typeof GithubError>).operation).toBe('readPullRequestState');
+    }
+  });
+
+  it('throws on a 200 response missing merged', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, { state: 'open', head: { ref: 'research/2026-09-01-x' } })));
+
+    await expect(readPullRequestState(config, 10)).rejects.toThrow(/response missing expected fields/);
+  });
+
+  it('throws on a 200 response missing head.ref', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, { state: 'open', merged: false })));
+
+    await expect(readPullRequestState(config, 11)).rejects.toThrow(/response missing expected fields/);
+  });
+
+  it('throws on a 200 response carrying an unexpected state value', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse(200, { state: 'archived', merged: false, head: { ref: 'research/2026-09-01-x' } })),
+    );
+
+    await expect(readPullRequestState(config, 12)).rejects.toThrow(/response missing expected fields/);
+  });
+
+  it('requests pulls/<number> with the Authorization header', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(new URL(String(input)).pathname).toBe(pullPath(13));
+      expect((init?.headers as Record<string, string>)?.['Authorization']).toBe('Bearer test-token');
+      return jsonResponse(200, { state: 'open', merged: false, head: { ref: 'research/2026-09-01-x' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await readPullRequestState(config, 13);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

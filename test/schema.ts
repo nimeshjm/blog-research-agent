@@ -1,5 +1,6 @@
 import migration0001Sql from '../migrations/0001_init.sql?raw';
 import migration0002Sql from '../migrations/0002_run_candidates_and_claims.sql?raw';
+import migration0003Sql from '../migrations/0003_drafts_run_id_unique.sql?raw';
 
 /**
  * Splits a migration file's text into runnable statements: comment lines
@@ -43,9 +44,14 @@ async function columnExists(db: D1Database, table: string, column: string): Prom
  * broad catch. The column check is generic (a regex over the statement, not
  * a match on `claimed_at` by name), so the next migration that adds a column
  * inherits this for free.
+ *
+ * The import list above is hardcoded rather than read from the `migrations/`
+ * directory - a new migration file needs a line added here too, or it is
+ * silently absent from every test database (this is exactly how 0003 went
+ * unpicked-up until #116's own tests added it).
  */
 export async function applySchema(db: D1Database): Promise<void> {
-  for (const stmt of [...statementsFrom(migration0001Sql), ...statementsFrom(migration0002Sql)]) {
+  for (const stmt of [...statementsFrom(migration0001Sql), ...statementsFrom(migration0002Sql), ...statementsFrom(migration0003Sql)]) {
     const match = ALTER_ADD_COLUMN_RE.exec(stmt);
     if (match !== null) {
       const table = match[1];

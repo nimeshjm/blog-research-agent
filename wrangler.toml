@@ -6,7 +6,7 @@ compatibility_flags = ["nodejs_compat"]
 # Every 3 hours (00, 03, 06, 09, 12, 15, 18, 21 UTC) - 8 slots/day. Raised
 # from once daily (`0 6 * * *`) by #111 to drain the 9-topic backlog `topics`
 # held when that issue was written, now that #108 gives the queue a way to
-# drain at all. Free plan allows 5 cron triggers per account; this uses 1.
+# drain at all. Free plan allows 5 cron triggers per account; this uses 2.
 #
 # Not once daily any more, but the *guard* is what actually limits runs, not
 # this schedule (NEURON_DAILY_RESERVE below, read in selectTopic's claim
@@ -33,8 +33,32 @@ compatibility_flags = ["nodejs_compat"]
 # blog's Pages build (nimeshjm/nimeshjm.com#3). To pause entirely, set
 # `crons = []` and keep the [triggers] block - an absent section leaves an
 # already-deployed schedule running, and every merge to main deploys.
+#
+# **`crons = []` now pauses both triggers, not just research.** Since #116
+# there are two entries and `scheduled()` routes a slot by matching
+# `controller.cron` against REVIEW_SWEEP_CRON below, so pausing one of them
+# is a different edit: drop that entry's own string and leave the other. Drop
+# the research entry and REVIEW_SWEEP_CRON still matches, so the sweep keeps
+# running alone; drop the sweep entry and every remaining slot falls through
+# to the research branch, which is the pre-#116 behaviour - but leave
+# REVIEW_SWEEP_CRON pointing at a string that is no longer in this array and
+# `review-sweep-cron-matches-trigger` (scripts/review-checks.mjs) fails the
+# pull request, deliberately: a sweep var with no trigger behind it is the
+# drift that check exists to catch.
+#
+# The second entry, `45 7 * * *`, is #116's decline sweep - once a day, at
+# minute 45 past an hour requirement 1 never uses at minute 0, so the sweep
+# never contends with a research run's own slot for the invocation's shared
+# CPU and subrequest budget. Once a day because a human's merge-or-decline
+# decision is not a thing worth polling more often than that, and because
+# every sweep spends one GitHub read per open draft - polling faster buys
+# nothing but GitHub API spend against a signal that changes on human time,
+# not machine time. `scheduled()` (src/index.ts) reads `controller.cron`
+# against `REVIEW_SWEEP_CRON` below to decide which Workflow this slot
+# starts - see that var's own comment for what happens if the two literals
+# ever drift apart.
 [triggers]
-crons = ["0 */3 * * *"]
+crons = ["0 */3 * * *", "45 7 * * *"]
 
 [vars]
 # The blog repo the agent opens pull requests against. Private; Astro + MDX.
@@ -106,6 +130,29 @@ GATHER_FEEDS_PER_CHILD = "10"
 # arithmetic, including the parent's recomputed remaining-subrequest bill.
 # SHORTLIST_TOP_N = 15 gives ceil(15 / 5) = 3 children.
 SUMMARIZE_ARTICLES_PER_CHILD = "5"
+# #116: how many drafts one decline-sweep instance reads, oldest first
+# (readReviewableDrafts, src/lib/d1.ts). Read as
+# `Number(env.REVIEW_SWEEP_MAX_DRAFTS)` in runReviewSweep - arrives as a
+# string like every other var here. This is a CPU bound, not a subrequest
+# one: the sweep's subrequest bill is 1 + 2N (one readReviewableDrafts, then
+# one GitHub read and one db.batch() per draft) = 11 of 50 at N=5, nowhere
+# near binding. The real ceiling is the 10 ms CPU *per invocation* against N
+# pull-request JSON parses landing in the same invocation - Workflows packs
+# consecutive fast steps together, so a step boundary buys a chance of a
+# fresh invocation, not a guarantee (CLAUDE.md's "Platform rules"). 5 is
+# chosen low rather than derived - it is unmeasured. Raise it against a
+# measurement, not a hope: run `bd33248b` is the precedent for what chunking
+# by the wrong unit costs (there, feed count instead of item volume; here,
+# an untested guess instead of a measured per-draft CPU figure).
+REVIEW_SWEEP_MAX_DRAFTS = "5"
+# #116: must equal the second `crons` entry above, verbatim. Read in
+# scheduled() (src/index.ts) to pick which Workflow a slot starts. A var
+# rather than a literal in that file so both halves of the pairing live here,
+# adjacent, and a change to one is visibly a change next to the other. If the
+# two ever diverge, every slot takes the research branch instead - an extra
+# research run a day, absorbed by acceptance criterion 8's daily neuron guard
+# as a `budget_skipped` row - and the sweep silently never runs.
+REVIEW_SWEEP_CRON = "45 7 * * *"
 
 # Secrets (never put these here - use `wrangler secret put <NAME>`):
 #   GITHUB_TOKEN  fine-grained PAT, contents:write + pull_requests:write,
@@ -164,6 +211,22 @@ class_name = "PublishWorkflow"
 name = "propose-workflow"
 binding = "PROPOSE_WORKFLOW"
 class_name = "ProposeWorkflow"
+
+# #116's decline sweep. What makes this one different from the four above it:
+# each of those is a *child* of a research run, created and polled by the
+# parent purely to buy a fresh 50-subrequest budget for work the parent
+# itself kicked off. This one is a *top-level* Workflow on its own cron - it
+# is not part of a research run at all, because it reads pull requests from
+# runs that finished hours or days earlier, and the parent has no subrequest
+# left to spend on that read even if it wanted to (49 of 50 on the
+# queue-draining path, 50 of 50 on the propose path -
+# createProposeChildren's comment, src/workflow.ts). See
+# REVIEW_SWEEP_MAX_DRAFTS and REVIEW_SWEEP_CRON above and
+# src/review-sweep-workflow.ts.
+[[workflows]]
+name = "review-sweep-workflow"
+binding = "REVIEW_SWEEP_WORKFLOW"
+class_name = "ReviewSweepWorkflow"
 
 [observability]
 enabled = true
