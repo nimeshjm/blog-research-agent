@@ -173,7 +173,8 @@ Ordered inside the step, because the prompt depends on the style pass:
    the skill.
 5. `openPullRequest` — validate frontmatter against the blog's `src/content.config.ts`
    (read it, do not trust the copy in `spec.md`), create `research/<yyyy-mm-dd>-<slug>`,
-   commit `src/content/blog/<slug>/index.mdx`, open the PR with the brief as the body.
+   commit `src/content/draft/<yyyy-mm-dd>-<slug>/index.mdx` (#119 — beside the blog
+   collection, not in it), open the PR with the brief as the body.
    Idempotent on retry: an existing branch or an already-open PR for the same slug is
    reused, not duplicated. Never pushes to the base branch.
 
@@ -244,9 +245,11 @@ The run is proven by four things, in this order:
 1. A pull request exists on `nimeshjm/nimeshjm.com`, on a `research/*` branch, with the
    brief as its body and every source linked (criteria 2, 7 of `spec.md` req. 7).
    `BLOG_BASE_BRANCH` is unchanged — check the base branch's SHA before and after.
-2. Its file is `src/content/blog/<slug>/index.mdx`, has `draft: true`, has **no** `image`
-   key, and **the blog's own build succeeds on that branch** (criterion 3). This is the
-   only check that catches a frontmatter break, and it runs in the blog repo, not here.
+2. Its file is `src/content/draft/<yyyy-mm-dd>-<slug>/index.mdx`, has `draft: true`, has
+   **no** `image` key, and **the blog's own build succeeds on that branch** (criterion
+   3). This runs in the blog repo, not here. Since #119 the file is outside every
+   collection glob, so that build no longer reads it: to catch a frontmatter or MDX
+   break, `git mv` the directory into `src/content/blog/` first and build that.
 3. `SELECT * FROM runs` has exactly one row for the instance id, with `neurons_spent`
    populated and no more than `NEURON_BUDGET_PER_RUN + SUMMARY_NEURON_ESTIMATE`
    (criteria 7, 9 of req. 6).

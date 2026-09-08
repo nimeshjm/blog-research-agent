@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  blogPostPath,
+  draftPostPath,
   ContentConfigMismatchError,
   InvalidDraftError,
   parseBlogSchemaFields,
@@ -126,11 +126,21 @@ describe('validateDraft()', () => {
   });
 });
 
-describe('blogPostPath()', () => {
-  it('places the file at src/content/blog/<slug>/index.mdx', () => {
-    expect(blogPostPath('agentic-code-review-practices')).toBe(
-      'src/content/blog/agentic-code-review-practices/index.mdx',
+describe('draftPostPath()', () => {
+  it('places the file under src/content/draft/, date-prefixed, outside the blog collection', () => {
+    expect(draftPostPath('2026-08-27', 'agentic-code-review-practices')).toBe(
+      'src/content/draft/2026-08-27-agentic-code-review-practices/index.mdx',
     );
+  });
+
+  /**
+   * The prefix is the draft's own date, so the path is a pure function of
+   * the draft - see `draftPostPath`'s comment: `putFile` finds the file it
+   * already wrote by reading a sha at this exact path, and a replay that
+   * derived the prefix from the clock would commit a second one instead.
+   */
+  it('is pure in its arguments - a different date is a different directory, same slug', () => {
+    expect(draftPostPath('2026-08-28', 'x')).not.toBe(draftPostPath('2026-08-27', 'x'));
   });
 });
 

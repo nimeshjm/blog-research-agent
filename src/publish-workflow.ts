@@ -7,7 +7,7 @@ import {
   readRepoFile,
 } from './lib/github';
 import type { GithubConfig } from './lib/github';
-import { blogPostPath, renderMdx, validateAgainstContentConfig, validateDraft } from './lib/mdx';
+import { draftPostPath, renderMdx, validateAgainstContentConfig, validateDraft } from './lib/mdx';
 import type { Draft, Env, PublishParams } from './lib/types';
 import { tracerFor } from './lib/trace';
 
@@ -64,7 +64,8 @@ export class PublishWorkflow extends WorkflowEntrypoint<Env, PublishParams> {
 /**
  * Validates frontmatter (statically, then against the blog's live
  * `content.config.ts`), creates `research/<yyyy-mm-dd>-<slug>`, commits
- * `src/content/blog/<slug>/index.mdx`, opens the PR with the brief as its
+ * `src/content/draft/<yyyy-mm-dd>-<slug>/index.mdx` (`draftPostPath`, and
+ * see its comment for why that path), opens the PR with the brief as its
  * body. Moved here unchanged from `src/workflow.ts` when publication became a
  * child instance (plan.md, "Reuse"), except for this comment's own
  * cross-references.
@@ -101,9 +102,13 @@ export async function openPullRequest(env: Env, draft: Draft): Promise<string> {
 
   // Dynamic check against the live schema - spec.md: "the PR step reads it
   // ... rather than trusting the copy above, so a schema change upstream
-  // surfaces as a failed step instead of a broken build." A missing schema
-  // file is itself surfaced the same way (readRepoFile returns null here
-  // only on 404; any other failure already threw inside it).
+  // surfaces as a failed step instead of a broken build." Since #119 the
+  // committed file lands outside every collection glob, so this is a
+  // promotion-readiness gate rather than a build guard: it fails the run
+  // that would otherwise open a pull request nobody can merge without
+  // editing the frontmatter by hand. A missing schema file is itself
+  // surfaced the same way (readRepoFile returns null here only on 404; any
+  // other failure already threw inside it).
   const schemaSource = await readRepoFile(config, 'src/content.config.ts');
   if (schemaSource === null) {
     throw new Error('openPullRequest: src/content.config.ts not found in the blog repo - cannot validate frontmatter');
@@ -121,7 +126,7 @@ export async function openPullRequest(env: Env, draft: Draft): Promise<string> {
   await createBranch(config, prParams.head, baseSha); // idempotent: an existing ref is confirmed, not assumed
 
   await putFile(config, {
-    path: blogPostPath(draft.slug),
+    path: draftPostPath(draft.date, draft.slug),
     content: renderMdx(draft),
     message: `Add research draft: ${draft.title}`,
     branch: prParams.head,

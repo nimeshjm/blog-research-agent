@@ -108,6 +108,12 @@ Repo `nimeshjm/nimeshjm.com` (private, Astro, default branch `main`). Posts live
 `/blog/<slug>/`. Bodies may open with component imports
 (`import ImageModal from '@/components/ImageModal.astro'`).
 
+**This pipeline's own drafts do not go there.** They are committed to
+`src/content/draft/<yyyy-mm-dd>-<slug>/index.mdx` (#119), which is outside every
+collection glob in `src/content.config.ts` — so a draft has no URL and no build cost
+until a human `git mv`s the directory into `src/content/blog/`. The frontmatter rules
+below still apply in full: they are what makes that move a rename rather than an edit.
+
 Frontmatter schema, from `src/content.config.ts` — that file is the source of truth,
 check it rather than trusting this copy:
 

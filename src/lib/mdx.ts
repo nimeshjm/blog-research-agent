@@ -1,8 +1,10 @@
 import type { Draft } from './types';
 
 /**
- * Frontmatter emission and validation for `src/content/blog/<slug>/index.mdx`
- * in the blog repo. See `Draft` in `./types` and
+ * Frontmatter emission and validation for
+ * `src/content/draft/<yyyy-mm-dd>-<slug>/index.mdx` in the blog repo (see
+ * `draftPostPath` for why that path and not `src/content/blog/`). See
+ * `Draft` in `./types` and
  * `.claude/skills/blog-voice/SKILL.md`'s "Three hard rules for a generated
  * post": always `draft: true`, never an `image` key, kebab-case slug with no
  * spaces. `validateDraft` also carries one rule about the body rather than the
@@ -20,8 +22,12 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
  * MDX v3 rejects an HTML comment outright - `<!--` fails the parse with
- * "Unexpected character `!` (U+0021) before name", and Cloudflare Pages fails
- * the blog's build with it. `REDUCE_SYSTEM_PROMPT` asked for the
+ * "Unexpected character `!` (U+0021) before name". A draft under
+ * `src/content/draft/` is outside every collection glob, so this no longer
+ * breaks the blog's build on the branch (#119) - it breaks it on the day a
+ * human promotes the directory into `src/content/blog/`, which is worse:
+ * the parse error arrives detached from the run that caused it.
+ * `REDUCE_SYSTEM_PROMPT` asked for the
  * opening-incident marker in this form until #96, so every draft the pipeline
  * had ever produced carried one; this is the backstop for a model that emits
  * one anyway.
@@ -96,9 +102,10 @@ function yamlStringArray(items: string[]): string {
 
 /**
  * Renders the full file content - frontmatter plus body - for
- * `src/content/blog/<slug>/index.mdx`. Never emits an `image` key: the
- * schema's `image()` helper resolves to a real committed file, and emitting
- * a path without committing it breaks the site build.
+ * `draftPostPath`. Never emits an `image` key: the schema's `image()` helper
+ * resolves to a real committed file, so a path without a committed file
+ * breaks the site build the moment the draft is promoted into
+ * `src/content/blog/`.
  */
 export function renderMdx(draft: Draft): string {
   validateDraft(draft);
@@ -116,9 +123,29 @@ export function renderMdx(draft: Draft): string {
   return `${frontmatter}${draft.body}`;
 }
 
-/** Where `renderMdx`'s output belongs in the blog repo. */
-export function blogPostPath(slug: string): string {
-  return `src/content/blog/${slug}/index.mdx`;
+/**
+ * Where `renderMdx`'s output belongs in the blog repo: a dated directory
+ * under `src/content/draft/`, not `src/content/blog/` (#119).
+ *
+ * `src/content/draft/` is outside every loader glob in the blog's
+ * `src/content.config.ts`, and that file uses content-layer loaders - which
+ * is what makes the directory *ignored* rather than auto-generated into an
+ * orphan collection (Astro only walks `src/content/` for undeclared folders
+ * when no collection uses a loader). So a generated draft costs the blog's
+ * build nothing, and a reviewer can tell one from a hand-written post by the
+ * path alone rather than by reading frontmatter for `draft: true`.
+ * Promotion is a `git mv` of the directory into `src/content/blog/`, which
+ * is why the file is still `index.mdx`.
+ *
+ * **`date` is `Draft.date`, never the clock.** The path has to be a pure
+ * function of the draft: `run()` re-executes on replay (CLAUDE.md, "Workflow
+ * steps are not retried"), and `putFile`'s idempotency is a sha read at this
+ * exact path - a clock-derived prefix would commit a second file instead of
+ * updating the first. It also keeps the path in step with the branch the
+ * same run creates, `research/${date}-${slug}` (src/publish-workflow.ts).
+ */
+export function draftPostPath(date: string, slug: string): string {
+  return `src/content/draft/${date}-${slug}/index.mdx`;
 }
 
 // ---------------------------------------------------------------------------
