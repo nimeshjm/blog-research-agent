@@ -215,6 +215,18 @@ export async function readRepoFile(config: GithubConfig, path: string): Promise<
   return base64Decode(body.content);
 }
 
+/**
+ * The state of an existing pull request, as read by the #116 review sweep.
+ * Declared here, next to `OpenPullRequestParams`, rather than in types.ts -
+ * matching how `GithubConfig` and `PutFileParams` live with their primitives.
+ */
+export interface PullRequestState {
+  state: 'open' | 'closed';
+  merged: boolean;
+  /** The branch carrying the commit - `research/<yyyy-mm-dd>-<slug>`. */
+  headRef: string;
+}
+
 export interface OpenPullRequestParams {
   title: string;
   body: string;
@@ -274,4 +286,57 @@ export async function openPullRequest(config: GithubConfig, params: OpenPullRequ
   if (!res.ok) throw new GithubError(res.status, 'openPullRequest');
   const created = (await res.json()) as { html_url: string };
   return created.html_url;
+}
+
+/**
+ * Extracts the PR number from `runs.pr_url` - the sweep (#116) has the URL,
+ * not the number, because that column is what `record-success` wrote
+ * (`recordRunOutcome`, src/lib/d1.ts) from `openPullRequest`'s return value
+ * above, and both are GitHub's `html_url`, whose path is
+ * `/<owner>/<repo>/pull/<number>`.
+ */
+export function pullRequestNumberFromUrl(prUrl: string): number {
+  const segment = new URL(prUrl).pathname.split('/').pop();
+  const n = segment === undefined ? NaN : Number(segment);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error('pullRequestNumberFromUrl: could not parse a pull request number');
+  }
+  return n;
+}
+
+/**
+ * The inverse of the branch name `openPullRequest` builds in
+ * src/publish-workflow.ts (`research/${draft.date}-${draft.slug}`). Matches
+ * on the fixed-width date prefix rather than splitting on `-`, because a
+ * slug itself contains hyphens - only the date is a separable, fixed-width
+ * anchor. Returns `null` when `ref` is not shaped like a research branch.
+ */
+export function researchRefSlug(ref: string): string | null {
+  const match = /^research\/\d{4}-\d{2}-\d{2}-(.+)$/.exec(ref);
+  return match === null ? null : (match[1] ?? null);
+}
+
+/**
+ * Reads one pull request's state. `merged` is authoritative and `state`
+ * alone is not - GitHub reports both a merged and a declined pull request as
+ * `state: 'closed'`, and the whole point of #116 is telling apart the
+ * `closed && !merged` case. Returns `null` on a 404 (mirrors
+ * `readRepoFile`'s and `listBlogPostSlugs`'s 404 handling) so the caller
+ * decides what an unreachable pull request means.
+ */
+export async function readPullRequestState(config: GithubConfig, prNumber: number): Promise<PullRequestState | null> {
+  const res = await githubFetch(config, `/repos/${config.repo}/pulls/${prNumber}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new GithubError(res.status, 'readPullRequestState');
+
+  const body = (await res.json()) as { state?: string; merged?: boolean; head?: { ref?: string } };
+  const ref = body.head?.ref;
+  if (typeof body.merged !== 'boolean' || (body.state !== 'open' && body.state !== 'closed') || ref === undefined) {
+    // The same cross-check `findOpenPullRequest`'s `head.ref` check applies
+    // (#95): an unvalidated response produced a plausible wrong URL and a
+    // silently successful run. Operation only in the message - REVIEW.md
+    // pass 2, the same boundary GithubError keeps.
+    throw new Error('readPullRequestState: response missing expected fields');
+  }
+  return { state: body.state, merged: body.merged, headRef: ref };
 }

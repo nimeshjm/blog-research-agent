@@ -11,6 +11,8 @@ export interface Env {
   PUBLISH_WORKFLOW: Workflow<PublishParams>;
   /** feature 003, extended 2026-09-04 (#109): the child Workflow `selectTopic`'s propose branch runs in, not the parent's own steps. See src/propose-workflow.ts. */
   PROPOSE_WORKFLOW: Workflow<ProposeParams>;
+  /** #116: the sweep that reads each open draft's pull-request state, on its own cron and its own 50-subrequest budget. See src/review-sweep-workflow.ts. */
+  REVIEW_SWEEP_WORKFLOW: Workflow<ReviewSweepParams>;
 
   BLOG_REPO: string;
   BLOG_BASE_BRANCH: string;
@@ -26,6 +28,10 @@ export interface Env {
   GATHER_FEEDS_PER_CHILD: string;
   /** How many shortlisted candidates one SummarizeWorkflow child processes. See createSummarizeChildren's comment in src/workflow.ts for the subrequest arithmetic this is sized against. */
   SUMMARIZE_ARTICLES_PER_CHILD: string;
+  /** How many drafts one sweep reads. See its own comment in wrangler.toml for the CPU argument this is sized against. */
+  REVIEW_SWEEP_MAX_DRAFTS: string;
+  /** Must equal the second `crons` entry in wrangler.toml. Read in scheduled() (src/index.ts) to pick which Workflow a slot starts - see that file's own comment for why this is a var rather than a literal. */
+  REVIEW_SWEEP_CRON: string;
 
   /** Set with `wrangler secret put GITHUB_TOKEN`. Never in wrangler.toml. */
   GITHUB_TOKEN: string;
@@ -344,4 +350,28 @@ export interface RunOutcome {
   sourcesUsed: number;
   prUrl: string | null;
   status: 'succeeded' | 'no_topic' | 'insufficient_sources' | 'failed' | 'budget_skipped';
+}
+
+/**
+ * The lifecycle of one `drafts` row (#116). `'open'` is non-terminal and is
+ * re-read by the next sweep; `'merged'` and `'declined'` are terminal.
+ * `'unavailable'` is what a 404 on the pull request records - terminal so the
+ * sweep's bounded per-run limit drains rather than re-reading an unreachable
+ * PR forever. Plainly: `'unavailable'` leaves the topic `'done'` because the
+ * sweep cannot know the outcome.
+ */
+export type DraftState = 'open' | 'merged' | 'declined' | 'unavailable';
+
+/** `ReviewSweepWorkflow`'s input (#116). One instance per scheduled sweep run. */
+export interface ReviewSweepParams {
+  /** ISO 8601, from the cron controller's scheduledTime - the same shape ResearchParams uses. */
+  triggeredAt: string;
+}
+
+/** One row of the sweep's work list - a run whose pull request has not yet been read to a terminal state. */
+export interface ReviewableDraft {
+  runId: string;
+  prUrl: string;
+  topicId: number;
+  topicTitle: string;
 }
