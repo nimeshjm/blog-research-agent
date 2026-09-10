@@ -296,6 +296,32 @@ describe('findOrProposeTopic()', () => {
     const rows = await env.DB.prepare(`SELECT COUNT(*) as n FROM topics WHERE title = 'Same title'`).first<{ n: number }>();
     expect(rows?.n).toBe(2);
   });
+
+  // #121, end to end rather than an assertion that the column is non-null:
+  // that one passes with the reclaim still broken. What stranded four rows in
+  // production was the *pairing* - this INSERT skips `claimRow`, so it used to
+  // skip its `claimed_at` stamp, and `reclaimAndClaim`'s reclaim `UPDATE`
+  // requires `claimed_at IS NOT NULL`. Backdating past the TTL is the only way
+  // to reach that predicate at all.
+  it("a proposed topic left in_progress past the TTL is reclaimable, because the INSERT stamps claimed_at (#121)", async () => {
+    const proposed = await findOrProposeTopic(env.DB, { title: 'Stranded proposal', angle: null });
+
+    // Shifted relative to whatever the INSERT wrote, never assigned outright:
+    // `datetime(NULL, ...)` is NULL, so an unstamped row stays unstamped and
+    // the assertions below go red. Assigning a literal timestamp here would
+    // supply the very value the bug consists of failing to write, and the
+    // test would pass with the fix reverted.
+    await env.DB
+      .prepare(`UPDATE topics SET claimed_at = datetime(claimed_at, '-7 hours') WHERE id = ?`)
+      .bind(proposed.id)
+      .run();
+
+    const result = await reclaimAndClaim(env.DB, 6, 'test-instance');
+
+    expect(result.reclaimedTopics).toBe(1);
+    expect(result.row?.id).toBe(proposed.id);
+    expect(result.row?.status).toBe('queued');
+  });
 });
 
 describe('recordRunOutcome()', () => {
