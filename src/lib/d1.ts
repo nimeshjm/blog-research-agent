@@ -98,6 +98,18 @@ export async function claimTopicById(db: D1Database, id: number): Promise<Topic 
  * then claimed - this run is about to use the row immediately, and nothing
  * else can have raced ahead of it, unlike the shared `queued` state
  * `reclaimAndClaim` drains.
+ *
+ * **`claimed_at` is stamped here because skipping `claimRow` skips its
+ * stamp** (#121). Bypassing the queue is free except for that one write, and
+ * without it `reclaimAndClaim`'s reclaim `UPDATE` - which needs
+ * `claimed_at IS NOT NULL` *and* a timestamp past the TTL - can never match
+ * this row, so a proposed topic whose run dies stays `in_progress` forever
+ * and the sweep that exists to recover it is blind to it. Measured in
+ * production 2026-09-08: four stranded rows, the oldest three days old, and
+ * nothing left `queued` behind them. Only the INSERT stamps - the find
+ * branch above deliberately does not, for the reason `claimRow`'s own
+ * recovery path gives: a retry recovering its own row must not extend a
+ * claim it did not make.
  */
 export async function findOrProposeTopic(
   db: D1Database,
@@ -118,7 +130,8 @@ export async function findOrProposeTopic(
 
   const inserted = await db
     .prepare(
-      `INSERT INTO topics (title, angle, status, origin) VALUES (?, ?, 'in_progress', 'agent') RETURNING ${TOPIC_COLUMNS}`,
+      `INSERT INTO topics (title, angle, status, origin, claimed_at)
+       VALUES (?, ?, 'in_progress', 'agent', datetime('now')) RETURNING ${TOPIC_COLUMNS}`,
     )
     .bind(proposal.title, proposal.angle)
     .first<TopicRow>();
