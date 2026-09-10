@@ -3,30 +3,33 @@ main = "src/index.ts"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Every 3 hours (00, 03, 06, 09, 12, 15, 18, 21 UTC) - 8 slots/day. Raised
-# from once daily (`0 6 * * *`) by #111 to drain the 9-topic backlog `topics`
-# held when that issue was written, now that #108 gives the queue a way to
-# drain at all. Free plan allows 5 cron triggers per account; this uses 2.
+# Once daily, 06:00 UTC. Free plan allows 5 cron triggers per account; this
+# uses 2.
 #
-# Not once daily any more, but the *guard* is what actually limits runs, not
-# this schedule (NEURON_DAILY_RESERVE below, read in selectTopic's claim
-# branch, src/workflow.ts). 8 slots against the ~5-6 runs/day the guard
-# permits (see that var's own comment for the arithmetic) leaves 2-3 spare
-# slots so one transient miss - a slow poll loop still occupying the previous
-# slot, say - does not by itself cost a whole day's throughput, without
-# going anywhere near hourly's 24 invocations for the same ~5-6 real runs.
+# **Restored by #122 (2026-09-10) from the `0 */3 * * *` #111 raised it to.**
+# That was a backlog-draining setting and said so: `topics` held 9 `queued`
+# rows, and at one slot a day a queue that size takes nine days to drain. It
+# drained. Every row from 13 to 24 is now terminal and nothing is `queued`,
+# so the 8 slots have no backlog left to work against and the reversion
+# condition this comment used to carry is discharged.
 #
-# **This is a backlog-draining setting, not the intended steady state.** Once
-# the queue is empty every slot takes selectTopic's propose branch, which
-# #109 (open at the time of writing) measures at ~25-26 subrequests against
-# the parent's ~3-subrequest ledger entry for that path - over the
-# 50-per-invocation ceiling once combined with the rest of a run. #109 must
-# land before the queue actually empties, or an empty-queue slot at this
-# frequency fails the way run `0357f119` did, just more often than it would
-# have at the old daily cadence. Reverting to `0 6 * * *` once the backlog
-# clears (or before #109 lands, whichever comes first) is a follow-up, not
-# something this change automates - nothing here watches the queue and lowers
-# its own frequency.
+# **What makes one slot the right number now is which branch a slot takes.**
+# Nothing refills the queue - selectTopic's propose branch inserts straight
+# to `in_progress`, never `queued` (findOrProposeTopic, src/lib/d1.ts) - so
+# from here every slot takes the propose path. That is the tighter of the two
+# on #109's ledger: 50 of 50 subrequests pessimal against the queue-draining
+# path's 49, i.e. zero spare, which is #114. The spare slots #111 sized as
+# margin for a transient miss were margin for a *drain*; with the drain over
+# they buy no extra throughput (NEURON_DAILY_RESERVE below still caps the day
+# at ~5-6 runs, and one post a day is what requirement 1 asks for) and each
+# one is another run down a path with no subrequest headroom. Eight a day was
+# eight rolls of that dice; one is one.
+#
+# This does not give #114 any margin and is not a substitute for it - it only
+# reduces how often the zero-margin path runs. #109 itself has landed, and
+# the propose path has now been observed completing end to end: run
+# `ec154335`, 2026-09-10 06:00, empty queue, topic 24, PR nimeshjm/nimeshjm.com#27,
+# 1,853 neurons across 14 sources.
 #
 # Unpaused in the first place after #64's condition was met rather than
 # assumed: a run completed end to end on 2026-09-02 and its draft passed the
@@ -58,7 +61,7 @@ compatibility_flags = ["nodejs_compat"]
 # starts - see that var's own comment for what happens if the two literals
 # ever drift apart.
 [triggers]
-crons = ["0 */3 * * *", "45 7 * * *"]
+crons = ["0 6 * * *", "45 7 * * *"]
 
 [vars]
 # The blog repo the agent opens pull requests against. Private; Astro + MDX.
