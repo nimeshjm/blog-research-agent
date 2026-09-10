@@ -16,33 +16,50 @@ and stops; a human merges.
 ## Requirements
 
 1. The pipeline runs on a schedule without human involvement. **Amended
-   2026-09-04 (#111) to every three hours (`0 */3 * * *`)**, from the once-daily
-   `0 6 * * *` #64 set on 2026-09-02 (itself amended from every two days,
-   `0 6 */2 * *`). `topics` held 9 `queued` rows when #111 was written, and at
-   one scheduled run a day a queue that size takes nine days to drain
-   regardless of how much of the daily neuron allowance goes unspent -
-   requirement 1 controls *how often a run can start*, not how many of the
-   day's neurons a run is allowed to spend, and only the latter was ever the
-   real constraint.
+   2026-09-10 ([#122](https://github.com/nimeshjm/blog-research-agent/issues/122))
+   back to once daily (`0 6 * * *`)**, from the every-three-hours `0 */3 * * *`
+   #111 set on 2026-09-04 - which was itself a raise from this same `0 6 * * *`
+   #64 set on 2026-09-02 (itself amended from every two days, `0 6 */2 * *`).
 
-   **The binding constraint moved from this requirement to acceptance
-   criterion 8.** #64's version of this requirement said "one run per daily
+   **#111's cadence was a backlog-draining setting and said so, and the
+   backlog is gone.** `topics` held 9 `queued` rows when #111 was written, and
+   at one scheduled run a day a queue that size takes nine days to drain
+   regardless of how much of the daily neuron allowance goes unspent. It
+   drained: as of 2026-09-10 every row from 13 to 24 is terminal and nothing
+   is `queued`. Eight slots a day now have no backlog to work against.
+
+   **The binding constraint is still acceptance criterion 8, not this
+   requirement.** #64's version of this requirement said "one run per daily
    neuron allowance is the binding constraint" because exactly one scheduled
    slot existed to spend it; that stopped being true the moment a second slot
    was added, which is why #111 could not raise this cadence on its own
    (see criterion 8's own amendment for the guard that had to land first).
-   With the guard in place, this requirement only has to offer at least as
-   many slots as the guard will let through in a day, with a little margin
-   for a missed or overlapping slot - not exactly one. Every gap here is
-   still a fixed 3 h, evenly dividing 24 h, so the day-of-month arithmetic
-   requirement 8 used to have to argue around does not reappear.
+   Reverting does not put the constraint back here - the guard still caps the
+   day at ~5-6 runs and would do so at any cadence. What one slot a day
+   changes is not the ceiling but how many times the run *starts*.
 
-   **This cadence is a backlog-draining setting, not necessarily the
-   permanent one.** Once the queue is empty, every slot takes the propose
-   branch (requirement 2's "only when empty"), which is
-   [#109](https://github.com/nimeshjm/blog-research-agent/issues/109)'s
-   subrequest concern to solve, not this requirement's. See wrangler.toml's
-   own comment on the `crons` var for the reversion condition.
+   **What decides the number now is which branch a slot takes.** Nothing
+   refills the queue: the propose branch inserts straight to `in_progress`,
+   never `queued` (requirement 2, `findOrProposeTopic`), so from here every
+   slot takes the propose path. That is the tighter of the two on #109's
+   ledger - 50 of 50 subrequests pessimal against the queue-draining path's
+   49, which is
+   [#114](https://github.com/nimeshjm/blog-research-agent/issues/114). #111's
+   spare slots were margin for a *drain*; with the drain over they buy no
+   throughput the guard would allow anyway, and each one is another run down a
+   path with no subrequest headroom. This does not give #114 margin and is not
+   a substitute for it - it reduces how often the zero-margin path runs, from
+   eight times a day to once.
+
+   The day-of-month arithmetic requirement 8 used to have to argue around does
+   not reappear: `0 6 * * *` is a fixed 24 h gap, the same property `0 */3 * * *`
+   had with a fixed 3 h one.
+
+   **#109 has landed and the propose path has been observed completing.** Run
+   `ec154335`, 2026-09-10 06:00, empty queue, proposed topic 24, opened
+   nimeshjm/nimeshjm.com#27, 1,853 neurons across 14 sources - the first
+   end-to-end completion through that branch, which #114 records as never
+   having been observed.
 2. When the topic queue has a `queued` row, the run uses the oldest one. Only when the
    queue is empty does the agent propose its own topic.
 
@@ -83,7 +100,8 @@ and stops; a human merges.
    side of exactly the distinction requirement 3 draws.
 
    The sweep closes that gap and nothing else. One cron slot a day (`45 7 * * *`, chosen
-   to land on no multiple-of-three hour requirement 1 uses) reads at most
+   to land on an hour requirement 1 does not use - every multiple-of-three hour
+   when that was `0 */3 * * *`, and 06:00 since #122 reverted it) reads at most
    `REVIEW_SWEEP_MAX_DRAFTS` drafts, oldest first, one pull request per step:
 
    | pull request | `drafts.state` | `topics.status` |
@@ -755,7 +773,7 @@ research brief; the committed file is the draft.
 | Cron 15 min wall-clock | Cron only creates the instance; steps have no wall-clock cap |
 | 10,000 neurons/day | Per-run: measured min 1,353 / max 1,759 / mean 1,589 (six successful runs in `runs`), hard-stopped at `NEURON_BUDGET_PER_RUN`. Daily aggregate: `reclaimAndClaim`'s `sum(neurons_spent)` read, gated against `NEURON_DAILY_RESERVE` (#111, acceptance criterion 8) |
 | Steps are retried | Every step body must be idempotent (enforced by `REVIEW.md` pass 3) |
-| 5 cron triggers | Two used: requirement 1's `0 */3 * * *`, and requirement 2's decline sweep at `45 7 * * *` (#116) |
+| 5 cron triggers | Two used: requirement 1's `0 6 * * *`, and requirement 2's decline sweep at `45 7 * * *` (#116) |
 | No paid search | Feeds only |
 
 ## Acceptance criteria
