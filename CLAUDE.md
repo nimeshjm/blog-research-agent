@@ -43,10 +43,15 @@ proxy session even under `wrangler dev`. `typecheck` and `deploy --dry-run` work
 offline.
 
 A merge to `main` also deploys the Worker automatically via GitHub Actions
-(`.github/workflows/deploy.yml`). Every pull request runs `.github/workflows/ci.yml`
-(`typecheck` + `deploy --dry-run`, secret-free). The Cloudflare API token and account id
-the deploy workflow needs live in this repo's GitHub secrets (`CLOUDFLARE_API_TOKEN`,
-`CLOUDFLARE_ACCOUNT_ID`), not in `wrangler.toml` or `.dev.vars`.
+(`.github/workflows/deploy.yml`), **running `migrate:remote` before the upload** — since
+#125, where #116's code shipped without its migration and the decline sweep errored on
+every run for three days. A migration is therefore live the moment the code needing it
+is; you do not apply one by hand any more, and a migration that fails stops the deploy
+rather than stranding new code on an old schema. Every pull request runs
+`.github/workflows/ci.yml` (`typecheck` + `deploy --dry-run`, secret-free). The
+Cloudflare API token and account id the deploy workflow needs live in this repo's GitHub
+secrets (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`), not in `wrangler.toml` or
+`.dev.vars`.
 
 ## Architecture
 
